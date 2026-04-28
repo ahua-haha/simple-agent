@@ -12,104 +12,15 @@ import pytest
 from pi.agent import Agent, AgentState
 from pi.ai.env import get_env_api_key
 from pi.ai.events import AssistantMessageEventStream
-from pi.ai.models import register_models, get_model
-from pi.ai.providers.anthropic import (
-    AnthropicOptions,
-    _convert_messages,
-    _convert_tools,
-    _get_cache_control,
-    _map_stop_reason,
-    _supports_adaptive_thinking,
-    _map_thinking_level_to_effort,
-    adjust_max_tokens_for_thinking,
-    build_base_options,
-    stream_anthropic,
-)
-from pi.ai.types import (
-    AssistantMessage,
-    DoneEvent,
-    ErrorEvent,
-    Model,
-    ModelCost,
-    SimpleStreamOptions,
-    StartEvent,
-    TextContent,
-    ThinkingContent,
-    ToolCall,
-    TextStartEvent,
-    TextDeltaEvent,
-    TextEndEvent,
-    ThinkingStartEvent,
-    ThinkingDeltaEvent,
-    ThinkingEndEvent,
-    ToolCallStartEvent,
-    ToolCallDeltaEvent,
-    ToolCallEndEvent,
-    Usage,
-)
-from pi.ai.utils.json import parse_streaming_json
-from pi.ai.models import calculate_cost
+from pi.ai.models import get_model
 
+from simple_agent.models import get_api_key, register_custom_models
 
-def get_minimax_api_key(provider: str) -> str | None:
-    """Custom API key getter for MiniMax-CN."""
-    return os.environ.get("MINIMAX_CN_API_KEY")
-
-def get_deepseek_api_key(provider: str) -> str | None:
-    """Custom API key getter for MiniMax-CN."""
-    return os.environ.get("DEEPSEEK_API_KEY")
-
-def setup_minimax_provider():
-    """Register MiniMax-CN as a provider (called once per session)."""
-    if get_model("minimax-cn", "MiniMax-M2.7"):
-        return  # Already registered
-
-    register_models(
-        "minimax-cn",
-        {
-            "MiniMax-M2.7": Model(
-                id="MiniMax-M2.7",
-                provider="minimax-cn",
-                api="anthropic-messages",
-                base_url="https://api.minimaxi.com/anthropic",
-                name="MiniMax-M2.7",
-                reasoning=True,
-                input=["text"],
-                cost=ModelCost(input=0.3, output=1.2, cache_read=0.06, cache_write=0.375),
-                context_window=204800,
-                max_tokens=131072,
-            ),
-        },
-    )
-
-def setup_deepseek_model():
-    """Register MiniMax-CN as a provider (called once per session)."""
-    if get_model("deepseek", "deepseek-v4-pro"):
-        return  # Already registered
-
-    register_models(
-        "deepseek",
-        {
-            "deepseek-v4-pro": Model(
-                id="deepseek-v4-pro",
-                provider="deepseek",
-                api="anthropic-messages",
-                base_url="https://api.deepseek.com/anthropic",
-                name="DeepSeek V4 Pro",
-                reasoning=True,
-                input=["text"],
-                cost=ModelCost(input=1.74, output=3.48, cache_read=0.145, cache_write=0),
-                context_window= 1000000,
-                max_tokens= 384000,
-            ),
-        },
-    )
 
 @pytest.fixture(scope="session", autouse=True)
-def register_minimax():
-    """Register MiniMax-CN provider once for all tests."""
-    setup_minimax_provider()
-    setup_deepseek_model()
+def register_models_fixture():
+    """Register custom models once for all tests."""
+    register_custom_models()
 
 
 def on_event(event):
@@ -172,7 +83,7 @@ class TestMinimaxProvider:
         model = get_model("deepseek", "deepseek-v4-pro")
         assert model is not None
 
-        agent = Agent(get_api_key=get_deepseek_api_key)
+        agent = Agent(get_api_key=get_api_key)
         agent.set_model(model)
         agent.set_system_prompt("You are a helpful assistant. Respond in one sentence.")
 
@@ -186,7 +97,7 @@ class TestMinimaxProvider:
         agent.subscribe(on_event_with_collect)
 
         print("\n--- test_agent_with_minimax_model ---")
-        await agent.prompt("tell me your model version, and knowledge cut off time")
+        await agent.prompt("who is the president of American now")
         print("\n--- done ---")
 
         # Check that we got some text output
@@ -206,7 +117,7 @@ class TestMinimaxProvider:
         state = AgentState()
         initial_msg_count = len(state.messages)
 
-        agent = Agent(initial_state=state, get_api_key=get_minimax_api_key)
+        agent = Agent(initial_state=state, get_api_key=get_api_key)
         agent.set_model(model)
         agent.set_system_prompt("You are a helpful assistant.")
 
