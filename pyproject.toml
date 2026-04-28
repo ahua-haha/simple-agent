@@ -1,0 +1,18 @@
+[project]
+name = "pi-agent-cli"
+version = "0.1.0"
+description = "CLI application for building and running agents with pi-agent runtime"
+readme = "README.md"
+requires-python = ">=3.14"
+license = "MIT"
+dependencies = [
+    "pi-ai",
+    "pi-agent",
+    "pi-coding-agent",
+]
+
+[tool.uv.sources]
+pi-ai = { git = "https://github.com/vamsi/pi", branch = "main", subdirectory = "packages/pi-ai" }
+pi-agent = { git = "https://github.com/vamsi/pi", branch = "main", subdirectory = "packages/pi-agent" }
+pi-tui = { git = "https://github.com/vamsi/pi", branch = "main", subdirectory = "packages/pi-tui" }
+pi-coding-agent = { git = "https://github.com/vamsi/pi", branch = "main", subdirectory = "packages/pi-coding-agent" }
