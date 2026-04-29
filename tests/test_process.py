@@ -7,7 +7,8 @@ from dataclasses import dataclass
 
 from simple_agent import Process
 from pi.agent import Agent, AgentState
-from pi.ai import get_model
+from pi.ai import TextContent, get_model
+from simple_agent import NormalProcess
 
 
 @dataclass
@@ -53,6 +54,20 @@ class TestProcess:
     def test_process_has_abstract_process_method(self):
         """Process.process should be abstract."""
         assert getattr(Process.process, "__isabstractmethod__", False)
+
+
+    @pytest.mark.asyncio
+    async def test_normal_process(self):
+        state = AgentState()
+        # Add a user message asking for directory structure
+        state.messages.append(type('UserMessage', (), {
+            'role': 'user',
+            'content': [TextContent(text='Show me the directory structure of the current directory. Use ls and find tools.')]
+        })())
+        
+        np = NormalProcess('.')
+        await np.process(state)
+        
 
     @pytest.mark.asyncio
     async def test_concrete_process_process_returns_tuple(self):

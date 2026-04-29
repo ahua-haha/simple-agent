@@ -27,12 +27,18 @@ def on_event(event):
     """Print events in streaming mode."""
     if event.type == "message_update":
         ae = event.assistant_message_event
+        if ae.type == "thinking_start":
+            print("<thinking>", end="\n", flush=True)
+        if ae.type == "text_start":
+            print("<resp>", end="\n", flush=True)
+        if ae.type == "thinking_end":
+            print("\n</thinking>", end="\n", flush=True)
+        if ae.type == "text_end":
+            print("\n</resp>", end="\n", flush=True)
         if ae.type == "text_delta":
             print(ae.delta, end="", flush=True)
-        # elif ae.type == "thinking_delta":
-            # print(ae.delta, end="", flush=True)
-        elif ae.type == "tool_call_delta":
-            print(f"\n[tool call: {ae.name} → {ae.delta}]", end="", flush=True)
+        elif ae.type == "thinking_delta":
+            print(ae.delta, end="", flush=True)
     elif event.type == "tool_execution_start":
         print(f"\n[tool start: {event.tool_name}]", flush=True)
     elif event.type == "tool_execution_end":
