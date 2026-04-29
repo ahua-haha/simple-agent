@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from pi.agent import Agent
 from pi.ai import get_model
-from pi.agent.types import AgentState
+from pi.agent.types import AgentMessage, AgentState
 from pi.coding.core.tools import create_all_tools
 
 from simple_agent.process import Process
@@ -36,18 +36,18 @@ class NormalProcess(Process[None, None]):
         self.cwd = cwd or "."
         self._tools = create_all_tools(self.cwd)
 
-    def _create_agent(self, state: AgentState | None = None) -> Agent:
+    def _create_agent(self, messages: list[AgentMessage] | None = None) -> Agent:
         """Create an Agent with all built-in tools configured.
 
         Args:
-            state: Optional AgentState to initialize the agent with.
+            messages: Optional list of messages to initialize the agent state.
 
         Returns:
             Configured Agent instance with tools registered.
         """
-        
         register_custom_models()
         model = get_model("deepseek", "deepseek-v4-pro")
+
         agent = Agent(get_api_key=get_api_key)
         agent.set_tools(list(self._tools.values()))
         agent.set_model(model)
@@ -77,24 +77,23 @@ class NormalProcess(Process[None, None]):
         elif event.type == "agent_end":
             print("\n[agent done]", flush=True)
 
-    async def process(self, state: AgentState, input: None = None) -> tuple[AgentState, None]:
-        """Run the agent with the given prompt and stream output.
+    async def process(self, messages: list[AgentMessage], input: None = None) -> tuple[list[AgentMessage], None]:
+        """Run the agent with the given messages and stream output.
 
         Args:
-            state: Current AgentState (shared context, may be mutated)
+            messages: List of AgentMessage (conversation history)
             input: Ignored (None)
 
         Returns:
-            tuple of (updated_agent_state, None)
+            tuple of (updated_messages, None)
         """
         register_custom_models()
-        agent = self._create_agent(state)
+        agent = self._create_agent(messages)
         agent.subscribe(self._on_event)
 
         try:
-            # Get prompt from state messages if exists, otherwise use empty
-            await agent.prompt("show me the directory structure")
+            await agent.prompt("show the directory structure")
         except Exception as e:
             print(f"\n[error] {type(e).__name__}: {e}")
 
-        return state, None
+        return agent.state.messages, None

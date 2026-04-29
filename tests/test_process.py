@@ -58,15 +58,8 @@ class TestProcess:
 
     @pytest.mark.asyncio
     async def test_normal_process(self):
-        state = AgentState()
-        # Add a user message asking for directory structure
-        state.messages.append(type('UserMessage', (), {
-            'role': 'user',
-            'content': [TextContent(text='Show me the directory structure of the current directory. Use ls and find tools.')]
-        })())
-        
         np = NormalProcess('.')
-        await np.process(state)
+        await np.process([])
         
 
     @pytest.mark.asyncio
