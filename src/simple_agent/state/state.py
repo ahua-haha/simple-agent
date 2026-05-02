@@ -38,8 +38,8 @@ class TextResult:
     desc:str
     toolCallLogID: list[int]
 
-class SingleTurnTask:
-    intput: str
+class SingleRunTask:
+    input: str
     result: list[TextResult]
 
     message: list[AgentMessage]
