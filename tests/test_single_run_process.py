@@ -19,11 +19,7 @@ class TestSingleRunProcess:
     @pytest.mark.asyncio
     async def test_process_single_run_task(self):
         """SingleRunProcess.process should handle a SingleRunTask."""
-        task = SingleRunTask()
-        task.input = "show me the directory structure, and the main entry file content"
-        task.result = []
-        task.message = []
-        task.tasks = []
+        task = SingleRunTask(input="show me the directory structure, and the main entry file content")
         proc = SingleRunProcess()
         # Should complete without raising
         await proc.process(task)

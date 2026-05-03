@@ -37,6 +37,6 @@ class Task(BaseModel):
 
 class SingleRunTask(BaseModel):
     input: str
-    result: list[TextResult]
-    message: list[AgentMessage]
-    tasks: list[Task]
+    result: list[TextResult] = None
+    message: list[AgentMessage] = None
+    tasks: list[Task] = None

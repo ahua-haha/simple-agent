@@ -10,12 +10,6 @@ from pi.ai.types import TextContent
 from pi.agent import AgentTool, AgentToolResult, AgentToolUpdateCallback
 from pydantic import BaseModel, ValidationError
 
-@dataclass
-class CollectorToolResult:
-    success: bool
-    item: T | None = None
-    error: str | None = None
-
 T = TypeVar("T", bound=BaseModel)
 def parse_as(data: dict, model_class: type[T]) -> T | None:
     try:

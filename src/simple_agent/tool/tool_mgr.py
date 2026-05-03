@@ -42,7 +42,7 @@ class ToolMgr:
             id = len(self.records)
             res = _format(id, res)
             self.records.append(ToolExecMessage(
-                ToolCall(id=tool_call_id, arguments=params, name=tool.name), res
+                input=ToolCall(id=tool_call_id, arguments=params, name=tool.name), output=res
             ))
             return res
         tool.execute = execute
