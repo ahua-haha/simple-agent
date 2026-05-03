@@ -11,6 +11,9 @@ dependencies = [
     "pi-coding-agent",
 ]
 
+[project.scripts]
+tool-inspect = "simple_agent.tool.tool_inspect:main"
+
 [dependency-groups]
 dev = [
     "pytest>=8.0.0",

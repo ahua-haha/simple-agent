@@ -1,4 +1,4 @@
-# Python-generated files
+# Python generated files
 __pycache__/
 *.py[oc]
 build/
@@ -11,3 +11,6 @@ wheels/
 
 # OpenSpec
 openspec/
+
+# Tool log
+tool_log.jsonl

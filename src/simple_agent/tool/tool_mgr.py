@@ -1,4 +1,6 @@
 import asyncio
+import json
+import os
 from typing import Any
 
 from pi.ai import ToolCall
@@ -23,6 +25,8 @@ class ToolMgr:
     def __init__(self):
         self.tools: list[AgentTool] = []
         self.records: list[ToolExecMessage] = []
+        self._next_id: int = 0
+        self.load()
 
     def create_all_tools(self, cwd: str) -> list[AgentTool]:
         tools = list(create_all_tools(cwd).values())
@@ -67,3 +71,75 @@ class ToolMgr:
         collector.register_record_tool(wrapped_tool)
 
         return collector
+
+    def flush(self, path: str = "./tool_log.jsonl"):
+        """Append records to JSON Lines file and clear in-memory records.
+
+        Args:
+            path: Path to the JSON Lines log file
+        """
+        if not self.records:
+            return
+
+        # Ensure directory exists
+        dir_path = os.path.dirname(path)
+        if dir_path and not os.path.exists(dir_path):
+            os.makedirs(dir_path)
+
+        # Read existing line count to determine starting ID
+        start_id = self._next_id
+
+        # Write records as JSON Lines
+        with open(path, "a") as f:
+            for i, record in enumerate(self.records):
+                entry = {
+                    "id": start_id + i,
+                    "tool": record.input.name,
+                    "params": record.input.arguments,
+                    "content": record.output.content[0].text if record.output.content else "",
+                }
+                f.write(json.dumps(entry) + "\n")
+
+        # Update next_id counter
+        self._next_id = start_id + len(self.records)
+
+        # Clear records
+        self.records.clear()
+
+    def load(self, path: str = "./tool_log.jsonl"):
+        """Load records from JSON Lines file.
+
+        Args:
+            path: Path to the JSON Lines log file
+
+        Returns:
+            list of records loaded (can be used to reconstruct state if needed)
+        """
+        records = []
+        if not os.path.exists(path):
+            return records
+
+        with open(path, "r") as f:
+            for line in f:
+                line = line.strip()
+                if not line:
+                    continue
+                entry = json.loads(line)
+                # Reconstruct AgentToolResult
+                tool_call = ToolCall(
+                    id=entry.get("params", {}).get("_tool_call_id", ""),
+                    arguments=entry.get("params", {}),
+                    name=entry.get("tool", ""),
+                )
+                result = AgentToolResult(content=[])
+                if entry.get("content"):
+                    from pi.ai.types import TextContent
+                    result.content = [TextContent(text=entry["content"])]
+
+                records.append(ToolExecMessage(input=tool_call, output=result))
+
+                # Track highest ID to maintain counter
+                if entry.get("id", 0) >= self._next_id:
+                    self._next_id = entry["id"] + 1
+
+        return records

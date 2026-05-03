@@ -24,17 +24,18 @@ Each TextResult should have:
 class ExploreProcess:
     agent: Agent
     collector: Collector
+    tools_mgr: ToolMgr
 
 
     def __init__(self):
         register_custom_models()
         model = get_model("deepseek", "deepseek-v4-pro")
-        tools_mgr = ToolMgr()
-        self.collector = tools_mgr.create_collector()
+        self.tools_mgr = ToolMgr()
+        self.collector = self.tools_mgr.create_collector()
 
         agent = Agent(get_api_key=get_api_key)
         agent.set_model(model)
-        all_tools = tools_mgr.create_all_tools(".")
+        all_tools = self.tools_mgr.create_all_tools(".")
         all_tools.extend(self.collector.tools)
         agent.set_tools(all_tools)
         agent.set_system_prompt(SYSTEM_PROMPT)
@@ -70,4 +71,5 @@ class ExploreProcess:
         self.agent.subscribe(self.on_event)
         await self.agent.prompt(task.input)
         print(self.collector.item[0])
+        self.tools_mgr.flush()
         return
