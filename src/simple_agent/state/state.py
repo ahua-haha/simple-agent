@@ -12,7 +12,7 @@ from pi.ai.types import ToolCall
 
 class ToolExecMessage(BaseModel):
     input: ToolCall
-    output: AgentToolResult
+    output: str
 
 
 class TextResult(BaseModel):

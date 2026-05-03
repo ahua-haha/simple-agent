@@ -43,11 +43,11 @@ class ToolMgr:
             on_update: AgentToolUpdateCallback | None = None,
         ) -> AgentToolResult:
             res = await original(tool_call_id, params, cancel_event, on_update)
-            id = len(self.records)
-            res = _format(id, res)
             self.records.append(ToolExecMessage(
-                input=ToolCall(id=tool_call_id, arguments=params, name=tool.name), output=res
+                input=ToolCall(id=tool_call_id, arguments=params, name=tool.name), output=res.content[0].text
             ))
+            id = self._next_id + len(self.records)
+            res = _format(id, res)
             return res
         tool.execute = execute
         return tool
@@ -96,7 +96,7 @@ class ToolMgr:
                     "id": start_id + i,
                     "tool": record.input.name,
                     "params": record.input.arguments,
-                    "content": record.output.content[0].text if record.output.content else "",
+                    "content": record.output,
                 }
                 f.write(json.dumps(entry) + "\n")
 
@@ -131,10 +131,9 @@ class ToolMgr:
                     arguments=entry.get("params", {}),
                     name=entry.get("tool", ""),
                 )
-                result = AgentToolResult(content=[])
+                result = ""
                 if entry.get("content"):
-                    from pi.ai.types import TextContent
-                    result.content = [TextContent(text=entry["content"])]
+                    result = entry["content"]
 
                 records.append(ToolExecMessage(input=tool_call, output=result))
 
