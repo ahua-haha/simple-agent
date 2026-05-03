@@ -6,12 +6,12 @@ from pi.coding.core.tools import create_all_tools
 
 from simple_agent.process.process import Process
 from simple_agent.models import register_custom_models, get_api_key
-from simple_agent.state.state import SingleRunTask
+from simple_agent.state.state import Task
 from simple_agent.tool.tool_mgr import ToolMgr
 import time
 
 
-class SingleRunProcess:
+class ExploreProcess:
     agent: Agent
 
 
@@ -49,7 +49,7 @@ class SingleRunProcess:
         elif event.type == "agent_end":
             print("\n[agent done]", flush=True)
 
-    async def process(self, task: SingleRunTask):
+    async def process(self, task: Task):
         self.agent.reset()
         self.agent.replace_messages(task.message)
         self.agent.subscribe(self.on_event)

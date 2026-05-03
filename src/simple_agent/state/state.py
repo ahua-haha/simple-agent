@@ -5,14 +5,14 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Generic, TypeVar
 
-from pi.agent.types import AgentMessage
+from pi.agent.types import AgentMessage, AgentToolResult
 from pi.ai.types import AssistantMessage, ToolResultMessage, ToolCall
 
 
 @dataclass
 class ToolExecMessage:
     input: ToolCall
-    output: ToolResultMessage
+    output: AgentToolResult
 
 @dataclass
 class Task:
