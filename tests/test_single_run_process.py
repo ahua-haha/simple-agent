@@ -20,7 +20,7 @@ class TestSingleRunProcess:
     async def test_process_single_run_task(self):
         """SingleRunProcess.process should handle a SingleRunTask."""
         task = SingleRunTask()
-        task.input = "告诉我你的模型是什么，以及版本"
+        task.input = "show me the directory structure, and the main entry file content"
         task.result = []
         task.message = []
         task.tasks = []
