@@ -2,45 +2,41 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
 from typing import Generic, TypeVar
 
+from pydantic import BaseModel
+
 from pi.agent.types import AgentMessage, AgentToolResult
-from pi.ai.types import AssistantMessage, ToolResultMessage, ToolCall
+from pi.ai.types import ToolCall
 
 
-@dataclass
-class ToolExecMessage:
+class ToolExecMessage(BaseModel):
     input: ToolCall
     output: AgentToolResult
 
-@dataclass
-class Task:
-    input: str
-    result: list[TextResult]
 
-
-# @dataclass
-# class FileContentResult:
-#     desc:str
-#     filePath: str
-#     lineRanges: list[tuple[int, int]]
-#     toolCallLogID: list[int]
-
-# @dataclass
-# class ModifyResult:
-#     desc:str
-#     files: list[str]
-#     toolCallLogID: list[int]
-
-@dataclass
-class TextResult:
-    desc:str
+class TextResult(BaseModel):
+    desc: str
     toolCallLogID: list[int]
 
-class SingleRunTask:
+
+TEXT_RESULT_JSON_SCHEMA: dict = {
+    "type": "object",
+    "properties": {
+        "desc": {"type": "string", "description": "Description of the result"},
+        "toolCallLogID": {"type": "array", "items": {"type": "integer"}, "description": "List of tool call log IDs"},
+    },
+    "required": ["desc", "toolCallLogID"],
+}
+
+
+class Task(BaseModel):
     input: str
     result: list[TextResult]
 
+
+class SingleRunTask(BaseModel):
+    input: str
+    result: list[TextResult]
     message: list[AgentMessage]
     tasks: list[Task]

@@ -1,4 +1,3 @@
-
 import asyncio
 from typing import Any
 
@@ -7,7 +6,9 @@ from pi.agent import AgentTool, AgentToolResult, AgentToolUpdateCallback
 from pi.coding import create_all_tools
 
 
-from simple_agent.state.state import ToolExecMessage
+from simple_agent.state.state import ToolExecMessage, TextResult, TEXT_RESULT_JSON_SCHEMA
+from simple_agent.tool.collector import Collector
+
 
 def _format(id: int, result: AgentToolResult) -> AgentToolResult:
     orignal_text = result.content[0].text
@@ -20,7 +21,8 @@ class ToolMgr:
     records: list[ToolExecMessage]
 
     def __init__(self):
-        self.records = list()
+        self.tools: list[AgentTool] = []
+        self.records: list[ToolExecMessage] = []
 
     def create_all_tools(self, cwd: str) -> list[AgentTool]:
         tools = list(create_all_tools(cwd).values())
@@ -45,3 +47,23 @@ class ToolMgr:
             return res
         tool.execute = execute
         return tool
+
+    def create_collector(self) -> Collector:
+        """Create a Collector for TextResult with a registered tool.
+
+        Returns:
+            Collector instance with TextResult record tool registered
+        """
+        collector = Collector()
+
+        # Create and register the record tool for TextResult
+        tool = collector.create_record_tool(
+            model_class=TextResult,
+            name=f"record_textresult",
+            description="Record a TextResult instance with the tool call log ID referencing related tool executions",
+            parameters=TEXT_RESULT_JSON_SCHEMA,
+        )
+        wrapped_tool = self.wrap_tools(tool)
+        collector.register_record_tool(wrapped_tool)
+
+        return collector

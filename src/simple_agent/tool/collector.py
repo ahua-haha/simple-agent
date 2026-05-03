@@ -26,13 +26,18 @@ def parse_as(data: dict, model_class: type[T]) -> T | None:
         return None
 
 class Collector:
-    _item: list[Any]
+    def __init__(self):
+        self.item: list[Any] = []
+        self.tools: list[AgentTool] = []
 
     def add(self, item: Any):
-        self._item.append(item)
+        self.item.append(item)
 
     def clear(self):
-        self._item = []
+        self.item = []
+
+    def register_record_tool(self, tool : AgentTool):
+        self.tools.append(tool)
     
     def create_record_tool(self, model_class: type[T], name: str, description: str, parameters: dict[str, Any], label: str = "") -> AgentTool:
         async def execute(
