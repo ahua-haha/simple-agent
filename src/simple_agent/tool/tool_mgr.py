@@ -52,20 +52,13 @@ class ToolMgr:
         tool.execute = execute
         return tool
 
-    def create_collector(self) -> Collector:
-        """Create a Collector for TextResult with a registered tool.
-
-        Returns:
-            Collector instance with TextResult record tool registered
-        """
+    def create_collector(self, model_class: type, name: str, description: str, parameters: dict[str, Any]) -> Collector:
         collector = Collector()
-
-        # Create and register the record tool for TextResult
         tool = collector.create_record_tool(
-            model_class=TextResult,
-            name=f"record_textresult",
-            description="Record a TextResult instance with the tool call log ID referencing related tool executions",
-            parameters=TEXT_RESULT_JSON_SCHEMA,
+            model_class=model_class,
+            name=name,
+            description=description,
+            parameters=parameters,
         )
         wrapped_tool = self.wrap_tools(tool)
         collector.register_record_tool(wrapped_tool)

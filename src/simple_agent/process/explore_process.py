@@ -14,8 +14,9 @@ import time
 
 
 SYSTEM_PROMPT = """You are a helpful assistant. your job is to use the avaliable tools to explore and retrieval the infomation.
-
-IMPORTANT:When done, respond with only "FINISH". Do NOT generate verbose output.
+<important>
+When the task is complete and no further tool calls are required to satisfy the user's request, you MUST output the exact string '[[FINISH]]' and nothing else. Do not summarize the actions taken. Do not provide a closing statement. Just output the token
+</important>
 
 """
 
@@ -27,9 +28,15 @@ class ExploreProcess:
 
     def __init__(self):
         register_custom_models()
-        model = get_model("deepseek", "deepseek-v4-pro")
+        # model = get_model("deepseek", "deepseek-v4-pro")
+        model = get_model("minimax-cn", "MiniMax-M2.7")
         self.tools_mgr = ToolMgr()
-        self.collector = self.tools_mgr.create_collector()
+        self.collector = self.tools_mgr.create_collector(
+            model_class=TextResult,
+            name=f"record_textresult",
+            description="Record a TextResult instance with the tool call log ID referencing related tool executions",
+            parameters=TEXT_RESULT_JSON_SCHEMA,
+        )
 
         agent = Agent(get_api_key=get_api_key)
         agent.set_model(model)

@@ -7,7 +7,7 @@ from pi.ai import get_model
 from pi.agent.types import AgentMessage
 
 from simple_agent.models import register_custom_models, get_api_key
-from simple_agent.state.state import Task, SingleRunTask, TextResult
+from simple_agent.state.state import TEXT_RESULT_JSON_SCHEMA, Task, SingleRunTask, TextResult
 from simple_agent.tool.tool_mgr import ToolMgr
 from simple_agent.tool.collector import Collector
 
@@ -35,7 +35,12 @@ class CollectResultProcess:
         register_custom_models()
         model = get_model("deepseek", "deepseek-v4-pro")
         self.tools_mgr = ToolMgr()
-        self.collector = self.tools_mgr.create_collector()
+        self.collector = self.tools_mgr.create_collector(
+            model_class=TextResult,
+            name=f"record_textresult",
+            description="Record a TextResult instance with the tool call log ID referencing related tool executions",
+            parameters=TEXT_RESULT_JSON_SCHEMA,
+        )
 
         agent = Agent(get_api_key=get_api_key)
         agent.set_model(model)
