@@ -15,11 +15,7 @@ class TestExploreProcess:
     async def test_process_explore_task(self):
         """SingleRunProcess.process should handle a SingleRunTask."""
         task = Task
-        task.input = """use tool calls to show the directory structure, and the main entry file content
-<important>
-When the task is complete and no further tool calls are required to satisfy the user's request, you MUST output the exact string '[[FINISH]]' and nothing else. Do not summarize the actions taken. Do not provide a closing statement. Just output the token
-</important>
-        """
+        task.input = """use tool calls to show the directory structure, and the main entry file conten"""
         proc = ExploreProcess()
         # Should complete without raising
         await proc.process(task)

@@ -1,12 +1,15 @@
 
-from pi.agent import Agent
-from pi.ai import get_model
+import asyncio
+from typing import Any
+
+from pi.agent import Agent, AgentTool, AgentToolResult, AgentToolUpdateCallback
+from pi.ai import ToolCall, get_model
 from pi.agent.types import AgentMessage, AgentState
 from pi.coding.core.tools import create_all_tools
 
 from simple_agent.process.process import Process
 from simple_agent.models import register_custom_models, get_api_key
-from simple_agent.state.state import Task, TextResult
+from simple_agent.state.state import TEXT_RESULT_JSON_SCHEMA, Task, TextResult, StateClarification
 from simple_agent.tool.tool_mgr import ToolMgr
 from simple_agent.tool.collector import Collector
 from simple_agent.process.collect_result_process import CollectResultProcess
@@ -15,15 +18,27 @@ import time
 
 SYSTEM_PROMPT = """You are a helpful assistant. your job is to use the avaliable tools to explore and retrieval the infomation.
 <important>
-When the task is complete and no further tool calls are required to satisfy the user's request, you MUST output the exact string '[[FINISH]]' and nothing else. Do not summarize the actions taken. Do not provide a closing statement. Just output the token
+When the task is complete and no further tool calls are required, you MUST use 'determine_state' tool to determine the state BEFORE your final response.
 </important>
+
+<example>
+tool call 1 ...
+tool call 1 result ...
+tool call 2 ...
+tool call 2 result ...
+tool call 3 ...
+tool call 3 result ...
+
+Now the context infomation is complete. use 'determine_state' tool call to determine the state
+Final response: ...
+</example>
 
 """
 
 class ExploreProcess:
     agent: Agent
-    collector: Collector
     tools_mgr: ToolMgr
+    state_collector: Collector
 
 
     def __init__(self):
@@ -31,19 +46,55 @@ class ExploreProcess:
         # model = get_model("deepseek", "deepseek-v4-pro")
         model = get_model("minimax-cn", "MiniMax-M2.7")
         self.tools_mgr = ToolMgr()
-        self.collector = self.tools_mgr.create_collector(
-            model_class=TextResult,
-            name=f"record_textresult",
-            description="Record a TextResult instance with the tool call log ID referencing related tool executions",
-            parameters=TEXT_RESULT_JSON_SCHEMA,
-        )
+        self.create_state_clarify_collector()
+        self.wrap_tools()
 
         agent = Agent(get_api_key=get_api_key)
         agent.set_model(model)
         all_tools = self.tools_mgr.create_all_tools(".")
+        all_tools.extend(self.state_collector.tools)
         agent.set_tools(all_tools)
         agent.set_system_prompt(SYSTEM_PROMPT)
         self.agent = agent
+
+    def create_state_clarify_collector(self):
+        name = "determine_state"
+        description = "Determine the current state based on context. States: finished (task complete), error (task failed)"
+        tool_schema = {
+            "type": "object",
+            "properties": {
+                "state": {
+                    "type": "string",
+                    "description": "Available states:\n- finished: task complete\n- error: task failed",
+                    "enum": ["finished", "error"],
+                },
+                "reason": {
+                    "type": "string",
+                    "description": "Reason for choosing this state",
+                },
+            },
+            "required": ["state", "reason"],
+        }
+        self.state_collector = self.tools_mgr.create_collector(StateClarification, name, description, tool_schema)
+    
+    
+    def wrap_tools(self):
+        tool = self.state_collector.tools[0]
+        original = tool.execute
+        async def execute(
+            tool_call_id: str,
+            params: dict[str, Any],
+            cancel_event: asyncio.Event | None = None,
+            on_update: AgentToolUpdateCallback | None = None,
+        ) -> AgentToolResult:
+            res = await original(tool_call_id, params, cancel_event, on_update)
+            if not self.state_collector.item:
+                return res
+            state = self.state_collector.item[0].state
+            print(f"abort on state {state}")
+            self.agent.abort()
+            return res
+        tool.execute = execute
 
 
     def on_event(self, event):
