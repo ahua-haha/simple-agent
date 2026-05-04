@@ -21,8 +21,8 @@ class TestToolMgrFlush:
         """flush() should write records as JSON Lines."""
         mgr = ToolMgr()
         mgr.records.append(ToolExecMessage(
-            input=ToolCall(id="1", arguments={"a": 1}, name="tool_a"),
-            output=AgentToolResult(content=[TextContent(text="output_a")])
+            tool_call=ToolCall(id="1", arguments={"a": 1}, name="tool_a"),
+            raw_output=AgentToolResult(content=[TextContent(text="output_a")])
         ))
 
         with tempfile.NamedTemporaryFile(suffix=".jsonl", delete=False) as f:
@@ -46,8 +46,8 @@ class TestToolMgrFlush:
         """flush() should clear records after writing."""
         mgr = ToolMgr()
         mgr.records.append(ToolExecMessage(
-            input=ToolCall(id="1", arguments={}, name="test"),
-            output=AgentToolResult(content=[TextContent(text="test")])
+            tool_call=ToolCall(id="1", arguments={}, name="test"),
+            raw_output=AgentToolResult(content=[TextContent(text="test")])
         ))
 
         with tempfile.NamedTemporaryFile(suffix=".jsonl", delete=False) as f:
@@ -63,8 +63,8 @@ class TestToolMgrFlush:
         """flush() should update _next_id counter."""
         mgr = ToolMgr()
         mgr.records.append(ToolExecMessage(
-            input=ToolCall(id="1", arguments={}, name="test"),
-            output=AgentToolResult(content=[TextContent(text="test")])
+            tool_call=ToolCall(id="1", arguments={}, name="test"),
+            raw_output=AgentToolResult(content=[TextContent(text="test")])
         ))
 
         with tempfile.NamedTemporaryFile(suffix=".jsonl", delete=False) as f:
@@ -86,8 +86,8 @@ class TestToolMgrFlush:
 
         # Add a record first
         mgr.records.append(ToolExecMessage(
-            input=ToolCall(id="1", arguments={}, name="test"),
-            output=AgentToolResult(content=[TextContent(text="test")])
+            tool_call=ToolCall(id="1", arguments={}, name="test"),
+            raw_output=AgentToolResult(content=[TextContent(text="test")])
         ))
 
         try:
@@ -101,8 +101,8 @@ class TestToolMgrFlush:
         """flush() should append to existing file."""
         mgr = ToolMgr()
         mgr.records.append(ToolExecMessage(
-            input=ToolCall(id="1", arguments={}, name="tool1"),
-            output=AgentToolResult(content=[TextContent(text="result1")])
+            tool_call=ToolCall(id="1", arguments={}, name="tool1"),
+            raw_output=AgentToolResult(content=[TextContent(text="result1")])
         ))
 
         path = "/tmp/test_flush_append.jsonl"
@@ -114,8 +114,8 @@ class TestToolMgrFlush:
             mgr.flush(path)
             # Add more records
             mgr.records.append(ToolExecMessage(
-                input=ToolCall(id="2", arguments={}, name="tool2"),
-                output=AgentToolResult(content=[TextContent(text="result2")])
+                tool_call=ToolCall(id="2", arguments={}, name="tool2"),
+                raw_output=AgentToolResult(content=[TextContent(text="result2")])
             ))
             # Second flush
             mgr.flush(path)

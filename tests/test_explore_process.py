@@ -14,8 +14,10 @@ class TestExploreProcess:
     @pytest.mark.asyncio
     async def test_process_explore_task(self):
         """SingleRunProcess.process should handle a SingleRunTask."""
-        task = Task
-        task.input = """use tool calls to show the directory structure, and the main entry file conten"""
+        task = Task(
+            input="use tool calls to show the directory structure, and the main entry file conten",
+            message=[]
+        )
         proc = ExploreProcess()
         # Should complete without raising
         await proc.process(task)

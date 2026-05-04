@@ -4,9 +4,11 @@ from typing import Any
 
 from pi.agent import Agent, AgentTool, AgentToolResult, AgentToolUpdateCallback
 from pi.ai import ToolCall, get_model
+from pi.ai.types import AssistantMessage, ToolResultMessage
 from pi.agent.types import AgentMessage, AgentState
 from pi.coding.core.tools import create_all_tools
 
+from simple_agent.globals import TOOL_MGR
 from simple_agent.process.process import Process
 from simple_agent.models import register_custom_models, get_api_key
 from simple_agent.state.state import TEXT_RESULT_JSON_SCHEMA, Task, TextResult, StateClarification
@@ -14,6 +16,7 @@ from simple_agent.tool.tool_mgr import ToolMgr
 from simple_agent.tool.collector import Collector
 from simple_agent.process.collect_result_process import CollectResultProcess
 import time
+from pprint import pprint
 
 
 SYSTEM_PROMPT = """You are a helpful assistant. your job is to use the avaliable tools to explore and retrieval the infomation.
@@ -45,7 +48,7 @@ class ExploreProcess:
         register_custom_models()
         # model = get_model("deepseek", "deepseek-v4-pro")
         model = get_model("minimax-cn", "MiniMax-M2.7")
-        self.tools_mgr = ToolMgr()
+        self.tools_mgr = TOOL_MGR
         self.create_state_clarify_collector()
         self.wrap_tools()
 
@@ -120,16 +123,41 @@ class ExploreProcess:
         elif event.type == "agent_end":
             print("\n[agent done]", flush=True)
 
+    def prune_message(self, task: Task):
+        lastToolCall = task.message[-2:]
+        if isinstance(lastToolCall[0], AssistantMessage) and isinstance(lastToolCall[1], ToolResultMessage) and lastToolCall[1].tool_name == "determine_state":
+            print("prune last two determine state tool call")
+            del task.message[-2:]
+    
+    def format_task_message(self, task: Task):
+        scope_message = task.message[task.scope_index:]
+        tool_log_id = []
+        for res in task.result:
+            tool_log_id.extend(res.toolCallLogID)
+        pprint(tool_log_id)
+
+        messages = []
+        messages.append(scope_message[0])
+        messages.extend(self.tools_mgr.get_all_messages(tool_log_id))
+
+        task.message[task.scope_index:] = messages
+
     async def process(self, task: Task):
         self.agent.reset()
         # self.agent.replace_messages(task.message)
         self.agent.subscribe(self.on_event)
+        self.agent.replace_messages(task.message)
         await self.agent.prompt(task.input)
-        self.tools_mgr.flush()
         task.message = self.agent.state.messages
+        print(len(task.message))
+
+        self.prune_message(task)
 
         collectProc = CollectResultProcess()
         await collectProc.process(task)
+        self.format_task_message(task)
         print(task.result)
+
+        pprint(task.message)
 
         return

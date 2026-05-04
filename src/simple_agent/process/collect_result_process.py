@@ -6,6 +6,7 @@ from pi.agent import Agent
 from pi.ai import get_model
 from pi.agent.types import AgentMessage
 
+from simple_agent.globals import TOOL_MGR
 from simple_agent.models import register_custom_models, get_api_key
 from simple_agent.state.state import TEXT_RESULT_JSON_SCHEMA, Task, SingleRunTask, TextResult
 from simple_agent.tool.tool_mgr import ToolMgr
@@ -34,7 +35,7 @@ class CollectResultProcess:
     def __init__(self):
         register_custom_models()
         model = get_model("deepseek", "deepseek-v4-pro")
-        self.tools_mgr = ToolMgr()
+        self.tools_mgr = TOOL_MGR
         self.collector = self.tools_mgr.create_collector(
             model_class=TextResult,
             name=f"record_textresult",
@@ -86,16 +87,12 @@ class CollectResultProcess:
                   After processing, task.result will contain collected TextResults.
         """
         self.agent.reset()
-        self.agent.replace_messages(task.message)
+        messages  = task.message[task.scope_index:]
+        self.agent.replace_messages(messages)
         self.agent.subscribe(self.on_event)
 
-        # Prompt to trigger the result collection
         await self.agent.prompt("Please review the conversation history and record all useful results as TextResult using the record_textresult tool. When done, respond with only FINISH.")
 
-        # Wait for FINISH or agent to end
-        # The _finish_detected flag is set by on_event handler
-
-        # Transfer collected items to task.result
         if self.collector.item:
             task.result = list(self.collector.item)
 

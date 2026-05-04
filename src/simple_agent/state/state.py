@@ -11,8 +11,9 @@ from pi.ai.types import ToolCall
 
 
 class ToolExecMessage(BaseModel):
-    input: ToolCall
-    output: str
+    tool_call: ToolCall
+    raw_output: str
+    tool_result: AgentToolResult
 
 
 class TextResult(BaseModel):
@@ -32,8 +33,9 @@ TEXT_RESULT_JSON_SCHEMA: dict = {
 
 class Task(BaseModel):
     input: str
-    result: list[TextResult]
+    result: list[TextResult] = None
     message: list[AgentMessage] = None
+    scope_index: int = 0
 
 
 class SingleRunTask(BaseModel):

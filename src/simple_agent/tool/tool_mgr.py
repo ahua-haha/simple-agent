@@ -3,8 +3,8 @@ import json
 import os
 from typing import Any
 
-from pi.ai import ToolCall
-from pi.agent import AgentTool, AgentToolResult, AgentToolUpdateCallback
+from pi.ai import ToolCall, AssistantMessage, ToolResultMessage
+from pi.agent import AgentTool, AgentToolResult, AgentToolUpdateCallback, AgentMessage
 from pi.coding import create_all_tools
 
 
@@ -34,6 +34,28 @@ class ToolMgr:
             tool = self.wrap_tools(tool)
         return tools
 
+    def get_all_messages(self, log_id: list[int]) -> list[AgentMessage]:
+        res = []
+        log_id.sort()
+        for id in log_id:
+            idx = id - self._next_id
+            record = self.records[idx]
+            assistant_msg = AssistantMessage(
+                role="assistant",
+                content=[record.tool_call],
+                stop_reason="tool_use",
+            )
+            tool_result_msg = ToolResultMessage(
+                tool_call_id=record.tool_call.id,
+                tool_name=record.tool_call.name,
+                content=record.tool_result.content,
+                details=record.tool_result.details,
+                is_error=False,
+            )
+            res.extend([assistant_msg, tool_result_msg])
+
+        return res
+
     def wrap_tools(self, tool: AgentTool) -> AgentTool:
         original = tool.execute
         async def execute(
@@ -43,11 +65,13 @@ class ToolMgr:
             on_update: AgentToolUpdateCallback | None = None,
         ) -> AgentToolResult:
             res = await original(tool_call_id, params, cancel_event, on_update)
-            self.records.append(ToolExecMessage(
-                input=ToolCall(id=tool_call_id, arguments=params, name=tool.name), output=res.content[0].text
-            ))
+            raw_output = res.content[0].text
             id = self._next_id + len(self.records)
             res = _format(id, res)
+
+            self.records.append(ToolExecMessage(
+                tool_call=ToolCall(id=tool_call_id, arguments=params, name=tool.name), raw_output=raw_output, tool_result=res
+            ))
             return res
         tool.execute = execute
         return tool
@@ -87,9 +111,9 @@ class ToolMgr:
             for i, record in enumerate(self.records):
                 entry = {
                     "id": start_id + i,
-                    "tool": record.input.name,
-                    "params": record.input.arguments,
-                    "content": record.output,
+                    "tool": record.tool_call.name,
+                    "params": record.tool_call.arguments,
+                    "content": record.raw_output,
                 }
                 f.write(json.dumps(entry) + "\n")
 
@@ -128,7 +152,7 @@ class ToolMgr:
                 if entry.get("content"):
                     result = entry["content"]
 
-                records.append(ToolExecMessage(input=tool_call, output=result))
+                records.append(ToolExecMessage(tool_call=tool_call, raw_output=result, tool_result=AgentToolResult()))
 
                 # Track highest ID to maintain counter
                 if entry.get("id", 0) >= self._next_id:
