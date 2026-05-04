@@ -9,16 +9,14 @@ from simple_agent.models import register_custom_models, get_api_key
 from simple_agent.state.state import Task, TextResult
 from simple_agent.tool.tool_mgr import ToolMgr
 from simple_agent.tool.collector import Collector
+from simple_agent.process.collect_result_process import CollectResultProcess
 import time
 
 
-SYSTEM_PROMPT = """You are a helpful assistant. When responding to user requests, use the record_textresult tool to record your response instead of plain text.
+SYSTEM_PROMPT = """You are a helpful assistant. your job is to use the avaliable tools to explore and retrieval the infomation.
 
-Only record tool calls that contributed to the final result. Omit exploratory or trial-and-error tool calls that were dead ends.
+IMPORTANT:When done, respond with only "FINISH". Do NOT generate verbose output.
 
-Each TextResult should have:
-- desc: A brief description of the response
-- toolCallLogID: IDs of only the useful tool calls that contributed to this response (exclude failed attempts and intermediate exploration steps)
 """
 
 class ExploreProcess:
@@ -36,7 +34,6 @@ class ExploreProcess:
         agent = Agent(get_api_key=get_api_key)
         agent.set_model(model)
         all_tools = self.tools_mgr.create_all_tools(".")
-        all_tools.extend(self.collector.tools)
         agent.set_tools(all_tools)
         agent.set_system_prompt(SYSTEM_PROMPT)
         self.agent = agent
@@ -70,6 +67,11 @@ class ExploreProcess:
         # self.agent.replace_messages(task.message)
         self.agent.subscribe(self.on_event)
         await self.agent.prompt(task.input)
-        print(self.collector.item[0])
         self.tools_mgr.flush()
+        task.message = self.agent.state.messages
+
+        collectProc = CollectResultProcess()
+        await collectProc.process(task)
+        print(task.result)
+
         return

@@ -15,7 +15,7 @@ class TestExploreProcess:
     async def test_process_explore_task(self):
         """SingleRunProcess.process should handle a SingleRunTask."""
         task = Task
-        task.input = "show me the directory structure, and the main entry file content"
+        task.input = "what is the directory structure, and the main entry file content"
         proc = ExploreProcess()
         # Should complete without raising
         await proc.process(task)

@@ -33,6 +33,7 @@ TEXT_RESULT_JSON_SCHEMA: dict = {
 class Task(BaseModel):
     input: str
     result: list[TextResult]
+    message: list[AgentMessage] = None
 
 
 class SingleRunTask(BaseModel):
