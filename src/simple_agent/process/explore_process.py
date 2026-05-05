@@ -148,6 +148,7 @@ class ExploreProcess:
         self.agent.subscribe(self.on_event)
         self.agent.replace_messages(task.message)
         await self.agent.prompt(task.input)
+
         task.message = self.agent.state.messages
         print(len(task.message))
 
