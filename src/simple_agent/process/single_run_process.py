@@ -90,7 +90,7 @@ class SingleRunProcess:
         ) -> AgentToolResult:
             res = await original_task_execute(tool_call_id, params, cancel_event, on_update)
             self._sub_task_defined = True
-            print(f"sub-task defined: {params.get('input', '')[:50]}...")
+            print(f"sub-task defined: {params.get('input', '')}...")
             self.agent.abort()
             return res
         task_tool.execute = task_execute
@@ -113,9 +113,10 @@ class SingleRunProcess:
             elif ae.type == "thinking_delta":
                 print(ae.delta, end="", flush=True)
         elif event.type == "tool_execution_start":
-            print(f"\n[tool start: {event.tool_name}]", flush=True)
+            print(f"\n[tool: {event.tool_name}({event.args})]", flush=True)
         elif event.type == "tool_execution_end":
-            print(f"{event.result.content[0].text}")
+            text = event.result.content[0].text
+            print(f"{text[:100]}...\n")
         elif event.type == "agent_end":
             print("\n[agent done]", flush=True)
 
@@ -145,7 +146,7 @@ class SingleRunProcess:
                 # Create sub-task from collector
                 child_task = self.task_collector.item[-1]
                 # Copy parent messages to child (current messages at time of define_task call)
-                child_task.message = task.message
+                child_task.message = task.message[1:]
                 child_task.result = []
                 task.tasks.append(child_task)
 

@@ -1,25 +1,27 @@
 #!/usr/bin/env python3
-"""tool-inspect - CLI to inspect tool call results by ID."""
+"""tool-inspect - CLI to inspect tool call results by ID from SQLite database."""
 
 import argparse
-import json
-import os
 import sys
+from sqlmodel import Session, create_engine
+
+from simple_agent.tool.db import ToolCallRecord
 
 
 def main():
     parser = argparse.ArgumentParser(
-        description="Inspect tool call result by ID from tool_log.jsonl"
+        description="Inspect tool call result by ID from SQLite database"
     )
     parser.add_argument(
         "id",
         type=int,
-        help="Tool call ID to inspect",
+        nargs="?",
+        help="Tool call ID to inspect (required if not using --list)",
     )
     parser.add_argument(
         "--path",
-        default="./tool_log.jsonl",
-        help="Path to tool log file (default: ./tool_log.jsonl)",
+        default="./tool_log.db",
+        help="Path to SQLite database file (default: ./tool_log.db)",
     )
     parser.add_argument(
         "--list",
@@ -35,44 +37,37 @@ def main():
 
     args = parser.parse_args()
 
-    if not os.path.exists(args.path):
-        print(f"Error: Log file not found: {args.path}", file=sys.stderr)
-        sys.exit(1)
-
     if args.list:
-        # List recent tool calls
-        lines = []
-        with open(args.path, "r") as f:
-            for line in f:
-                line = line.strip()
-                if line:
-                    lines.append(line)
+        db_path = args.path
+        engine = create_engine(f"sqlite:///{db_path}")
 
-        # Show last N entries
-        for line in lines[-args.limit:]:
-            try:
-                entry = json.loads(line)
-                content_preview = entry.get("content", "")[:50]
-                if len(entry.get("content", "")) > 50:
+        with Session(engine) as session:
+            records = session.query(ToolCallRecord).order_by(
+                ToolCallRecord.id.desc()
+            ).limit(args.limit).all()
+            for record in records:
+                content_preview = (record.content or "")[:50]
+                if len(record.content or "") > 50:
                     content_preview += "..."
-                print(f"[{entry['id']}] {entry['tool']}: {content_preview}")
-            except json.JSONDecodeError:
-                continue
+                print(f"[{record.id}] {record.tool}: {content_preview}")
         return
 
+    # Require ID for non-list mode
+    if args.id is None:
+        parser.error("id is required when not using --list")
+
+    db_path = args.path
+    engine = create_engine(f"sqlite:///{db_path}")
+
     # Find and print content for specific ID
-    with open(args.path, "r") as f:
-        for line in f:
-            line = line.strip()
-            if not line:
-                continue
-            try:
-                entry = json.loads(line)
-                if entry.get("id") == args.id:
-                    sys.stdout.write(entry.get("content", ""))
-                    sys.exit(0)
-            except json.JSONDecodeError:
-                continue
+    with Session(engine) as session:
+        record = session.query(ToolCallRecord).filter(
+            ToolCallRecord.id == args.id
+        ).first()
+
+        if record:
+            sys.stdout.write(record.content or "")
+            sys.exit(0)
 
     # ID not found
     sys.exit(1)

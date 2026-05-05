@@ -117,9 +117,10 @@ class ExploreProcess:
             elif ae.type == "thinking_delta":
                 print(ae.delta, end="", flush=True)
         elif event.type == "tool_execution_start":
-            print(f"\n[tool start: {event.tool_name}]", flush=True)
+            print(f"\n[tool: {event.tool_name}({event.args})]", flush=True)
         elif event.type == "tool_execution_end":
-            print(f"{event.result.content[0].text}")
+            text = event.result.content[0].text
+            print(f"{text[:100]}...\n")
         elif event.type == "agent_end":
             print("\n[agent done]", flush=True)
 
@@ -157,8 +158,9 @@ class ExploreProcess:
         collectProc = CollectResultProcess()
         await collectProc.process(task)
         self.format_task_message(task)
-        print(task.result)
 
-        pprint(task.message)
+        for res in task.result:
+            desc = res.desc[:80] + "..." if len(res.desc) > 80 else res.desc
+            print(f"[TextResult] desc={desc}, toolLogId={res.toolCallLogID}")
 
         return
