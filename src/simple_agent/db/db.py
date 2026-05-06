@@ -9,7 +9,7 @@ from typing import Any
 from pi.ai import ToolCall, AssistantMessage, ToolResultMessage
 from pi.agent import AgentToolResult, AgentMessage
 from pi.ai.types import TextContent
-from sqlmodel import SQLModel, Field, Session, create_engine
+from sqlmodel import SQLModel, Field, Session, create_engine, select
 import sqlite3
 from pydantic import TypeAdapter
 
@@ -74,7 +74,7 @@ class Database:
         """
         with self._get_session() as session:
             # Get next ID
-            max_record = session.query(ToolCallRecord).order_by(ToolCallRecord.id.desc()).first()
+            max_record = session.exec(select(ToolCallRecord).order_by(ToolCallRecord.id.desc())).first()
             next_id = (max_record.id + 1) if max_record else 0
 
             record = ToolCallRecord(
@@ -89,7 +89,7 @@ class Database:
     def get_tool_call(self, id: int) -> ToolExecMessage | None:
         """Get a tool call record by ID."""
         with self._get_session() as session:
-            record = session.query(ToolCallRecord).filter(ToolCallRecord.id == id).first()
+            record = session.exec(select(ToolCallRecord).where(ToolCallRecord.id == id)).first()
             if not record:
                 return None
             return ToolExecMessage.model_validate_json(record.content)
@@ -99,9 +99,15 @@ class Database:
         if not ids:
             return []
         with self._get_session() as session:
-            records = session.query(ToolCallRecord).filter(ToolCallRecord.id.in_(ids)).all()
+            records = session.exec(select(ToolCallRecord).where(ToolCallRecord.id.in_(ids))).all()
             records.sort(key=lambda r: r.id)
             return [ToolExecMessage.model_validate_json(r.content) for r in records]
+
+    def list_tool_calls(self, limit: int = 10) -> list[ToolCallRecord]:
+        """List recent tool call records."""
+        with self._get_session() as session:
+            records = session.exec(select(ToolCallRecord).order_by(ToolCallRecord.id.desc()).limit(limit)).all()
+            return list(records)
 
     # --- Task operations ---
 
@@ -140,7 +146,7 @@ class Database:
         message_adapter = TypeAdapter(list[AgentMessage])
         result_adapter = TypeAdapter(list[TextResult])
         with self._get_session() as session:
-            record = session.query(TaskRecord).filter(TaskRecord.id == task_id).first()
+            record = session.exec(select(TaskRecord).where(TaskRecord.id == task_id)).first()
             if not record:
                 return None
             return {
@@ -164,10 +170,10 @@ class Database:
             List of dicts with task data
         """
         with self._get_session() as session:
-            query = session.query(TaskRecord).order_by(TaskRecord.id.desc()).limit(limit)
+            query = select(TaskRecord).order_by(TaskRecord.id.desc()).limit(limit)
             if type_filter:
-                query = query.filter(TaskRecord.type == type_filter)
-            records = query.all()
+                query = query.where(TaskRecord.type == type_filter)
+            records = session.exec(query).all()
             return [
                 {
                     "id": r.id,

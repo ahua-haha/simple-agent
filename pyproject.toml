@@ -12,7 +12,7 @@ dependencies = [
 ]
 
 [project.scripts]
-tool-inspect = "simple_agent.tool.tool_inspect:main"
+tool-inspect = "simple_agent.cli.tool_inspect:main"
 task-msg-log = "simple_agent.cli.task_msg_log:main"
 
 [dependency-groups]

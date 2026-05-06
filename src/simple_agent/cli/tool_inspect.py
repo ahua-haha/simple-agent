@@ -3,9 +3,8 @@
 
 import argparse
 import sys
-from sqlmodel import Session, create_engine
 
-from simple_agent.db.db import ToolCallRecord
+from simple_agent.db.db import Database
 
 
 def main():
@@ -21,7 +20,7 @@ def main():
     parser.add_argument(
         "--path",
         default="./data/tool_log.db",
-        help="Path to SQLite database file (default: ./tool_log.db)",
+        help="Path to SQLite database file (default: ./data/tool_log.db)",
     )
     parser.add_argument(
         "--list",
@@ -37,37 +36,27 @@ def main():
 
     args = parser.parse_args()
 
-    if args.list:
-        db_path = args.path
-        engine = create_engine(f"sqlite:///{db_path}")
+    db = Database(args.path)
 
-        with Session(engine) as session:
-            records = session.query(ToolCallRecord).order_by(
-                ToolCallRecord.id.desc()
-            ).limit(args.limit).all()
-            for record in records:
-                content_preview = (record.content or "")[:50]
-                if len(record.content or "") > 50:
-                    content_preview += "..."
-                print(f"[{record.id}] {record.tool}: {content_preview}")
+    if args.list:
+        records = db.list_tool_calls(args.limit)
+        for record in records:
+            content_preview = (record.content or "")[:50]
+            if len(record.content or "") > 50:
+                content_preview += "..."
+            print(f"[{record.id}] {record.tool}: {content_preview}")
         return
 
     # Require ID for non-list mode
     if args.id is None:
         parser.error("id is required when not using --list")
 
-    db_path = args.path
-    engine = create_engine(f"sqlite:///{db_path}")
-
     # Find and print content for specific ID
-    with Session(engine) as session:
-        record = session.query(ToolCallRecord).filter(
-            ToolCallRecord.id == args.id
-        ).first()
+    record = db.get_tool_call(args.id)
 
-        if record:
-            sys.stdout.write(record.content or "")
-            sys.exit(0)
+    if record:
+        sys.stdout.write(record.raw_output or "")
+        sys.exit(0)
 
     # ID not found
     sys.exit(1)
