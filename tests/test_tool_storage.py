@@ -8,7 +8,7 @@ import tempfile
 import pytest
 from sqlmodel import SQLModel
 
-from simple_agent.tool.db import Database, ToolCallRecord, TaskRecord
+from simple_agent.db.db import Database, ToolCallRecord, TaskRecord
 from simple_agent.state.state import ToolExecMessage
 from pi.ai import ToolCall
 

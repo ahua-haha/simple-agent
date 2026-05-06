@@ -14,6 +14,7 @@ from simple_agent.state.state import SingleRunTask, Task, TextResult, StateClari
 from simple_agent.tool.tool_mgr import ToolMgr
 from simple_agent.tool.collector import Collector
 from simple_agent.globals import TOOL_MGR
+from simple_agent.db.db import Database
 import time
 
 
@@ -40,12 +41,14 @@ class SingleRunProcess:
     tools_mgr: ToolMgr
     task_collector: Collector
     _sub_task_defined: bool
+    _db: Database
 
 
     def __init__(self):
         register_custom_models()
         model = get_model("deepseek", "deepseek-v4-pro")
         self.tools_mgr = TOOL_MGR
+        self._db = Database()
 
         self.create_task_collector()
         self.wrap_tools()
@@ -170,5 +173,14 @@ class SingleRunProcess:
 
             # No sub-task defined - agent gave final response, we're done
             break
+
+        # Save task to history
+        self._db.save_task(
+            task_type="single_run",
+            task_input=task.input,
+            messages=self.message,
+            results=task.result,
+            status="finished",
+        )
 
         return

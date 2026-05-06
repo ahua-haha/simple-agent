@@ -8,6 +8,7 @@ from pi.ai.types import AssistantMessage, ToolResultMessage
 from pi.agent.types import AgentMessage, AgentState
 from pi.coding.core.tools import create_all_tools
 
+from simple_agent.db.db import Database
 from simple_agent.globals import TOOL_MGR
 from simple_agent.process.process import Process
 from simple_agent.models import register_custom_models, get_api_key
@@ -42,6 +43,7 @@ class ExploreProcess:
     agent: Agent
     tools_mgr: ToolMgr
     state_collector: Collector
+    _db: Database
 
 
     def __init__(self):
@@ -49,6 +51,7 @@ class ExploreProcess:
         # model = get_model("deepseek", "deepseek-v4-pro")
         model = get_model("minimax-cn", "MiniMax-M2.7")
         self.tools_mgr = TOOL_MGR
+        self._db = Database()
         self.create_state_clarify_collector()
         self.wrap_tools()
 
@@ -161,5 +164,14 @@ class ExploreProcess:
         for res in task.result:
             desc = res.desc[:80] + "..." if len(res.desc) > 80 else res.desc
             print(f"[TextResult] desc={desc}, toolLogId={res.toolCallLogID}")
+
+        # Save task to history
+        self._db.save_task(
+            task_type="explore",
+            task_input=task.input,
+            messages=self.message,
+            results=task.result,
+            status="finished",
+        )
 
         return self.format_task_message(task)
