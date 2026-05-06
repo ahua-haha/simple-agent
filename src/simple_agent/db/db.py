@@ -122,7 +122,7 @@ class Database:
                 type=task_type,
                 input=task_input,
                 messages=message_adapter.dump_json(messages or []).decode("utf-8"),
-                result=result_adapter.dump_json(results or []).decode("utf-8"),
+                results=result_adapter.dump_json(results or []).decode("utf-8"),
                 status=status,
             )
             session.add(record)
