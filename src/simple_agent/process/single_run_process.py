@@ -3,7 +3,7 @@ import asyncio
 from typing import Any
 
 from pi.agent import Agent, AgentTool, AgentToolResult, AgentToolUpdateCallback
-from pi.ai import get_model
+from pi.ai import AssistantMessage, ToolResultMessage, get_model, UserMessage, TextContent
 from pi.agent.types import AgentMessage, AgentState
 from pi.coding.core.tools import create_all_tools
 
@@ -116,14 +116,28 @@ class SingleRunProcess:
             print(f"\n[tool: {event.tool_name}({event.args})]", flush=True)
         elif event.type == "tool_execution_end":
             text = event.result.content[0].text
-            print(f"{text[:100]}...\n")
         elif event.type == "agent_end":
             print("\n[agent done]", flush=True)
 
-    async def process(self, task: SingleRunTask):
+    async def _step(self, task: Task):
+        self.agent.replace_messages(self.message)
+        await self.agent.continue_()
+        self.message = self.agent.state.messages
+        self.prune_message()
+
+    def prune_message(self):
+        lastToolCall = self.message[-2:]
+        if isinstance(lastToolCall[0], AssistantMessage) and isinstance(lastToolCall[1], ToolResultMessage) and lastToolCall[1].tool_name == "define_task":
+            print("prune last two determine state tool call")
+            del self.message[-2:]
+
+    async def process(self, task: SingleRunTask, context: list[AgentMessage] = []) -> list[AgentMessage]:
         self.agent.reset()
-        self.agent.replace_messages(task.message or [])
         self.agent.subscribe(self.on_event)
+
+        index = len(context)
+        self.message = context
+        self.message.append(UserMessage(content=[TextContent(text=task.input)], timestamp=0))
 
         # Initialize task result and tasks list
         if task.result is None:
@@ -137,26 +151,19 @@ class SingleRunProcess:
             self.task_collector.clear()
             self._sub_task_defined = False
 
-            # Run agent - will abort if define_task is called
-            await self.agent.prompt(task.input)
-            task.message = self.agent.state.messages
-
+            await self._step(task)
             # Check if sub-task was defined
             if self._sub_task_defined and self.task_collector.item:
                 # Create sub-task from collector
                 child_task = self.task_collector.item[-1]
                 # Copy parent messages to child (current messages at time of define_task call)
-                child_task.message = task.message[1:]
                 child_task.result = []
                 task.tasks.append(child_task)
 
                 # Run child task via ExploreProcess
                 explore_proc = ExploreProcess()
-                await explore_proc.process(child_task)
-
-                # Merge child's result to parent
-                if child_task.result:
-                    task.result.extend(child_task.result)
+                msg = await explore_proc.process(child_task, self.message[index+1:])
+                self.message.extend(msg)
 
                 # Continue loop for next decision
                 continue

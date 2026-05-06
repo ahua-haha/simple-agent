@@ -20,7 +20,7 @@ def main():
     )
     parser.add_argument(
         "--path",
-        default="./tool_log.db",
+        default="./data/tool_log.db",
         help="Path to SQLite database file (default: ./tool_log.db)",
     )
     parser.add_argument(

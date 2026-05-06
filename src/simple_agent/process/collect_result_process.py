@@ -30,6 +30,7 @@ class CollectResultProcess:
     agent: Agent
     collector: Collector
     tools_mgr: ToolMgr
+    message: list[AgentMessage]
 
 
     def __init__(self):
@@ -42,6 +43,7 @@ class CollectResultProcess:
             description="Record a TextResult instance with the tool call log ID referencing related tool executions",
             parameters=TEXT_RESULT_JSON_SCHEMA,
         )
+        self.message = []
 
         agent = Agent(get_api_key=get_api_key)
         agent.set_model(model)
@@ -75,11 +77,16 @@ class CollectResultProcess:
         elif event.type == "tool_execution_start":
             print(f"\n[tool start: {event.tool_name}]", flush=True)
         elif event.type == "tool_execution_end":
-            print(f"{event.result.content[0].text}")
+            print()
         elif event.type == "agent_end":
             print("\n[agent done]", flush=True)
+    
+    async def _step(self, task: Task):
+        self.agent.replace_messages(self.message)
+        await self.agent.prompt("Please review the conversation history and record all useful results as TextResult using the record_textresult tool. When done, respond with only FINISH.")
+        self.message = self.agent.state.messages
 
-    async def process(self, task: Task | SingleRunTask):
+    async def process(self, task: Task, context: list[AgentMessage]) -> list[AgentMessage]:
         """Synthesize TextResults from task's message history.
 
         Args:
@@ -87,13 +94,13 @@ class CollectResultProcess:
                   After processing, task.result will contain collected TextResults.
         """
         self.agent.reset()
-        messages  = task.message[task.scope_index:]
-        self.agent.replace_messages(messages)
         self.agent.subscribe(self.on_event)
 
-        await self.agent.prompt("Please review the conversation history and record all useful results as TextResult using the record_textresult tool. When done, respond with only FINISH.")
+        index = len(context)
+        self.message = context
+        await self._step(task)
 
         if self.collector.item:
             task.result = list(self.collector.item)
 
-        return task
+        return self.message[index:]

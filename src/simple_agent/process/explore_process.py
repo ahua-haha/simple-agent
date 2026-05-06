@@ -120,47 +120,46 @@ class ExploreProcess:
             print(f"\n[tool: {event.tool_name}({event.args})]", flush=True)
         elif event.type == "tool_execution_end":
             text = event.result.content[0].text
-            print(f"{text[:100]}...\n")
         elif event.type == "agent_end":
             print("\n[agent done]", flush=True)
 
-    def prune_message(self, task: Task):
-        lastToolCall = task.message[-2:]
+    def prune_message(self):
+        lastToolCall = self.message[-2:]
         if isinstance(lastToolCall[0], AssistantMessage) and isinstance(lastToolCall[1], ToolResultMessage) and lastToolCall[1].tool_name == "determine_state":
             print("prune last two determine state tool call")
-            del task.message[-2:]
+            del self.message[-2:]
     
-    def format_task_message(self, task: Task):
-        scope_message = task.message[task.scope_index:]
+    def format_task_message(self, task: Task) -> list[AgentMessage]:
         tool_log_id = []
         for res in task.result:
             tool_log_id.extend(res.toolCallLogID)
         pprint(tool_log_id)
 
         messages = []
-        messages.append(scope_message[0])
         messages.extend(self.tools_mgr.get_all_messages(tool_log_id))
+        return messages
 
-        task.message[task.scope_index:] = messages
+    async def _step(self, task: Task):
+        self.agent.replace_messages(self.message)
+        await self.agent.prompt(task.input)
+        self.message = self.agent.state.messages
+        self.prune_message()
 
-    async def process(self, task: Task):
+    async def process(self, task: Task, context: list[AgentMessage]) -> list[AgentMessage]:
         self.agent.reset()
         # self.agent.replace_messages(task.message)
         self.agent.subscribe(self.on_event)
-        self.agent.replace_messages(task.message)
-        await self.agent.prompt(task.input)
+        index = len(context)
+        self.message = context
+        print(context)
 
-        task.message = self.agent.state.messages
-        print(len(task.message))
-
-        self.prune_message(task)
+        await self._step(task)
 
         collectProc = CollectResultProcess()
-        await collectProc.process(task)
-        self.format_task_message(task)
+        await collectProc.process(task, self.message[index:])
 
         for res in task.result:
             desc = res.desc[:80] + "..." if len(res.desc) > 80 else res.desc
             print(f"[TextResult] desc={desc}, toolLogId={res.toolCallLogID}")
 
-        return
+        return self.format_task_message(task)

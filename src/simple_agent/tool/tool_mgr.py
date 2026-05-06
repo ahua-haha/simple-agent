@@ -10,7 +10,7 @@ from pi.coding import create_all_tools
 
 from simple_agent.state.state import TextResult, TEXT_RESULT_JSON_SCHEMA, ToolExecMessage
 from simple_agent.tool.collector import Collector
-from simple_agent.tool.db import Database
+from simple_agent.db.db import Database
 
 
 def _format(id: int, result: AgentToolResult) -> AgentToolResult:

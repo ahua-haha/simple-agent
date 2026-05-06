@@ -34,14 +34,11 @@ TEXT_RESULT_JSON_SCHEMA: dict = {
 class Task(BaseModel):
     input: str
     result: list[TextResult] = None
-    message: list[AgentMessage] = None
-    scope_index: int = 0
 
 
 class SingleRunTask(BaseModel):
     input: str
     result: list[TextResult] = None
-    message: list[AgentMessage] = None
     tasks: list[Task] = None
 
 def generate_state_schema(state_options: dict[str, str]) -> tuple[str, dict[str, Any]]:

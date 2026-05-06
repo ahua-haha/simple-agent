@@ -16,6 +16,7 @@ class TestSingleRunProcess:
         """SingleRunProcess.process should handle a SingleRunTask."""
         task = SingleRunTask(
             input="summarize what this project do, what the core module do",
+            message=[]
         )
         proc = SingleRunProcess()
         # Should complete without raising
