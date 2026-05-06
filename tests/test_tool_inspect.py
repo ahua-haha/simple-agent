@@ -9,7 +9,7 @@ import tempfile
 import pytest
 from sqlmodel import Session, create_engine
 
-from simple_agent.tool.db import ToolCallRecord
+from simple_agent.db.db import ToolCallRecord
 
 
 class TestToolInspect:

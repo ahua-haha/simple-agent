@@ -46,7 +46,7 @@ class SingleRunProcess:
 
     def __init__(self):
         register_custom_models()
-        model = get_model("deepseek", "deepseek-v4-pro")
+        model = get_model("minimax-cn", "MiniMax-M2.7")
         self.tools_mgr = TOOL_MGR
         self._db = Database()
 

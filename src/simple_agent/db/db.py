@@ -7,12 +7,14 @@ import time
 from typing import Any
 
 from pi.ai import ToolCall, AssistantMessage, ToolResultMessage
-from pi.agent import AgentToolResult
+from pi.agent import AgentToolResult, AgentMessage
 from pi.ai.types import TextContent
 from sqlmodel import SQLModel, Field, Session, create_engine
 import sqlite3
+from pydantic import TypeAdapter
 
-from simple_agent.state.state import ToolExecMessage
+
+from simple_agent.state.state import TextResult, ToolExecMessage
 
 
 class ToolCallRecord(SQLModel, table=True):
@@ -113,12 +115,14 @@ class Database:
             results: List of TextResult objects (serialized to JSON)
             status: Task status ('finished', 'error', etc.)
         """
+        message_adapter = TypeAdapter(list[AgentMessage])
+        result_adapter = TypeAdapter(list[TextResult])
         with self._get_session() as session:
             record = TaskRecord(
                 type=task_type,
                 input=task_input,
-                messages=json.dumps([m.model_dump() for m in messages]) if messages else None,
-                results=json.dumps([r.model_dump() for r in results]) if results else None,
+                messages=message_adapter.dump_json(messages or []).decode("utf-8"),
+                result=result_adapter.dump_json(results or []).decode("utf-8"),
                 status=status,
             )
             session.add(record)
@@ -133,6 +137,8 @@ class Database:
         Returns:
             Dict with task data or None if not found
         """
+        message_adapter = TypeAdapter(list[AgentMessage])
+        result_adapter = TypeAdapter(list[TextResult])
         with self._get_session() as session:
             record = session.query(TaskRecord).filter(TaskRecord.id == task_id).first()
             if not record:
@@ -141,8 +147,8 @@ class Database:
                 "id": record.id,
                 "type": record.type,
                 "input": record.input,
-                "messages": json.loads(record.messages) if record.messages else [],
-                "results": json.loads(record.results) if record.results else [],
+                "messages": message_adapter.validate_json(record.messages or "[]"),
+                "results": result_adapter.validate_json(record.results or "[]"),
                 "status": record.status,
                 "created_at": record.created_at,
             }
