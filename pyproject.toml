@@ -9,6 +9,7 @@ dependencies = [
     "pi-ai",
     "pi-agent",
     "pi-coding-agent",
+    "gitpython",
 ]
 
 [project.scripts]

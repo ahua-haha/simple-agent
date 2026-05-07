@@ -1,0 +1,61 @@
+import os
+from git import Repo, GitCommandError
+
+class ShadowGitAuditor:
+    def __init__(self, project_root, shadow_meta_dir):
+        """
+        :param project_root: The actual source code directory.
+        :param shadow_meta_dir: Where the 'ghost' .git and indices will live.
+        """
+        self.project_root = os.path.abspath(project_root)
+        self.shadow_dir = os.path.abspath(shadow_meta_dir)
+        self.shadow_git_dir = os.path.join(self.shadow_dir, "ghost_repo")
+        self.index_file = os.path.join(self.shadow_dir, "shadow.index")
+        
+        os.makedirs(self.shadow_dir, exist_ok=True)
+        
+        # Initialize a bare repo to serve as our private object database
+        if not os.path.exists(self.shadow_git_dir):
+            self.repo = Repo.init(self.shadow_git_dir, bare=True)
+        else:
+            self.repo = Repo(self.shadow_git_dir)
+
+        # Ensure the shadow repo doesn't track the actual .git folder
+        self._exclude_real_git()
+
+    def _exclude_real_git(self):
+        exclude_path = os.path.join(self.shadow_git_dir, "info", "exclude")
+        os.makedirs(os.path.dirname(exclude_path), exist_ok=True)
+        with open(exclude_path, "w") as f:
+            f.write(".git/\n")
+
+    def _get_env(self):
+        """Standard environment for isolated plumbing operations."""
+        return {
+            "GIT_DIR": self.shadow_git_dir,
+            "GIT_WORK_TREE": self.project_root,
+            "GIT_INDEX_FILE": self.index_file
+        }
+
+    def take_snapshot(self):
+        """
+        Stages all non-ignored files and records the directory structure.
+        :return: SHA-1 Tree Hash
+        """
+        env = self._get_env()
+        try:
+            with self.repo.git.custom_environment(**env):
+                # Git automatically respects .gitignore in project_root
+                self.repo.git.add(A=True)
+                # 'write-tree' creates the snapshot hash
+                return self.repo.git.write_tree()
+        except GitCommandError as e:
+            print(f"Snapshot error: {e}")
+            return None
+
+    def get_diff(self, old_hash, new_hash):
+        """Compares two Tree Hashes and returns the patch."""
+        env = self._get_env()
+        with self.repo.git.custom_environment(**env):
+            # diff-tree is the plumbing command for comparing tree objects
+            return self.repo.git.diff(old_hash, new_hash)
