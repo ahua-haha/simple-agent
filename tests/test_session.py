@@ -26,14 +26,14 @@ class TestSessionInit:
             session = Session("test", base_dir=tmpdir)
             assert session.messages == []
             assert session.runs == []
-            assert session.commit_data is None
+            assert session.commit_data == []
 
     def test_create_new(self, tmpdir):
         """Calling Session() creates a new one when no JSON file exists."""
         session = Session("test-session", base_dir=str(tmpdir))
         assert session.runs == []
         assert session.messages == []
-        assert session.commit_data is None
+        assert session.commit_data == []
 
     def test_load_existing_session(self, tmpdir):
         """Session loads existing JSON file."""
@@ -51,7 +51,7 @@ class TestSessionInit:
         session = Session("test-session", base_dir=str(tmpdir))
         assert session.messages == []
         assert session.runs == []
-        assert session.commit_data is None
+        assert session.commit_data == []
         assert session._created_at == 1000.0
 
 
@@ -117,8 +117,8 @@ class TestSessionCommit:
         assert raw["name"] == "test"
         assert raw["messages"] == []
         assert raw["runs"] == []
-        assert raw["commit_data"]["extracted_instructions"] == []
-        assert raw["commit_data"]["aggregated_results"] == []
+        assert raw["commit_data"][0]["extracted_instructions"] == []
+        assert raw["commit_data"][0]["aggregated_results"] == []
 
     @requires_api_key
     @pytest.mark.asyncio
@@ -132,7 +132,7 @@ class TestSessionCommit:
         assert len(session2.messages) > 0
         assert len(session2.runs) == 1
         assert session2.runs[0].input == "list files"
-        assert session2.commit_data is not None
+        assert len(session2.commit_data) == 1
 
     @requires_api_key
     @pytest.mark.asyncio
@@ -175,10 +175,10 @@ class TestSessionCommit:
         session = Session("test", base_dir=str(tmpdir))
         await session.commit()
 
-        assert session.commit_data is not None
-        assert isinstance(session.commit_data, CommitData)
-        assert session.commit_data.extracted_instructions == []
-        assert session.commit_data.aggregated_results == []
+        assert len(session.commit_data) == 1
+        assert isinstance(session.commit_data[0], CommitData)
+        assert session.commit_data[0].extracted_instructions == []
+        assert session.commit_data[0].aggregated_results == []
 
     @requires_api_key
     @pytest.mark.asyncio
@@ -188,8 +188,8 @@ class TestSessionCommit:
         await session.commit()
 
         session2 = Session("test", base_dir=str(tmpdir))
-        assert session2.commit_data is not None
-        assert session2.commit_data.extracted_instructions == []
+        assert len(session2.commit_data) == 1
+        assert session2.commit_data[0].extracted_instructions == []
 
 
 class TestSessionListSessions:

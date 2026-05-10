@@ -23,21 +23,46 @@ from simple_agent.tool.tool_mgr import ToolMgr
 from simple_agent.tool.collector import Collector
 
 
-SYSTEM_PROMPT = """You are a result aggregator. Review the FULL session history spanning multiple runs.
+INSTRUCTION_SYSTEM_PROMPT = """You are an instruction extractor. Review the conversation history
+and call 'extract_instruction' for each distinct user instruction you find.
 
-FIRST: Call 'extract_instruction' for each user instruction you find in the conversation.
-THEN: Call 'record_textresult' to record final outcomes across all runs.
-
-Focus on WHAT was accomplished, not HOW. Omit intermediate process details.
-Use bash commands like tool-inspect, grep, head to inspect tool results when needed.
+Each user message in the conversation represents one instruction from the user.
+Extract each one using the extract_instruction tool.
 
 Examples:
 - extract_instruction(instruction="explore the project structure")
 - extract_instruction(instruction="add tests for the db module")
-- record_textresult(desc="Project has 3 core modules: process, state, tool", toolCallLogID=[1,2,5])
 
-When done, respond with only FINISH. Do NOT generate verbose output.
-"""
+When you have extracted ALL instructions, call extract_instruction one final time and stop."""
+
+
+COLLECT_RESULT_SYSTEM_PROMPT = """You are a result aggregator. Review the FULL session history.
+
+Based on the user instructions that were extracted, identify what was accomplished
+for each instruction. Focus on WHAT was accomplished, not HOW.
+
+Use bash commands like tool-inspect, grep, head to inspect tool results when needed,
+and call 'record_textresult' for each final outcome.
+
+Example:
+- record_textresult(desc="Project has 3 core modules: process, state, tool", toolCallLogID=[1,2,5])
+- record_textresult(desc="Test suite covers 5 modules with 48 tests", toolCallLogID=[10,12])
+
+When done, respond with only FINISH. Do NOT generate verbose output."""
+
+
+INSTRUCTION_USER_PROMPT = """Review the conversation history and extract each user instruction
+using the extract_instruction tool. Make sure to extract ALL user instructions found in the history."""
+
+
+COLLECT_RESULT_USER_PROMPT = """Review the FULL session conversation history.
+The following user instructions were identified for this session:
+{instructions}
+
+For each instruction, identify what was accomplished and record the final outcomes
+using record_textresult. Omit intermediate process steps.
+Use tool-inspect to verify tool call results when needed.
+When done, respond with only FINISH."""
 
 
 class CommitCollectResultProcess:
@@ -69,16 +94,10 @@ class CommitCollectResultProcess:
         )
         self.message = []
 
+        self.wrap_tools()
+
         agent = Agent(get_api_key=get_api_key)
         agent.set_model(model)
-
-        bash_tools = self.tools_mgr.create_all_tools(".")
-        all_tools = bash_tools
-        all_tools.extend(self.instruction_collector.tools)
-        all_tools.extend(self.result_collector.tools)
-
-        agent.set_tools(all_tools)
-        agent.set_system_prompt(SYSTEM_PROMPT)
         self.agent = agent
 
     def wrap_tools(self):
@@ -93,10 +112,39 @@ class CommitCollectResultProcess:
             res = await original(tool_call_id, params, cancel_event, on_update)
             if not self.instruction_collector.item:
                 return res
-            print("pause on instruction extracted")
+            print("abort on instruction extracted")
             self.agent.abort()
             return res
         tool.execute = execute
+
+    def format_result_message(self) -> list[AgentMessage]:
+        from pi.ai.types import UserMessage, TextContent
+
+        result: list[AgentMessage] = []
+
+        # 1. UserMessage with aggregated instructions
+        instructions = self.commit_data.extracted_instructions
+        instructions_text = "\n".join(f"- {i}" for i in instructions) if instructions else "(none)"
+        result.append(UserMessage(
+            content=[TextContent(text=f"Session instructions:\n{instructions_text}")],
+            timestamp=0,
+        ))
+
+        # 2. Recorded tool calls and their results
+        tool_log_ids: list[int] = []
+        for tr in self.commit_data.aggregated_results:
+            tool_log_ids.extend(tr.toolCallLogID)
+        result.extend(self.tools_mgr.get_all_messages(tool_log_ids))
+
+        # 3. Each TextResult as an individual AssistantMessage
+        from pi.ai.types import AssistantMessage
+        for tr in self.commit_data.aggregated_results:
+            ids = ", ".join(str(i) for i in tr.toolCallLogID) if tr.toolCallLogID else "none"
+            result.append(AssistantMessage(
+                content=[TextContent(text=f"{tr.desc} [toolCallLogID: {ids}]")],
+            ))
+
+        return result
 
     @property
     def commit_data(self) -> CommitData:
@@ -138,8 +186,9 @@ class CommitCollectResultProcess:
         elif event.type == "agent_end":
             print("\n[agent done]", flush=True)
 
-    async def _step(self, task: Task, system_prompt: str, user_prompt: str):
+    async def _step(self, system_prompt: str, tool_list: list, user_prompt: str):
         self.agent.set_system_prompt(system_prompt)
+        self.agent.set_tools(tool_list)
         self.agent.replace_messages(self.message)
         await self.agent.prompt(user_prompt)
         self.message = self.agent.state.messages
@@ -151,7 +200,31 @@ class CommitCollectResultProcess:
         index = len(context)
         self.message = context
 
-        await self._step(task, SYSTEM_PROMPT)
+        # Phase 1: Extract user instructions
+        self.instruction_collector.clear()
+        phase1_tools = self.tools_mgr.create_all_tools(".")
+        phase1_tools.extend(self.instruction_collector.tools)
+
+        await self._step(
+            system_prompt=INSTRUCTION_SYSTEM_PROMPT,
+            tool_list=phase1_tools,
+            user_prompt=INSTRUCTION_USER_PROMPT,
+        )
+
+        # Build instructions text for phase 2 prompt
+        instructions = self.commit_data.extracted_instructions
+        instructions_text = "\n".join(f"- {i}" for i in instructions) if instructions else "(none)"
+
+        # Phase 2: Collect results based on extracted instructions
+        self.result_collector.clear()
+        phase2_tools = self.tools_mgr.create_all_tools(".")
+        phase2_tools.extend(self.result_collector.tools)
+
+        await self._step(
+            system_prompt=COLLECT_RESULT_SYSTEM_PROMPT,
+            tool_list=phase2_tools,
+            user_prompt=COLLECT_RESULT_USER_PROMPT.format(instructions=instructions_text),
+        )
 
         if self.result_collector.item:
             task.result = [
@@ -166,4 +239,4 @@ class CommitCollectResultProcess:
             status="finished",
         )
 
-        return self.message[index:]
+        return self.format_result_message()

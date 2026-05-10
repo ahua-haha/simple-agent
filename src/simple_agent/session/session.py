@@ -16,7 +16,7 @@ from simple_agent.state.state import CommitData, RunRecord, SessionData, SingleR
 class Session:
     messages: list[AgentMessage]
     runs: list[RunRecord]
-    commit_data: CommitData | None
+    commit_data: list[CommitData]
     _name: str
     _base_dir: str
     _created_at: float
@@ -32,7 +32,7 @@ class Session:
         else:
             self.messages = []
             self.runs = []
-            self.commit_data = None
+            self.commit_data = []
 
     def _filepath(self) -> str:
         return os.path.join(self._base_dir, f"{self._name}.json")
@@ -69,9 +69,10 @@ class Session:
         task = Task(input="")
 
         proc = CommitCollectResultProcess()
-        await proc.process(task, self.messages)
+        commit_msgs = await proc.process(task, self.messages)
 
-        self.commit_data = proc.commit_data
+        self.commit_data.append(proc.commit_data)
+        self.messages.extend(commit_msgs)
 
         # Persist to JSON
         os.makedirs(self._base_dir, exist_ok=True)

@@ -55,7 +55,7 @@ class SessionData(BaseModel):
     name: str
     messages: list[AgentMessage]
     runs: list[RunRecord]
-    commit_data: "CommitData | None" = None
+    commit_data: list["CommitData"] = []
     created_at: float
     updated_at: float
 

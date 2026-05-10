@@ -8,7 +8,8 @@ import pytest
 
 from simple_agent.process.commit_collect_result_process import (
     CommitCollectResultProcess,
-    SYSTEM_PROMPT,
+    INSTRUCTION_SYSTEM_PROMPT,
+    COLLECT_RESULT_SYSTEM_PROMPT,
 )
 from simple_agent.state.state import Task
 
@@ -47,21 +48,21 @@ class TestCommitCollectResultProcess:
         assert cd.extracted_instructions == []
         assert cd.aggregated_results == []
 
-    def test_system_prompt_mentions_extract_instruction(self):
-        """SYSTEM_PROMPT should mention extract_instruction."""
-        assert "extract_instruction" in SYSTEM_PROMPT
+    def test_instruction_prompt_mentions_extract_instruction(self):
+        """INSTRUCTION_SYSTEM_PROMPT should mention extract_instruction."""
+        assert "extract_instruction" in INSTRUCTION_SYSTEM_PROMPT
 
-    def test_system_prompt_mentions_aggregate(self):
-        """SYSTEM_PROMPT should mention aggregation."""
-        assert "aggregat" in SYSTEM_PROMPT.lower()
+    def test_collect_result_prompt_mentions_record_textresult(self):
+        """COLLECT_RESULT_SYSTEM_PROMPT should mention record_textresult."""
+        assert "record_textresult" in COLLECT_RESULT_SYSTEM_PROMPT
 
-    def test_system_prompt_mentions_tool_inspect(self):
-        """SYSTEM_PROMPT should mention tool-inspect."""
-        assert "tool-inspect" in SYSTEM_PROMPT
+    def test_collect_result_prompt_mentions_tool_inspect(self):
+        """COLLECT_RESULT_SYSTEM_PROMPT should mention tool-inspect."""
+        assert "tool-inspect" in COLLECT_RESULT_SYSTEM_PROMPT
 
-    def test_system_prompt_mentions_finish(self):
-        """SYSTEM_PROMPT should mention FINISH."""
-        assert "FINISH" in SYSTEM_PROMPT
+    def test_collect_result_prompt_mentions_finish(self):
+        """COLLECT_RESULT_SYSTEM_PROMPT should mention FINISH."""
+        assert "FINISH" in COLLECT_RESULT_SYSTEM_PROMPT
 
     @requires_api_key
     @pytest.mark.asyncio
