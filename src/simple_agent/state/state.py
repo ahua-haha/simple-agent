@@ -55,8 +55,27 @@ class SessionData(BaseModel):
     name: str
     messages: list[AgentMessage]
     runs: list[RunRecord]
+    commit_data: "CommitData | None" = None
     created_at: float
     updated_at: float
+
+
+class CommitData(BaseModel):
+    extracted_instructions: list[str]
+    aggregated_results: list[TextResult]
+
+
+class ExtractedInstruction(BaseModel):
+    instruction: str
+
+
+EXTRACTED_INSTRUCTION_JSON_SCHEMA: dict = {
+    "type": "object",
+    "properties": {
+        "instruction": {"type": "string", "description": "A user instruction extracted from the session history"},
+    },
+    "required": ["instruction"],
+}
 
 def generate_state_schema(state_options: dict[str, str]) -> tuple[str, dict[str, Any]]:
     """Generate a tool schema for state clarification.

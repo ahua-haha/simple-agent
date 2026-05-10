@@ -2,21 +2,21 @@
 
 from __future__ import annotations
 
-import json
 import os
 import tempfile
 import time
 
 from pi.agent.types import AgentMessage
-from pydantic import TypeAdapter
 
 from simple_agent.process.single_run_process import SingleRunProcess
-from simple_agent.state.state import RunRecord, SessionData, SingleRunTask
+from simple_agent.process.commit_collect_result_process import CommitCollectResultProcess
+from simple_agent.state.state import CommitData, RunRecord, SessionData, SingleRunTask, Task
 
 
 class Session:
     messages: list[AgentMessage]
     runs: list[RunRecord]
+    commit_data: CommitData | None
     _name: str
     _base_dir: str
     _created_at: float
@@ -32,6 +32,7 @@ class Session:
         else:
             self.messages = []
             self.runs = []
+            self.commit_data = None
 
     def _filepath(self) -> str:
         return os.path.join(self._base_dir, f"{self._name}.json")
@@ -41,6 +42,7 @@ class Session:
             data = SessionData.model_validate_json(f.read())
         self.messages = data.messages
         self.runs = data.runs
+        self.commit_data = data.commit_data
         self._created_at = data.created_at
 
     async def run(self, user_input: str) -> SingleRunTask:
@@ -63,13 +65,22 @@ class Session:
         self.runs.append(record)
         return task
 
-    def commit(self) -> str:
+    async def commit(self) -> str:
+        task = Task(input="")
+
+        proc = CommitCollectResultProcess()
+        await proc.process(task, self.messages)
+
+        self.commit_data = proc.commit_data
+
+        # Persist to JSON
         os.makedirs(self._base_dir, exist_ok=True)
 
         model = SessionData(
             name=self._name,
             messages=self.messages,
             runs=self.runs,
+            commit_data=self.commit_data,
             created_at=self._created_at,
             updated_at=time.time(),
         )
