@@ -126,13 +126,22 @@ class SingleRunProcess:
             print("prune last two determine state tool call")
             del self.message[-2:]
 
+    def format_result_message(self, task: SingleRunTask) -> list[AgentMessage]:
+        result = [UserMessage(content=[TextContent(text=task.input)], timestamp=0)]
+        tool_log_id = []
+        for res in task.result:
+            tool_log_id.extend(res.toolCallLogID)
+
+        result.extend(self.tools_mgr.get_all_messages(tool_log_id))
+
+        return result
+
     async def process(self, task: SingleRunTask, context: list[AgentMessage] = []) -> list[AgentMessage]:
         self.agent.reset()
         self.agent.subscribe(self.on_event)
 
         index = len(context)
         self.message = context
-        self.message.append(UserMessage(content=[TextContent(text=task.input)], timestamp=0))
 
         if task.result is None:
             task.result = []
@@ -153,4 +162,4 @@ class SingleRunProcess:
             status="finished",
         )
 
-        return self.message[index:]
+        return self.format_result_message(task)
