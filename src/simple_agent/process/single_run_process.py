@@ -1,104 +1,101 @@
+"""SingleRunProcess - directly execute tools, then collect results."""
+
+from __future__ import annotations
 
 import asyncio
 from typing import Any
 
 from pi.agent import Agent, AgentTool, AgentToolResult, AgentToolUpdateCallback
-from pi.ai import AssistantMessage, ToolResultMessage, get_model, UserMessage, TextContent
-from pi.agent.types import AgentMessage, AgentState
-from pi.coding.core.tools import create_all_tools
+from pi.ai import UserMessage, TextContent, get_model
+from pi.ai.types import AssistantMessage, ToolResultMessage
+from pi.agent.types import AgentMessage
 
-from simple_agent.process.process import Process
-from simple_agent.process.explore_process import ExploreProcess
+from simple_agent.process.collect_result_process import CollectResultProcess
 from simple_agent.models import register_custom_models, get_api_key
-from simple_agent.state.state import SingleRunTask, Task, TextResult, StateClarification
+from simple_agent.state.state import SingleRunTask, StateClarification
 from simple_agent.tool.tool_mgr import ToolMgr
 from simple_agent.tool.collector import Collector
 from simple_agent.globals import TOOL_MGR
 from simple_agent.db.db import Database
-import time
 
 
-SYSTEM_PROMPT = """You are a planner assistant. Your job is to review task context and message history,
-then decide whether to define a sub-task or give a final response.
+SYSTEM_PROMPT = """You are a helpful assistant. Use the available tools to directly accomplish the user's task.
+<important>
+When the task is complete and no further tool calls are required, you MUST use 'determine_state' tool to determine the state BEFORE your final response.
+</important>
 
-When to define a sub-task:
-- Task requires multi-step exploration or research
-- Intermediate results need to be captured
-- Clear boundary between subtasks exists
+<example>
+tool call 1 ...
+tool call 1 result ...
+tool call 2 ...
+tool call 2 result ...
 
-When to give final response (NO tool calls):
-- Task is complete with sufficient results
-- No further tool calls needed
-- Ready to summarize findings
-
-To define a sub-task: call 'define_task' tool with input and scope_index.
-To finish: simply provide your final response text (no tool calls).
+Now the context information is complete. use 'determine_state' tool call to determine the state
+Final response: ...
+</example>
 """
 
 
 class SingleRunProcess:
     agent: Agent
     tools_mgr: ToolMgr
-    task_collector: Collector
-    _sub_task_defined: bool
+    state_collector: Collector
+    message: list[AgentMessage]
     _db: Database
-
 
     def __init__(self):
         register_custom_models()
-        # model = get_model("minimax-cn", "MiniMax-M2.7")
         model = get_model("deepseek", "deepseek-v4-pro")
         self.tools_mgr = TOOL_MGR
         self._db = Database()
-
-        self.create_task_collector()
+        self.create_state_clarify_collector()
         self.wrap_tools()
 
         agent = Agent(get_api_key=get_api_key)
         agent.set_model(model)
-        agent.set_tools(self.task_collector.tools)
+        all_tools = self.tools_mgr.create_all_tools(".")
+        all_tools.extend(self.state_collector.tools)
+        agent.set_tools(all_tools)
         agent.set_system_prompt(SYSTEM_PROMPT)
         self.agent = agent
 
-    def create_task_collector(self):
-        name = "define_task"
-        description = "Define a sub-task to be executed. Creates a Task instance with message history from parent."
+    def create_state_clarify_collector(self):
+        name = "determine_state"
+        description = "Determine the current state based on context. States: finished (task complete), error (task failed)"
         tool_schema = {
             "type": "object",
             "properties": {
-                "input": {
+                "state": {
                     "type": "string",
-                    "description": "The input description for this sub-task",
+                    "description": "Available states:\n- finished: task complete\n- error: task failed",
+                    "enum": ["finished", "error"],
                 },
-                "scope_index": {
-                    "type": "integer",
-                    "description": "The message index where this task's scope begins (0 = from start)",
+                "reason": {
+                    "type": "string",
+                    "description": "Reason for choosing this state",
                 },
             },
-            "required": ["input", "scope_index"],
+            "required": ["state", "reason"],
         }
-        self.task_collector = self.tools_mgr.create_collector(
-            Task, name, description, tool_schema
-        )
+        self.state_collector = self.tools_mgr.create_collector(StateClarification, name, description, tool_schema)
 
     def wrap_tools(self):
-        # Wrap define_task to abort agent when called
-        task_tool = self.task_collector.tools[0]
-        self._sub_task_defined = False
-        original_task_execute = task_tool.execute
-        async def task_execute(
+        tool = self.state_collector.tools[0]
+        original = tool.execute
+        async def execute(
             tool_call_id: str,
             params: dict[str, Any],
             cancel_event: asyncio.Event | None = None,
             on_update: AgentToolUpdateCallback | None = None,
         ) -> AgentToolResult:
-            res = await original_task_execute(tool_call_id, params, cancel_event, on_update)
-            self._sub_task_defined = True
-            print(f"sub-task defined: {params.get('input', '')}...")
+            res = await original(tool_call_id, params, cancel_event, on_update)
+            if not self.state_collector.item:
+                return res
+            state = self.state_collector.item[0].state
+            print(f"abort on state {state}")
             self.agent.abort()
             return res
-        task_tool.execute = task_execute
-
+        tool.execute = execute
 
     def on_event(self, event):
         """Print events in streaming mode."""
@@ -123,15 +120,9 @@ class SingleRunProcess:
         elif event.type == "agent_end":
             print("\n[agent done]", flush=True)
 
-    async def _step(self, task: Task):
-        self.agent.replace_messages(self.message)
-        await self.agent.continue_()
-        self.message = self.agent.state.messages
-        self.prune_message()
-
     def prune_message(self):
         lastToolCall = self.message[-2:]
-        if isinstance(lastToolCall[0], AssistantMessage) and isinstance(lastToolCall[1], ToolResultMessage) and lastToolCall[1].tool_name == "define_task":
+        if isinstance(lastToolCall[0], AssistantMessage) and isinstance(lastToolCall[1], ToolResultMessage) and lastToolCall[1].tool_name == "determine_state":
             print("prune last two determine state tool call")
             del self.message[-2:]
 
@@ -143,39 +134,17 @@ class SingleRunProcess:
         self.message = context
         self.message.append(UserMessage(content=[TextContent(text=task.input)], timestamp=0))
 
-        # Initialize task result and tasks list
         if task.result is None:
             task.result = []
-        if task.tasks is None:
-            task.tasks = []
 
-        # Main loop: keep running until no more sub-tasks defined
-        while True:
-            # Clear collectors at start of each iteration
-            self.task_collector.clear()
-            self._sub_task_defined = False
+        self.agent.replace_messages(self.message)
+        await self.agent.prompt(task.input)
+        self.message = self.agent.state.messages
+        self.prune_message()
 
-            await self._step(task)
-            # Check if sub-task was defined
-            if self._sub_task_defined and self.task_collector.item:
-                # Create sub-task from collector
-                child_task = self.task_collector.item[-1]
-                # Copy parent messages to child (current messages at time of define_task call)
-                child_task.result = []
-                task.tasks.append(child_task)
+        collectProc = CollectResultProcess()
+        await collectProc.process(task, self.message[index:])
 
-                # Run child task via ExploreProcess
-                explore_proc = ExploreProcess()
-                msg = await explore_proc.process(child_task, self.message[index+1:])
-                self.message.extend(msg)
-
-                # Continue loop for next decision
-                continue
-
-            # No sub-task defined - agent gave final response, we're done
-            break
-
-        # Save task to history
         self._db.save_task(
             task_type="single_run",
             task_input=task.input,
@@ -184,4 +153,4 @@ class SingleRunProcess:
             status="finished",
         )
 
-        return
+        return self.message[index:]
