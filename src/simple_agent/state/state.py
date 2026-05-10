@@ -41,6 +41,23 @@ class SingleRunTask(BaseModel):
     result: list[TextResult] = None
     tasks: list[Task] = None
 
+
+class RunRecord(BaseModel):
+    input: str
+    results: list[TextResult]
+    new_message_count: int
+    status: str
+    started_at: float
+    finished_at: float
+
+
+class SessionData(BaseModel):
+    name: str
+    messages: list[AgentMessage]
+    runs: list[RunRecord]
+    created_at: float
+    updated_at: float
+
 def generate_state_schema(state_options: dict[str, str]) -> tuple[str, dict[str, Any]]:
     """Generate a tool schema for state clarification.
 
