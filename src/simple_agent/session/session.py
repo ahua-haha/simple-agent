@@ -10,13 +10,15 @@ from pi.agent.types import AgentMessage
 
 from simple_agent.process.single_run_process import SingleRunProcess
 from simple_agent.process.commit_collect_result_process import CommitCollectResultProcess
-from simple_agent.state.state import CommitData, RunRecord, SessionData, SingleRunTask, Task
+from simple_agent.state.state import CommitData, RunRecord, SessionData, Task
 from simple_agent.tool.tool_mgr import ToolMgr
 from simple_agent.db.db import Database
 
 
 class Session:
     messages: list[AgentMessage]
+    committed_task: list[Task]
+    uncommitted_task: list[Task]
     runs: list[RunRecord]
     commit_data: list[CommitData]
     _name: str
@@ -51,24 +53,14 @@ class Session:
         self.commit_data = data.commit_data
         self._created_at = data.created_at
 
-    async def run(self, user_input: str) -> SingleRunTask:
-        task = SingleRunTask(input=user_input)
-        started_at = time.time()
+    async def run(self, user_input: str) -> Task:
+        task = Task(input=user_input)
 
         proc = SingleRunProcess(tools_mgr=self._tools_mgr, db=self._db)
         new_msgs = await proc.process(task, context=self.messages)
         self.messages.extend(new_msgs)
 
-        finished_at = time.time()
-        record = RunRecord(
-            input=user_input,
-            results=task.result or [],
-            new_message_count=len(new_msgs),
-            status="finished",
-            started_at=started_at,
-            finished_at=finished_at,
-        )
-        self.runs.append(record)
+        self.uncommitted_task.append(task)
         return task
 
     async def commit(self) -> str:
@@ -76,9 +68,10 @@ class Session:
 
         proc = CommitCollectResultProcess(tools_mgr=self._tools_mgr, db=self._db)
         commit_msgs = await proc.process(task, self.messages)
-
-        self.commit_data.append(proc.commit_data)
         self.messages.extend(commit_msgs)
+
+        task.subTasks = list(self.uncommitted_task)
+        self.committed_task.append(task)
 
         # Persist to JSON
         os.makedirs(self._base_dir, exist_ok=True)

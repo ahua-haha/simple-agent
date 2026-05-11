@@ -9,7 +9,7 @@ from pi.agent.types import AgentMessage
 from simple_agent.db.db import Database
 from simple_agent.stream import stream_event
 from simple_agent.models import register_custom_models, get_api_key
-from simple_agent.state.state import TEXT_RESULT_JSON_SCHEMA, Task, SingleRunTask, TextResult
+from simple_agent.state.state import TEXT_RESULT_JSON_SCHEMA, Task, TextResult
 from simple_agent.tool.tool_mgr import ToolMgr
 from simple_agent.tool.collector import Collector
 
@@ -73,7 +73,7 @@ class CollectResultProcess:
         """Synthesize TextResults from task's message history.
 
         Args:
-            task: Task or SingleRunTask with message history.
+            task: Task with message history.
                   After processing, task.result will contain collected TextResults.
         """
         self.agent.reset()

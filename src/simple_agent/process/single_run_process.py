@@ -12,7 +12,7 @@ from pi.agent.types import AgentMessage
 
 from simple_agent.process.collect_result_process import CollectResultProcess
 from simple_agent.models import register_custom_models, get_api_key
-from simple_agent.state.state import SingleRunTask, StateClarification
+from simple_agent.state.state import Task, StateClarification
 from simple_agent.tool.tool_mgr import ToolMgr
 from simple_agent.tool.collector import Collector
 from simple_agent.db.db import Database
@@ -104,7 +104,7 @@ class SingleRunProcess:
             print("prune last two determine state tool call")
             del self.message[-2:]
 
-    def format_result_message(self, task: SingleRunTask) -> list[AgentMessage]:
+    def format_result_message(self, task: Task) -> list[AgentMessage]:
         result = [UserMessage(content=[TextContent(text=task.input)], timestamp=0)]
         tool_log_id = []
         for res in task.result:
@@ -121,7 +121,7 @@ class SingleRunProcess:
         await self.agent.prompt(user_prompt)
         self.message = self.agent.state.messages
 
-    async def process(self, task: SingleRunTask, context: list[AgentMessage] = []) -> list[AgentMessage]:
+    async def process(self, task: Task, context: list[AgentMessage] = []) -> list[AgentMessage]:
         self.agent.reset()
         self.agent.subscribe(stream_event)
 

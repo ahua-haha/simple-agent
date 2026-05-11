@@ -34,13 +34,7 @@ TEXT_RESULT_JSON_SCHEMA: dict = {
 class Task(BaseModel):
     input: str
     result: list[TextResult] = None
-
-
-class SingleRunTask(BaseModel):
-    input: str
-    result: list[TextResult] = None
-    tasks: list[Task] = None
-
+    subTasks: list[Task] = None
 
 class RunRecord(BaseModel):
     input: str
