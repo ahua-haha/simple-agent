@@ -11,6 +11,8 @@ from pi.agent.types import AgentMessage
 from simple_agent.process.single_run_process import SingleRunProcess
 from simple_agent.process.commit_collect_result_process import CommitCollectResultProcess
 from simple_agent.state.state import CommitData, RunRecord, SessionData, SingleRunTask, Task
+from simple_agent.tool.tool_mgr import ToolMgr
+from simple_agent.db.db import Database
 
 
 class Session:
@@ -20,10 +22,14 @@ class Session:
     _name: str
     _base_dir: str
     _created_at: float
+    _tools_mgr: ToolMgr
+    _db: Database
 
-    def __init__(self, name: str, base_dir: str = "./sessions"):
+    def __init__(self, name: str, base_dir: str = "./sessions", tools_mgr: ToolMgr | None = None, db: Database | None = None):
         self._name = name
         self._base_dir = base_dir
+        self._tools_mgr = tools_mgr or ToolMgr()
+        self._db = db or Database()
         self._created_at = time.time()
 
         filepath = self._filepath()
@@ -49,7 +55,7 @@ class Session:
         task = SingleRunTask(input=user_input)
         started_at = time.time()
 
-        proc = SingleRunProcess()
+        proc = SingleRunProcess(tools_mgr=self._tools_mgr, db=self._db)
         new_msgs = await proc.process(task, context=self.messages)
         self.messages.extend(new_msgs)
 
@@ -68,7 +74,7 @@ class Session:
     async def commit(self) -> str:
         task = Task(input="")
 
-        proc = CommitCollectResultProcess()
+        proc = CommitCollectResultProcess(tools_mgr=self._tools_mgr, db=self._db)
         commit_msgs = await proc.process(task, self.messages)
 
         self.commit_data.append(proc.commit_data)

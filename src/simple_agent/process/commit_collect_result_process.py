@@ -9,7 +9,6 @@ from pi.ai import get_model
 from pi.agent.types import AgentMessage
 
 from simple_agent.db.db import Database
-from simple_agent.globals import TOOL_MGR
 from simple_agent.models import register_custom_models, get_api_key
 from simple_agent.state.state import (
     EXTRACTED_INSTRUCTION_JSON_SCHEMA,
@@ -73,11 +72,11 @@ class CommitCollectResultProcess:
     message: list[AgentMessage]
     _db: Database
 
-    def __init__(self):
+    def __init__(self, tools_mgr: ToolMgr | None = None, db: Database | None = None):
         register_custom_models()
         model = get_model("deepseek", "deepseek-v4-pro")
-        self.tools_mgr = TOOL_MGR
-        self._db = Database()
+        self.tools_mgr = tools_mgr or ToolMgr()
+        self._db = db or Database()
 
         self.instruction_collector = self.tools_mgr.create_collector(
             model_class=ExtractedInstruction,

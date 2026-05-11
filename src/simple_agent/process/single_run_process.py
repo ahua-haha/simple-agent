@@ -15,7 +15,6 @@ from simple_agent.models import register_custom_models, get_api_key
 from simple_agent.state.state import SingleRunTask, StateClarification
 from simple_agent.tool.tool_mgr import ToolMgr
 from simple_agent.tool.collector import Collector
-from simple_agent.globals import TOOL_MGR
 from simple_agent.db.db import Database
 
 
@@ -39,15 +38,16 @@ Final response: ...
 class SingleRunProcess:
     agent: Agent
     tools_mgr: ToolMgr
+    tools: list[AgentTool]
     state_collector: Collector
     message: list[AgentMessage]
     _db: Database
 
-    def __init__(self):
+    def __init__(self, tools_mgr: ToolMgr | None = None, db: Database | None = None):
         register_custom_models()
         model = get_model("deepseek", "deepseek-v4-pro")
-        self.tools_mgr = TOOL_MGR
-        self._db = Database()
+        self.tools_mgr = tools_mgr or ToolMgr()
+        self._db = db or Database()
         self.create_state_clarify_collector()
         self.wrap_tools()
 
@@ -55,8 +55,8 @@ class SingleRunProcess:
         agent.set_model(model)
         all_tools = self.tools_mgr.create_all_tools(".")
         all_tools.extend(self.state_collector.tools)
-        agent.set_tools(all_tools)
-        agent.set_system_prompt(SYSTEM_PROMPT)
+
+        self.tools = all_tools
         self.agent = agent
 
     def create_state_clarify_collector(self):
@@ -136,6 +136,13 @@ class SingleRunProcess:
 
         return result
 
+    async def _step(self, system_prompt: str, tool_list: list, user_prompt: str):
+        self.agent.set_system_prompt(system_prompt)
+        self.agent.set_tools(tool_list)
+        self.agent.replace_messages(self.message)
+        await self.agent.prompt(user_prompt)
+        self.message = self.agent.state.messages
+
     async def process(self, task: SingleRunTask, context: list[AgentMessage] = []) -> list[AgentMessage]:
         self.agent.reset()
         self.agent.subscribe(self.on_event)
@@ -146,12 +153,10 @@ class SingleRunProcess:
         if task.result is None:
             task.result = []
 
-        self.agent.replace_messages(self.message)
-        await self.agent.prompt(task.input)
-        self.message = self.agent.state.messages
+        await self._step(SYSTEM_PROMPT, self.tools, task.input)
         self.prune_message()
 
-        collectProc = CollectResultProcess()
+        collectProc = CollectResultProcess(tools_mgr=self.tools_mgr, db=self._db)
         await collectProc.process(task, self.message[index:])
 
         self._db.save_task(

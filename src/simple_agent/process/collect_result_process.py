@@ -2,12 +2,11 @@
 
 from __future__ import annotations
 
-from pi.agent import Agent
+from pi.agent import Agent, AgentTool
 from pi.ai import get_model
 from pi.agent.types import AgentMessage
 
 from simple_agent.db.db import Database
-from simple_agent.globals import TOOL_MGR
 from simple_agent.models import register_custom_models, get_api_key
 from simple_agent.state.state import TEXT_RESULT_JSON_SCHEMA, Task, SingleRunTask, TextResult
 from simple_agent.tool.tool_mgr import ToolMgr
@@ -30,17 +29,18 @@ Examples:
 class CollectResultProcess:
     agent: Agent
     collector: Collector
+    tools: list[AgentTool]
     tools_mgr: ToolMgr
     message: list[AgentMessage]
     _db: Database
 
 
-    def __init__(self):
+    def __init__(self, tools_mgr: ToolMgr | None = None, db: Database | None = None):
         register_custom_models()
         # model = get_model("minimax-cn", "MiniMax-M2.7")
         model = get_model("deepseek", "deepseek-v4-pro")
-        self.tools_mgr = TOOL_MGR
-        self._db = Database()
+        self.tools_mgr = tools_mgr or ToolMgr()
+        self._db = db or Database()
         self.collector = self.tools_mgr.create_collector(
             model_class=TextResult,
             name=f"record_textresult",
@@ -57,9 +57,8 @@ class CollectResultProcess:
         # Get record_textresult tool from collector
         all_tools = bash_tools
         all_tools.extend(self.collector.tools)
+        self.tools = all_tools
 
-        agent.set_tools(all_tools)
-        agent.set_system_prompt(SYSTEM_PROMPT)
         self.agent = agent
 
     def on_event(self, event):
@@ -85,9 +84,11 @@ class CollectResultProcess:
         elif event.type == "agent_end":
             print("\n[agent done]", flush=True)
     
-    async def _step(self, task: Task):
+    async def _step(self, system_prompt: str, tool_list: list, user_prompt: str):
+        self.agent.set_system_prompt(system_prompt)
+        self.agent.set_tools(tool_list)
         self.agent.replace_messages(self.message)
-        await self.agent.prompt("Please review the conversation history and record all useful results as TextResult using the record_textresult tool. When done, respond with only FINISH.")
+        await self.agent.prompt(user_prompt)
         self.message = self.agent.state.messages
 
     async def process(self, task: Task, context: list[AgentMessage]) -> list[AgentMessage]:
@@ -102,7 +103,7 @@ class CollectResultProcess:
 
         index = len(context)
         self.message = context
-        await self._step(task)
+        await self._step(SYSTEM_PROMPT, self.tools, "Please review the conversation history and record all useful results as TextResult using the record_textresult tool. When done, respond with only FINISH.")
 
         if self.collector.item:
             task.result = list(self.collector.item)

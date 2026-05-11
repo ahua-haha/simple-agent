@@ -23,9 +23,9 @@ class ToolMgr:
     tools: list[AgentTool]
     records: list[ToolExecMessage]
 
-    def __init__(self):
+    def __init__(self, db: Database | None = None):
         self.tools: list[AgentTool] = []
-        self._db = Database()
+        self._db = db or Database()
 
     def create_all_tools(self, cwd: str) -> list[AgentTool]:
         tools = list(create_all_tools(cwd).values())
