@@ -7,6 +7,7 @@ from pi.ai import get_model
 from pi.agent.types import AgentMessage
 
 from simple_agent.db.db import Database
+from simple_agent.stream import stream_event
 from simple_agent.models import register_custom_models, get_api_key
 from simple_agent.state.state import TEXT_RESULT_JSON_SCHEMA, Task, SingleRunTask, TextResult
 from simple_agent.tool.tool_mgr import ToolMgr
@@ -61,29 +62,6 @@ class CollectResultProcess:
 
         self.agent = agent
 
-    def on_event(self, event):
-        """Print events in streaming mode."""
-        if event.type == "message_update":
-            ae = event.assistant_message_event
-            if ae.type == "thinking_start":
-                print("<thinking>", end="\n", flush=True)
-            if ae.type == "text_start":
-                print("<resp>", end="\n", flush=True)
-            if ae.type == "thinking_end":
-                print("\n</thinking>", end="\n", flush=True)
-            if ae.type == "text_end":
-                print("\n</resp>", end="\n", flush=True)
-            if ae.type == "text_delta":
-                print(ae.delta, end="", flush=True)
-            elif ae.type == "thinking_delta":
-                print(ae.delta, end="", flush=True)
-        elif event.type == "tool_execution_start":
-            print(f"\n[tool start: {event.tool_name}]", flush=True)
-        elif event.type == "tool_execution_end":
-            print()
-        elif event.type == "agent_end":
-            print("\n[agent done]", flush=True)
-    
     async def _step(self, system_prompt: str, tool_list: list, user_prompt: str):
         self.agent.set_system_prompt(system_prompt)
         self.agent.set_tools(tool_list)
@@ -99,7 +77,7 @@ class CollectResultProcess:
                   After processing, task.result will contain collected TextResults.
         """
         self.agent.reset()
-        self.agent.subscribe(self.on_event)
+        self.agent.subscribe(stream_event)
 
         index = len(context)
         self.message = context

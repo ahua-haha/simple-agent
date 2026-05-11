@@ -16,6 +16,7 @@ from simple_agent.state.state import SingleRunTask, StateClarification
 from simple_agent.tool.tool_mgr import ToolMgr
 from simple_agent.tool.collector import Collector
 from simple_agent.db.db import Database
+from simple_agent.stream import stream_event
 
 
 SYSTEM_PROMPT = """You are a helpful assistant. Use the available tools to directly accomplish the user's task.
@@ -97,29 +98,6 @@ class SingleRunProcess:
             return res
         tool.execute = execute
 
-    def on_event(self, event):
-        """Print events in streaming mode."""
-        if event.type == "message_update":
-            ae = event.assistant_message_event
-            if ae.type == "thinking_start":
-                print("<thinking>", end="\n", flush=True)
-            if ae.type == "text_start":
-                print("<resp>", end="\n", flush=True)
-            if ae.type == "thinking_end":
-                print("\n</thinking>", end="\n", flush=True)
-            if ae.type == "text_end":
-                print("\n</resp>", end="\n", flush=True)
-            if ae.type == "text_delta":
-                print(ae.delta, end="", flush=True)
-            elif ae.type == "thinking_delta":
-                print(ae.delta, end="", flush=True)
-        elif event.type == "tool_execution_start":
-            print(f"\n[tool: {event.tool_name}({event.args})]", flush=True)
-        elif event.type == "tool_execution_end":
-            text = event.result.content[0].text
-        elif event.type == "agent_end":
-            print("\n[agent done]", flush=True)
-
     def prune_message(self):
         lastToolCall = self.message[-2:]
         if isinstance(lastToolCall[0], AssistantMessage) and isinstance(lastToolCall[1], ToolResultMessage) and lastToolCall[1].tool_name == "determine_state":
@@ -145,7 +123,7 @@ class SingleRunProcess:
 
     async def process(self, task: SingleRunTask, context: list[AgentMessage] = []) -> list[AgentMessage]:
         self.agent.reset()
-        self.agent.subscribe(self.on_event)
+        self.agent.subscribe(stream_event)
 
         index = len(context)
         self.message = context

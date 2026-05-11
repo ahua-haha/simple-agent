@@ -20,6 +20,7 @@ from simple_agent.state.state import (
 )
 from simple_agent.tool.tool_mgr import ToolMgr
 from simple_agent.tool.collector import Collector
+from simple_agent.stream import stream_event
 
 
 INSTRUCTION_SYSTEM_PROMPT = """You are an instruction extractor. Review the conversation history
@@ -162,29 +163,6 @@ class CommitCollectResultProcess:
             aggregated_results=results,
         )
 
-    def on_event(self, event):
-        """Print events in streaming mode."""
-        if event.type == "message_update":
-            ae = event.assistant_message_event
-            if ae.type == "thinking_start":
-                print("<thinking>", end="\n", flush=True)
-            if ae.type == "text_start":
-                print("<resp>", end="\n", flush=True)
-            if ae.type == "thinking_end":
-                print("\n</thinking>", end="\n", flush=True)
-            if ae.type == "text_end":
-                print("\n</resp>", end="\n", flush=True)
-            if ae.type == "text_delta":
-                print(ae.delta, end="", flush=True)
-            elif ae.type == "thinking_delta":
-                print(ae.delta, end="", flush=True)
-        elif event.type == "tool_execution_start":
-            print(f"\n[tool start: {event.tool_name}]", flush=True)
-        elif event.type == "tool_execution_end":
-            print()
-        elif event.type == "agent_end":
-            print("\n[agent done]", flush=True)
-
     async def _step(self, system_prompt: str, tool_list: list, user_prompt: str):
         self.agent.set_system_prompt(system_prompt)
         self.agent.set_tools(tool_list)
@@ -194,7 +172,7 @@ class CommitCollectResultProcess:
 
     async def process(self, task: Task, context: list[AgentMessage]) -> list[AgentMessage]:
         self.agent.reset()
-        self.agent.subscribe(self.on_event)
+        self.agent.subscribe(stream_event)
 
         index = len(context)
         self.message = context
