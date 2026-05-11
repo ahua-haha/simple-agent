@@ -48,8 +48,8 @@ class RunRecord(BaseModel):
 class SessionData(BaseModel):
     name: str
     messages: list[AgentMessage]
-    runs: list[RunRecord]
-    commit_data: list["CommitData"] = []
+    commit_index: int = 0
+    uncommitted_task: list["Task"] = []
     created_at: float
     updated_at: float
 

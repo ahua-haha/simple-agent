@@ -7,6 +7,7 @@ import tempfile
 import time
 
 from pi.agent.types import AgentMessage
+from pydantic import TypeAdapter
 
 from simple_agent.process.single_run_process import SingleRunProcess
 from simple_agent.process.commit_collect_result_process import CommitCollectResultProcess
@@ -17,13 +18,11 @@ from simple_agent.db.db import Database
 
 class Session:
     messages: list[AgentMessage]
-    committed_task: list[Task]
     uncommitted_task: list[Task]
-    runs: list[RunRecord]
-    commit_data: list[CommitData]
     _name: str
     _base_dir: str
     _created_at: float
+    _commit_index: int
     _tools_mgr: ToolMgr
     _db: Database
 
@@ -34,24 +33,27 @@ class Session:
         self._db = db or Database()
         self._created_at = time.time()
 
-        filepath = self._filepath()
+        filepath = self._session_filepath()
         if os.path.exists(filepath):
             self._load(filepath)
         else:
             self.messages = []
-            self.runs = []
-            self.commit_data = []
+            self.uncommitted_task = []
+            self._commit_index = 0
 
-    def _filepath(self) -> str:
+    def _session_filepath(self) -> str:
         return os.path.join(self._base_dir, f"{self._name}.json")
+
+    def _commit_filepath(self, index: int) -> str:
+        return os.path.join(self._base_dir, self._name, f"commit_{index:04d}.json")
 
     def _load(self, filepath: str) -> None:
         with open(filepath, "r") as f:
             data = SessionData.model_validate_json(f.read())
         self.messages = data.messages
-        self.runs = data.runs
-        self.commit_data = data.commit_data
         self._created_at = data.created_at
+        self._commit_index = data.commit_index
+        self.uncommitted_task = data.uncommitted_task
 
     async def run(self, user_input: str) -> Task:
         task = Task(input=user_input)
@@ -63,29 +65,19 @@ class Session:
         self.uncommitted_task.append(task)
         return task
 
-    async def commit(self) -> str:
-        task = Task(input="")
-
-        proc = CommitCollectResultProcess(tools_mgr=self._tools_mgr, db=self._db)
-        commit_msgs = await proc.process(task, self.messages)
-        self.messages.extend(commit_msgs)
-
-        task.subTasks = list(self.uncommitted_task)
-        self.committed_task.append(task)
-
-        # Persist to JSON
+    def checkpoint(self) -> str:
         os.makedirs(self._base_dir, exist_ok=True)
 
         model = SessionData(
             name=self._name,
             messages=self.messages,
-            runs=self.runs,
-            commit_data=self.commit_data,
+            commit_index=self._commit_index,
+            uncommitted_task=self.uncommitted_task,
             created_at=self._created_at,
             updated_at=time.time(),
         )
 
-        filepath = self._filepath()
+        filepath = self._session_filepath()
         tmp = tempfile.NamedTemporaryFile(
             mode="w",
             dir=self._base_dir,
@@ -105,6 +97,31 @@ class Session:
             raise
 
         return filepath
+
+    async def commit(self) -> str:
+        task = Task(input="")
+
+        proc = CommitCollectResultProcess(tools_mgr=self._tools_mgr, db=self._db)
+        commit_msgs = await proc.process(task, self.messages)
+
+        task.subTasks = list(self.uncommitted_task)
+
+        # Write committed task to its own file
+        self._commit_index += 1
+        task_path = self._commit_filepath(self._commit_index)
+        os.makedirs(os.path.dirname(task_path), exist_ok=True)
+
+        with open(task_path, "w") as f:
+            f.write(task.model_dump_json(indent=2))
+
+        # Checkpoint session context
+
+        self.messages.extend(commit_msgs)
+        self.uncommitted_task.clear()
+
+        self.checkpoint()
+
+        return task_path
 
     @staticmethod
     def list_sessions(base_dir: str = "./sessions") -> list[str]:
