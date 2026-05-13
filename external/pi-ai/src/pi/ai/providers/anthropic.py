@@ -339,7 +339,7 @@ def stream_anthropic(
                 "model": model.id,
                 "messages": _convert_messages(context.messages, model, cache_control),
                 "max_tokens": (options and options.max_tokens) or (model.max_tokens // 3) or 4096,
-                "stream": True,
+                # "stream": True,
             }
 
             if context.system_prompt:

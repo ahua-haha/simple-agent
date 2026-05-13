@@ -6,10 +6,12 @@ readme = "README.md"
 requires-python = ">=3.14"
 license = "MIT"
 dependencies = [
-    "pi-ai",
-    "pi-agent",
-    "pi-coding-agent",
     "gitpython",
+    "pi-agent",
+    "pi-ai",
+    "pi-coding-agent",
+    "pi-tui",
+    "sqlmodel>=0.0.38",
 ]
 
 [project.scripts]
@@ -23,10 +25,18 @@ dev = [
 ]
 
 [tool.uv.sources]
-pi-ai = { git = "https://github.com/vamsi/pi", branch = "main", subdirectory = "packages/pi-ai" }
-pi-agent = { git = "https://github.com/vamsi/pi", branch = "main", subdirectory = "packages/pi-agent" }
-pi-tui = { git = "https://github.com/vamsi/pi", branch = "main", subdirectory = "packages/pi-tui" }
-pi-coding-agent = { git = "https://github.com/vamsi/pi", branch = "main", subdirectory = "packages/pi-coding-agent" }
+pi-ai = { workspace = true }
+pi-agent = { workspace = true }
+pi-tui = { workspace = true }
+pi-coding-agent = { workspace = true }
+
+[tool.uv.workspace]
+members = [
+    "external/pi-ai",
+    "external/pi-agent",
+    "external/pi-tui",
+    "external/pi-coding-agent",
+]
 
 [build-system]
 requires = ["hatchling"]

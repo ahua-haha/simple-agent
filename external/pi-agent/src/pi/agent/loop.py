@@ -132,7 +132,7 @@ async def _run_loop(
         has_more_tool_calls = True
         steering_after_tools: list[AgentMessage] | None = None
 
-        while has_more_tool_calls or pending_messages:
+        while (not cancel_event.is_set()) and (has_more_tool_calls or pending_messages):
             if not first_turn:
                 stream.push(TurnStartEvent())
             else:
