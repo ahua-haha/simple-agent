@@ -155,29 +155,8 @@ class SubTaskProcess:
             del self.message[-2:]
 
     def format_result_message(self, task: Task, state: str = "finished") -> list[AgentMessage]:
-        result: list[AgentMessage] = []
-
-        # 1. Recorded tool calls
-        tool_log_id: list[int] = []
-        for res in task.result or []:
-            tool_log_id.extend(res.toolCallLogID)
-        result.extend(self.tools_mgr.get_all_messages(tool_log_id))
-
-        # 2. Assistant message — success or failure
-        from pi.ai.types import AssistantMessage as AsstMsg
-        status_text = "successfully completed" if state == "finished" else "failed to complete"
-        result.append(AsstMsg(
-            content=[TextContent(text=f"{status_text} the task: {task.input}\nthe result of the task are as follows")]
-        ))
-
-        # 3. Each TextResult as an individual AssistantMessage
-        for tr in task.result or []:
-            ids = ", ".join(str(i) for i in tr.toolCallLogID) if tr.toolCallLogID else "none"
-            result.append(AsstMsg(
-                content=[TextContent(text=f"{tr.desc} [toolCallLogID: {ids}]")]
-            ))
-
-        return result
+        from simple_agent.format import format_results
+        return format_results(self.tools_mgr, task, status=state)
 
     async def _step(self, system_prompt: str, tool_list: list):
         self.agent.set_system_prompt(system_prompt)

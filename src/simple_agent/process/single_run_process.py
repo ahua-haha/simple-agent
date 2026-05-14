@@ -104,15 +104,9 @@ class SingleRunProcess:
             print("prune last two determine state tool call")
             del self.message[-2:]
 
-    def format_result_message(self, task: Task) -> list[AgentMessage]:
-        result = [UserMessage(content=[TextContent(text=task.input)], timestamp=0)]
-        tool_log_id = []
-        for res in task.result:
-            tool_log_id.extend(res.toolCallLogID)
-
-        result.extend(self.tools_mgr.get_all_messages(tool_log_id))
-
-        return result
+    def format_result_message(self, task: Task, state: str = "finished") -> list[AgentMessage]:
+        from simple_agent.format import format_results
+        return format_results(self.tools_mgr, task, status=state)
 
     async def _step(self, system_prompt: str, tool_list: list, user_prompt: str):
         self.agent.set_system_prompt(system_prompt)

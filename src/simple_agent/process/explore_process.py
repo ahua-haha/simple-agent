@@ -18,24 +18,29 @@ from simple_agent.tool.collector import Collector
 from simple_agent.process.collect_result_process import CollectResultProcess
 from simple_agent.stream import stream_event
 import time
-from pprint import pprint
 
 
-SYSTEM_PROMPT = """You are a helpful assistant. your job is to use the avaliable tools to explore and retrieval the infomation.
-<important>
-When the task is complete and no further tool calls are required, you MUST use 'determine_state' tool to determine the state BEFORE your final response.
-</important>
+SYSTEM_PROMPT = """You are a helpful assistant. Use the available tools to explore and retrieve information.
+
+Important:
+- Do NOT generate verbose output — be concise and direct.
+- when the task is complete, you MUST IMMEDIATELY call 'determine_state' to clarify the current state.
+
 
 <example>
-tool call 1 ...
-tool call 1 result ...
-tool call 2 ...
-tool call 2 result ...
-tool call 3 ...
-tool call 3 result ...
+read("src/main.py") ...
+read result: "import fastapi..."
 
-Now the context infomation is complete. use 'determine_state' tool call to determine the state
-Final response: ...
+grep("test_.*", "tests/") ...
+grep result: "test_session.py, test_process.py"
+
+bash("ls src/simple_agent/") ...
+bash result: "process/ state/ tool/ db/"
+
+Now the context information is complete. Use 'determine_state' tool call to determine the state:
+determine_state(state="finished", reason="explored project structure and found 4 modules")
+
+Final response: "Found 4 modules: process, state, tool, db"
 </example>
 
 """
@@ -110,15 +115,9 @@ class ExploreProcess:
             print("prune last two determine state tool call")
             del self.message[-2:]
     
-    def format_task_message(self, task: Task) -> list[AgentMessage]:
-        tool_log_id = []
-        for res in task.result:
-            tool_log_id.extend(res.toolCallLogID)
-        pprint(tool_log_id)
-
-        messages = [UserMessage(content=[TextContent(text=task.input)], timestamp=0)]
-        messages.extend(self.tools_mgr.get_all_messages(tool_log_id))
-        return messages
+    def format_result_message(self, task: Task, state: str = "finished") -> list[AgentMessage]:
+        from simple_agent.format import format_results
+        return format_results(self.tools_mgr, task, status=state)
 
     async def _step(self, task: Task):
         self.agent.replace_messages(self.message)
@@ -147,4 +146,4 @@ class ExploreProcess:
             status="finished",
         )
 
-        return self.format_task_message(task)
+        return self.format_result_message(task)

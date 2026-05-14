@@ -118,33 +118,14 @@ class CommitCollectResultProcess:
         tool.execute = execute
 
     def format_result_message(self) -> list[AgentMessage]:
-        from pi.ai.types import UserMessage, TextContent
-
-        result: list[AgentMessage] = []
-
-        # 1. UserMessage with aggregated instructions
+        from simple_agent.format import format_results
         instructions = self.commit_data.extracted_instructions
         instructions_text = "\n".join(f"- {i}" for i in instructions) if instructions else "(none)"
-        result.append(UserMessage(
-            content=[TextContent(text=f"Session instructions:\n{instructions_text}")],
-            timestamp=0,
-        ))
-
-        # 2. Recorded tool calls and their results
-        tool_log_ids: list[int] = []
-        for tr in self.commit_data.aggregated_results:
-            tool_log_ids.extend(tr.toolCallLogID)
-        result.extend(self.tools_mgr.get_all_messages(tool_log_ids))
-
-        # 3. Each TextResult as an individual AssistantMessage
-        from pi.ai.types import AssistantMessage
-        for tr in self.commit_data.aggregated_results:
-            ids = ", ".join(str(i) for i in tr.toolCallLogID) if tr.toolCallLogID else "none"
-            result.append(AssistantMessage(
-                content=[TextContent(text=f"{tr.desc} [toolCallLogID: {ids}]")],
-            ))
-
-        return result
+        task = Task(input="", result=self.commit_data.aggregated_results)
+        return format_results(
+            self.tools_mgr, task, status="finished",
+            label=f"the session\ninstructions:\n{instructions_text}",
+        )
 
     @property
     def commit_data(self) -> CommitData:
