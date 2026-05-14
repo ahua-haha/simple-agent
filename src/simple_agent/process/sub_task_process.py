@@ -8,7 +8,7 @@ from typing import Any
 from pi.agent import Agent, AgentToolResult, AgentToolUpdateCallback
 from pi.ai import UserMessage, TextContent, get_model
 from pi.ai.types import AssistantMessage, ToolResultMessage
-from pi.agent.types import AgentMessage
+from pi.agent.types import AgentMessage, AgentTool
 
 from simple_agent.process.explore_process import ExploreProcess
 from simple_agent.process.collect_result_process import CollectResultProcess
@@ -142,28 +142,33 @@ class SubTaskProcess:
             return res
         state_tool.execute = state_execute
 
-    def prune_define_task(self):
-        last_two = self.message[-2:]
-        if isinstance(last_two[0], AssistantMessage) and isinstance(last_two[1], ToolResultMessage) and last_two[1].tool_name == "define_task":
-            print("prune define_task tool call")
-            del self.message[-2:]
-
-    def prune_determine_state(self):
-        last_two = self.message[-2:]
-        if isinstance(last_two[0], AssistantMessage) and isinstance(last_two[1], ToolResultMessage) and last_two[1].tool_name == "determine_state":
-            print("prune determine_state tool call")
-            del self.message[-2:]
-
     def format_result_message(self, task: Task, state: str = "finished") -> list[AgentMessage]:
         from simple_agent.format import format_results
         return format_results(self.tools_mgr, task, status=state)
 
-    async def _step(self, system_prompt: str, tool_list: list):
+    async def _step(self, tool_list: list[AgentTool], system_prompt: str, messages: list[AgentMessage], user_prompt: str) -> list[AgentMessage]:
         self.agent.set_system_prompt(system_prompt)
         self.agent.set_tools(tool_list)
-        self.agent.replace_messages(self.message)
-        await self.agent.continue_()
-        self.message = self.agent.state.messages
+        self.agent.replace_messages(messages)
+        await self.agent.prompt(user_prompt)
+        return self.agent.state.messages
+
+    async def try_sub_task(self) -> Task | StateClarification:
+        """Prompt the agent to define a sub-task or complete. Returns sub-Task or None."""
+        self.task_collector.clear()
+        self.state_collector.clear()
+
+        await self._step(self._tools, SYSTEM_PROMPT, self.message, "now based on the history, determine whether to define a sub task or this task is completed")
+
+        if self.task_collector.item and isinstance(self.task_collector.item[0], Task):
+            sub_task = self.task_collector.item[0]
+            sub_task.result = []
+            return sub_task
+
+        if self.state_collector.item and isinstance(self.state_collector.item[0], StateClarification):
+            return self.state_collector[0]
+
+        return None
 
     async def process(self, task: Task, context: list[AgentMessage] = []) -> list[AgentMessage]:
         self.agent.reset()
@@ -178,38 +183,21 @@ class SubTaskProcess:
         if task.subTasks is None:
             task.subTasks = []
 
-        final_state = "finished"
-
         while True:
-            self.task_collector.clear()
-            self.state_collector.clear()
+            res = await self.try_sub_task()
 
-            await self._step(SYSTEM_PROMPT, self._tools)
-
-            # Check for sub-task definition
-            if self.task_collector.item:
-                self.prune_define_task()
-
-                sub_task = self.task_collector.item[-1]
-                sub_task.result = []
-                task.subTasks.append(sub_task)
-
+            if isinstance(res, Task):
+                task.subTasks.append(res)
                 explore_proc = ExploreProcess(tools_mgr=self.tools_mgr, db=self._db)
-                sub_msgs = await explore_proc.process(sub_task)
+                sub_msgs = await explore_proc.process(res)
                 self.message.extend(sub_msgs)
                 continue
 
-            # Check for completion
-            if self.state_collector.item:
-                self.prune_determine_state()
-                final_state = self.state_collector.item[0].state
+            if isinstance(res, StateClarification):
+                collectProc = CollectResultProcess(tools_mgr=self.tools_mgr, db=self._db)
+                await collectProc.process(task, self.message[index:])
                 break
 
-            # No tool called — agent gave plain text response, treat as finish
-            break
-
-        collectProc = CollectResultProcess(tools_mgr=self.tools_mgr, db=self._db)
-        await collectProc.process(task, self.message[index:])
 
         self._db.save_task(
             task_type="sub_task",
@@ -219,4 +207,4 @@ class SubTaskProcess:
             status="finished",
         )
 
-        return self.format_result_message(task, state=final_state)
+        return self.format_result_message(task, state="finished")
