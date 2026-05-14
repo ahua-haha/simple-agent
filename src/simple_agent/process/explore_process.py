@@ -4,7 +4,7 @@ from typing import Any
 
 from pi.agent import Agent, AgentTool, AgentToolResult, AgentToolUpdateCallback
 from pi.ai import ToolCall, get_model
-from pi.ai.types import AssistantMessage, ToolResultMessage
+from pi.ai.types import AssistantMessage, TextContent, ToolResultMessage, UserMessage
 from pi.agent.types import AgentMessage, AgentState
 from pi.coding.core.tools import create_all_tools
 
@@ -47,12 +47,12 @@ class ExploreProcess:
     _db: Database
 
 
-    def __init__(self):
+    def __init__(self, tools_mgr: ToolMgr | None = None, db: Database | None = None):
         register_custom_models()
         # model = get_model("minimax-cn", "MiniMax-M2.7")
         model = get_model("deepseek", "deepseek-v4-pro")
-        self.tools_mgr = ToolMgr()
-        self._db = Database()
+        self.tools_mgr = tools_mgr or ToolMgr()
+        self._db = db or Database()
         self.create_state_clarify_collector()
         self.wrap_tools()
 
@@ -116,7 +116,7 @@ class ExploreProcess:
             tool_log_id.extend(res.toolCallLogID)
         pprint(tool_log_id)
 
-        messages = []
+        messages = [UserMessage(content=[TextContent(text=task.input)], timestamp=0)]
         messages.extend(self.tools_mgr.get_all_messages(tool_log_id))
         return messages
 
@@ -132,16 +132,11 @@ class ExploreProcess:
         self.agent.subscribe(stream_event)
         index = len(context)
         self.message = context
-        print(context)
 
         await self._step(task)
 
-        collectProc = CollectResultProcess()
+        collectProc = CollectResultProcess(tools_mgr=self.tools_mgr, db=self._db)
         await collectProc.process(task, self.message[index:])
-
-        for res in task.result:
-            desc = res.desc[:80] + "..." if len(res.desc) > 80 else res.desc
-            print(f"[TextResult] desc={desc}, toolLogId={res.toolCallLogID}")
 
         # Save task to history
         self._db.save_task(
