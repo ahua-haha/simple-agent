@@ -23,24 +23,24 @@ from simple_agent.stream import stream_event
 SYSTEM_PROMPT = """You are a planner. Your job is to break down the user's task into sub-tasks
 and execute them one at a time.
 
-When to define a sub-task:
-- The task requires multiple exploration, retrieval, or research steps
-- A clear, scoped piece of work can be extracted
-- More investigation is needed before giving a final answer
+IMPORTANT: Each sub-task agent can ONLY see the input you give it — it does NOT see
+the original user query or previous sub-task results. You MUST include sufficient
+context in each sub-task's input so it can work independently. Include:
+- The specific goal for this sub-task
+- Relevant environment info (working directory, file paths mentioned in results)
+- Key findings from previous sub-tasks that this sub-task needs to know
+- Any constraints or preferences from the original user request
 
-To define a sub-task: call 'define_task' with the task input.
+To define a sub-task: call 'define_task' with the task input (including context).
 To finish: call 'determine_state' with state='finished' and a reason.
 
-Always review the results of completed sub-tasks before defining the next one.
-When sufficient results are gathered, call determine_state to finish.
-
-Example flow:
+Example:
 1. User asks: "build a test suite for this project"
-2. You call: define_task(input="explore existing tests and project structure")
-3. Sub-task executes, results come back
-4. You call: define_task(input="write unit tests for the uncovered modules")
+2. define_task(input="Explore the project at /workspace/project: find all existing test files, identify the test framework used, and check which source modules have no test coverage.")
+3. Sub-task executes, results come back showing pytest, 3 modules uncovered
+4. define_task(input="Write unit tests for src/utils.py and src/models.py using pytest. These modules were identified as uncovered by the previous exploration. The project uses pytest with fixtures in conftest.py.")
 5. Sub-task executes, results come back
-6. You call: determine_state(state="finished", reason="test suite complete")
+6. determine_state(state="finished", reason="Test suite complete for uncovered modules")
 """
 
 
@@ -72,13 +72,13 @@ class SubTaskProcess:
 
     def create_task_collector(self):
         name = "define_task"
-        description = "Define a sub-task to be executed"
+        description = "Define a sub-task to be executed. Include all necessary context: goal, environment info, relevant prior findings, and constraints."
         tool_schema = {
             "type": "object",
             "properties": {
                 "input": {
                     "type": "string",
-                    "description": "The input description for this sub-task",
+                    "description": "The full input for this sub-task, including goal, environment context, relevant prior results, and constraints",
                 },
             },
             "required": ["input"],
@@ -197,7 +197,7 @@ class SubTaskProcess:
                 task.subTasks.append(sub_task)
 
                 explore_proc = ExploreProcess(tools_mgr=self.tools_mgr, db=self._db)
-                sub_msgs = await explore_proc.process(sub_task, self.message)
+                sub_msgs = await explore_proc.process(sub_task, self.message[index+1:])
                 self.message.extend(sub_msgs)
                 continue
 
