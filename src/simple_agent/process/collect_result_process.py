@@ -17,13 +17,19 @@ from simple_agent.tool.collector import Collector
 SYSTEM_PROMPT = """You are a result synthesizer. Review the conversation history,
 use bash commands like tool-inspect, grep, sed, head to inspect
 tool results, and record each useful outcome as TextResult.
-Focus on WHAT was accomplished, not HOW.
+
+Focus on WHAT was accomplished, not HOW. Each TextResult description MUST:
+- Be a single concise sentence stating the outcome
+- Mention specific artifacts by name (files, modules, functions, classes)
+- Use past tense declarative form: "Found X", "Created Y", "Identified Z"
+- Be self-contained — readable without seeing the tool calls
+
 When done, respond with only FINISH. Do NOT generate verbose output.
 
 Examples:
-- bash("tool-inspect 3 | grep 'function'") to filter tool call 3 result
-- bash("tool-inspect 5 | head -10") to get first 10 lines
-- record_textresult(desc="Found main.py", toolCallLogID=[3]) to record a result
+- record_textresult(desc="Found main entry point at src/main.py with FastAPI app", toolCallLogID=[3])
+- record_textresult(desc="Identified 3 core modules: process, state, and tool", toolCallLogID=[1,2])
+- record_textresult(desc="Created test suite covering 12 functions across 3 modules", toolCallLogID=[5,6,7])
 """
 
 

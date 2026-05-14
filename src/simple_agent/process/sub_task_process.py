@@ -154,12 +154,29 @@ class SubTaskProcess:
             print("prune determine_state tool call")
             del self.message[-2:]
 
-    def format_result_message(self, task: Task) -> list[AgentMessage]:
-        result = [UserMessage(content=[TextContent(text=task.input)], timestamp=0)]
+    def format_result_message(self, task: Task, state: str = "finished") -> list[AgentMessage]:
+        result: list[AgentMessage] = []
+
+        # 1. Recorded tool calls
         tool_log_id: list[int] = []
         for res in task.result or []:
             tool_log_id.extend(res.toolCallLogID)
         result.extend(self.tools_mgr.get_all_messages(tool_log_id))
+
+        # 2. Assistant message — success or failure
+        from pi.ai.types import AssistantMessage as AsstMsg
+        status_text = "successfully completed" if state == "finished" else "failed to complete"
+        result.append(AsstMsg(
+            content=[TextContent(text=f"{status_text} the task: {task.input}\nthe result of the task are as follows")]
+        ))
+
+        # 3. Each TextResult as an individual AssistantMessage
+        for tr in task.result or []:
+            ids = ", ".join(str(i) for i in tr.toolCallLogID) if tr.toolCallLogID else "none"
+            result.append(AsstMsg(
+                content=[TextContent(text=f"{tr.desc} [toolCallLogID: {ids}]")]
+            ))
+
         return result
 
     async def _step(self, system_prompt: str, tool_list: list):
@@ -182,6 +199,8 @@ class SubTaskProcess:
         if task.subTasks is None:
             task.subTasks = []
 
+        final_state = "finished"
+
         while True:
             self.task_collector.clear()
             self.state_collector.clear()
@@ -197,13 +216,14 @@ class SubTaskProcess:
                 task.subTasks.append(sub_task)
 
                 explore_proc = ExploreProcess(tools_mgr=self.tools_mgr, db=self._db)
-                sub_msgs = await explore_proc.process(sub_task, self.message[index+1:])
+                sub_msgs = await explore_proc.process(sub_task)
                 self.message.extend(sub_msgs)
                 continue
 
             # Check for completion
             if self.state_collector.item:
                 self.prune_determine_state()
+                final_state = self.state_collector.item[0].state
                 break
 
             # No tool called — agent gave plain text response, treat as finish
@@ -220,4 +240,4 @@ class SubTaskProcess:
             status="finished",
         )
 
-        return self.format_result_message(task)
+        return self.format_result_message(task, state=final_state)
