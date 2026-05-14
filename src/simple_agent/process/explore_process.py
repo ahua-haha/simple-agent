@@ -125,7 +125,7 @@ class ExploreProcess:
         self.message = self.agent.state.messages
         self.prune_message()
 
-    async def process(self, task: Task, context: list[AgentMessage]) -> list[AgentMessage]:
+    async def process(self, task: Task, context: list[AgentMessage] = []) -> list[AgentMessage]:
         self.agent.reset()
         # self.agent.replace_messages(task.message)
         self.agent.subscribe(stream_event)
