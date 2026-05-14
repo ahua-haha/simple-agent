@@ -1,0 +1,31 @@
+{% extends "base.html" %}
+{% block title %}Tasks — Simple Agent Debug{% endblock %}
+{% block content %}
+<h2 style="margin-bottom:16px">Tasks</h2>
+{% if tasks %}
+<table>
+    <thead>
+        <tr>
+            <th>ID</th>
+            <th>Type</th>
+            <th>Status</th>
+            <th>Input</th>
+            <th>Created</th>
+        </tr>
+    </thead>
+    <tbody>
+    {% for task in tasks %}
+        <tr>
+            <td><a href="/task/{{ task.id }}">{{ task.id }}</a></td>
+            <td><span class="badge badge-{{ task.type }}">{{ task.type }}</span></td>
+            <td><span class="badge badge-{{ task.status }}">{{ task.status }}</span></td>
+            <td><div class="input-preview">{{ task.input or "" }}</div></td>
+            <td style="font-size:0.8em;color:#888">{{ task.created_at }}</td>
+        </tr>
+    {% endfor %}
+    </tbody>
+</table>
+{% else %}
+<p style="color:#888">No tasks found.</p>
+{% endif %}
+{% endblock %}

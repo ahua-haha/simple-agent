@@ -1,0 +1,50 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>{% block title %}Simple Agent Debug{% endblock %}</title>
+    <style>
+        * { box-sizing: border-box; margin: 0; padding: 0; }
+        body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', monospace; background: #1a1a2e; color: #e0e0e0; padding: 20px; }
+        a { color: #7ec8e3; text-decoration: none; }
+        a:hover { text-decoration: underline; }
+        .container { max-width: 1200px; margin: 0 auto; }
+        nav { margin-bottom: 20px; }
+        nav a { margin-right: 16px; }
+        table { width: 100%; border-collapse: collapse; }
+        th, td { padding: 8px 12px; text-align: left; border-bottom: 1px solid #333; }
+        th { background: #16213e; color: #7ec8e3; font-weight: 600; }
+        tr:hover { background: #16213e; }
+        .badge { display: inline-block; padding: 2px 8px; border-radius: 4px; font-size: 0.8em; }
+        .badge-finished { background: #1b4332; color: #95d5b2; }
+        .badge-error { background: #4a1a1a; color: #ff6b6b; }
+        .badge-single_run { background: #1a3a4a; color: #7ec8e3; }
+        .badge-explore { background: #3a2a4a; color: #c9b1ff; }
+        .msg { margin-bottom: 16px; padding: 12px; border-radius: 6px; }
+        .msg-user { background: #16213e; border-left: 3px solid #7ec8e3; }
+        .msg-assistant { background: #1a1a2e; border-left: 3px solid #95d5b2; }
+        .msg-tool-result { background: #1a2e1a; border-left: 3px solid #52b788; }
+        .msg-text-result { background: #2e2e1a; border-left: 3px solid #ffd166; }
+        .msg-label { font-size: 0.7em; text-transform: uppercase; letter-spacing: 1px; margin-bottom: 8px; color: #888; }
+        pre { white-space: pre-wrap; word-break: break-word; font-size: 0.9em; line-height: 1.5; }
+        .tool-call { color: #ffd166; margin: 4px 0; }
+        .thinking { color: #888; font-style: italic; }
+        details { margin: 4px 0; }
+        summary { cursor: pointer; color: #888; font-size: 0.85em; }
+        .tool-log-id { color: #888; font-size: 0.8em; }
+        .input-preview { max-width: 400px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+        .task-not-found { text-align: center; padding: 60px; }
+        .task-not-found h1 { color: #ff6b6b; }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <nav>
+            <a href="/">Tasks</a>
+            <span style="color:#888">Simple Agent Debug</span>
+        </nav>
+        {% block content %}{% endblock %}
+    </div>
+</body>
+</html>

@@ -1,0 +1,67 @@
+{% extends "base.html" %}
+{% block title %}Task #{{ task.id }} — Simple Agent Debug{% endblock %}
+{% block content %}
+<h2 style="margin-bottom:4px">Task #{{ task.id }}</h2>
+<p style="color:#888;margin-bottom:16px">
+    <span class="badge badge-{{ task.type }}">{{ task.type }}</span>
+    <span class="badge badge-{{ task.status }}">{{ task.status }}</span>
+    {{ task.input or "" }}
+</p>
+
+{% if task.messages %}
+    {% for msg in task.messages %}
+        {% if msg.__class__.__name__ == "UserMessage" %}
+        <div class="msg msg-user">
+            <div class="msg-label">User</div>
+            {% for c in msg.content %}
+                <div>{{ c.text if c.text else "" }}</div>
+            {% endfor %}
+        </div>
+        {% elif msg.__class__.__name__ == "AssistantMessage" %}
+        <div class="msg msg-assistant">
+            <div class="msg-label">Assistant</div>
+            {% for item in msg.content %}
+                {% if item.__class__.__name__ == "ThinkingContent" %}
+                    <details>
+                        <summary>Thinking</summary>
+                        <div class="thinking">{{ item.thinking }}</div>
+                    </details>
+                {% elif item.__class__.__name__ == "TextContent" %}
+                    <div>{{ item.text }}</div>
+                {% elif item.__class__.__name__ == "ToolCall" %}
+                    <details>
+                        <summary>Tool Call: {{ item.name }}</summary>
+                        <pre class="tool-call">{{ item.arguments | tojson(indent=2) if item.arguments else "{}" }}</pre>
+                    </details>
+                {% endif %}
+            {% endfor %}
+        </div>
+        {% elif msg.__class__.__name__ == "ToolResultMessage" %}
+        <div class="msg msg-tool-result">
+            <div class="msg-label">Tool Result — {{ msg.tool_name }}</div>
+            {% for c in msg.content %}
+                <details>
+                    <summary>Result ({{ c.text | length if c.text else 0 }} chars)</summary>
+                    <pre>{{ c.text[:2000] if c.text else "" }}{% if c.text and c.text | length > 2000 %}...truncated{% endif %}</pre>
+                </details>
+            {% endfor %}
+        </div>
+        {% endif %}
+    {% endfor %}
+{% else %}
+    <p style="color:#888">(No messages)</p>
+{% endif %}
+
+{% if task.results %}
+<div style="margin-top:24px">
+    <h3 style="margin-bottom:12px">Task Results</h3>
+    {% for result in task.results %}
+    <div class="msg msg-text-result">
+        <div class="msg-label">TextResult #{{ loop.index }}</div>
+        <div>{{ result.desc }}</div>
+        <div class="tool-log-id">toolCallLogID: {{ result.toolCallLogID }}</div>
+    </div>
+    {% endfor %}
+</div>
+{% endif %}
+{% endblock %}

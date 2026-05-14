@@ -6,17 +6,21 @@ readme = "README.md"
 requires-python = ">=3.14"
 license = "MIT"
 dependencies = [
+    "fastapi>=0.115.0",
     "gitpython",
+    "jinja2>=3.0.0",
     "pi-agent",
     "pi-ai",
     "pi-coding-agent",
     "pi-tui",
     "sqlmodel>=0.0.38",
+    "uvicorn>=0.34.0",
 ]
 
 [project.scripts]
 tool-inspect = "simple_agent.cli.tool_inspect:main"
 task-msg-log = "simple_agent.cli.task_msg_log:main"
+simple-agent-web = "simple_agent.web.__main__:main"
 
 [dependency-groups]
 dev = [
