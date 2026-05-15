@@ -2,21 +2,15 @@
 
 from __future__ import annotations
 
-import asyncio
-from typing import Any
-
-from pi.agent import Agent, AgentTool, AgentToolResult, AgentToolUpdateCallback
-from pi.ai import UserMessage, TextContent, get_model
-from pi.ai.types import AssistantMessage, ToolResultMessage
 from pi.agent.types import AgentMessage
 
 from simple_agent.process.collect_result_process import CollectResultProcess
-from simple_agent.models import register_custom_models, get_api_key
+from simple_agent.process.agent_process import AgentProcess
 from simple_agent.state.state import Task, StateClarification
 from simple_agent.tool.tool_mgr import ToolMgr
-from simple_agent.tool.collector import Collector
 from simple_agent.db.db import Database
 from simple_agent.stream import stream_event
+from pi.ai import get_model
 
 
 SYSTEM_PROMPT = """You are a helpful assistant. Use the available tools to directly accomplish the user's task.
@@ -37,87 +31,55 @@ Final response: ...
 
 
 class SingleRunProcess:
-    agent: Agent
-    tools_mgr: ToolMgr
-    tools: list[AgentTool]
-    state_collector: Collector
-    message: list[AgentMessage]
-    _db: Database
+
+    proc: AgentProcess
 
     def __init__(self, tools_mgr: ToolMgr | None = None, db: Database | None = None):
-        register_custom_models()
-        model = get_model("deepseek", "deepseek-v4-pro")
         self.tools_mgr = tools_mgr or ToolMgr()
         self._db = db or Database()
-        self.create_state_clarify_collector()
-        self.wrap_tools()
+        self.message: list[AgentMessage] = []
 
-        agent = Agent(get_api_key=get_api_key)
-        agent.set_model(model)
-        all_tools = self.tools_mgr.create_all_tools(".")
-        all_tools.extend(self.state_collector.tools)
-
-        self.tools = all_tools
-        self.agent = agent
-
-    def create_state_clarify_collector(self):
-        name = "determine_state"
-        description = "Determine the current state based on context. States: finished (task complete), error (task failed)"
-        tool_schema = {
-            "type": "object",
-            "properties": {
-                "state": {
-                    "type": "string",
-                    "description": "Available states:\n- finished: task complete\n- error: task failed",
-                    "enum": ["finished", "error"],
+        determine_state_tool = self.tools_mgr.create_record_tool(
+            model_class=StateClarification,
+            name="determine_state",
+            description="Determine the current state based on context. States: finished (task complete), error (task failed)",
+            parameters={
+                "type": "object",
+                "properties": {
+                    "state": {
+                        "type": "string",
+                        "description": "Available states:\n- finished: task complete\n- error: task failed",
+                        "enum": ["finished", "error"],
+                    },
+                    "reason": {"type": "string", "description": "Reason for choosing this state"},
                 },
-                "reason": {
-                    "type": "string",
-                    "description": "Reason for choosing this state",
-                },
+                "required": ["state", "reason"],
             },
-            "required": ["state", "reason"],
-        }
-        self.state_collector = self.tools_mgr.create_collector(StateClarification, name, description, tool_schema)
+        )
 
-    def wrap_tools(self):
-        tool = self.state_collector.tools[0]
-        original = tool.execute
-        async def execute(
-            tool_call_id: str,
-            params: dict[str, Any],
-            cancel_event: asyncio.Event | None = None,
-            on_update: AgentToolUpdateCallback | None = None,
-        ) -> AgentToolResult:
-            res = await original(tool_call_id, params, cancel_event, on_update)
-            if not self.state_collector.item:
-                return res
-            state = self.state_collector.item[0].state
-            print(f"abort on state {state}")
-            self.agent.abort()
-            return res
-        tool.execute = execute
-
-    def prune_message(self):
-        lastToolCall = self.message[-2:]
-        if isinstance(lastToolCall[0], AssistantMessage) and isinstance(lastToolCall[1], ToolResultMessage) and lastToolCall[1].tool_name == "determine_state":
-            print("prune last two determine state tool call")
-            del self.message[-2:]
+        proc = AgentProcess(get_model("deepseek", "deepseek-v4-pro"))
+        proc.agent.subscribe(stream_event)
+        proc.add_tool(determine_state_tool, on_call=lambda self: self.stop_agent("determine_state"), store=True)
+        for tool in self.tools_mgr.create_all_tools("."):
+            proc.add_tool(tool)
+        self.proc = proc
 
     def format_result_message(self, task: Task, state: str = "finished") -> list[AgentMessage]:
         from simple_agent.format import format_results
         return format_results(self.tools_mgr, task, status=state)
 
-    async def _step(self, system_prompt: str, tool_list: list, user_prompt: str):
-        self.agent.set_system_prompt(system_prompt)
-        self.agent.set_tools(tool_list)
-        self.agent.replace_messages(self.message)
-        await self.agent.prompt(user_prompt)
-        self.message = self.agent.state.messages
+    async def try_run(self, task: Task) -> StateClarification | None:
+        await self.proc.step(SYSTEM_PROMPT, self.message, task.input)
+        new_messages, _, results = self.proc.prune("determine_state").result()
+        self.message = new_messages
+
+        state_result = results.get("determine_state")
+        if isinstance(state_result, StateClarification):
+            return state_result
+        return None
 
     async def process(self, task: Task, context: list[AgentMessage] = []) -> list[AgentMessage]:
-        self.agent.reset()
-        self.agent.subscribe(stream_event)
+        self.proc.agent.reset()
 
         index = len(context)
         self.message = context
@@ -125,18 +87,21 @@ class SingleRunProcess:
         if task.result is None:
             task.result = []
 
-        await self._step(SYSTEM_PROMPT, self.tools, task.input)
-        self.prune_message()
+        state_result = await self.try_run(task)
 
         collectProc = CollectResultProcess(tools_mgr=self.tools_mgr, db=self._db)
         await collectProc.process(task, self.message[index:])
+
+        state = "finished"
+        if state_result is not None:
+            state = state_result.state
 
         self._db.save_task(
             task_type="single_run",
             task_input=task.input,
             messages=self.message,
             results=task.result,
-            status="finished",
+            status=state,
         )
 
-        return self.format_result_message(task)
+        return self.format_result_message(task, state=state)
