@@ -2,20 +2,14 @@
 
 from __future__ import annotations
 
-import asyncio
-from typing import Any
-
-from pi.agent import Agent, AgentToolResult, AgentToolUpdateCallback
 from pi.ai import UserMessage, TextContent, get_model
-from pi.ai.types import AssistantMessage, ToolResultMessage
-from pi.agent.types import AgentMessage, AgentTool
+from pi.agent.types import AgentMessage
 
 from simple_agent.process.explore_process import ExploreProcess
 from simple_agent.process.collect_result_process import CollectResultProcess
-from simple_agent.models import register_custom_models, get_api_key
+from simple_agent.process.agent_process import AgentProcess
 from simple_agent.state.state import Task, StateClarification
 from simple_agent.tool.tool_mgr import ToolMgr
-from simple_agent.tool.collector import Collector
 from simple_agent.db.db import Database
 from simple_agent.stream import stream_event
 
@@ -45,134 +39,68 @@ Example:
 
 
 class SubTaskProcess:
-    agent: Agent
-    tools_mgr: ToolMgr
-    task_collector: Collector
-    state_collector: Collector
-    _tools: list
-    message: list[AgentMessage]
-    _db: Database
+
+    proc: AgentProcess
 
     def __init__(self, tools_mgr: ToolMgr | None = None, db: Database | None = None):
-        register_custom_models()
-        model = get_model("deepseek", "deepseek-v4-pro")
         self.tools_mgr = tools_mgr or ToolMgr()
         self._db = db or Database()
-        self.create_task_collector()
-        self.create_state_clarify_collector()
-        self.wrap_tools()
+        self.message: list[AgentMessage] = []
 
-        agent = Agent(get_api_key=get_api_key)
-        agent.set_model(model)
-        self._tools: list = []
-        self._tools.extend(self.task_collector.tools)
-        self._tools.extend(self.state_collector.tools)
-        agent.set_tools(self._tools)
-        self.agent = agent
-
-    def create_task_collector(self):
-        name = "define_task"
-        description = "Define a sub-task to be executed. Include all necessary context: goal, environment info, relevant prior findings, and constraints."
-        tool_schema = {
-            "type": "object",
-            "properties": {
-                "input": {
-                    "type": "string",
-                    "description": "The full input for this sub-task, including goal, environment context, relevant prior results, and constraints",
+        define_task_tool = self.tools_mgr.create_record_tool(
+            model_class=Task,
+            name="define_task",
+            description="Define a sub-task to be executed. Include all necessary context: goal, environment info, relevant prior findings, and constraints.",
+            parameters={
+                "type": "object",
+                "properties": {
+                    "input": {"type": "string", "description": "The full input for this sub-task, including goal, environment context, relevant prior results, and constraints"},
                 },
+                "required": ["input"],
             },
-            "required": ["input"],
-        }
-        self.task_collector = self.tools_mgr.create_collector(
-            Task, name, description, tool_schema
+        )
+        determine_state_tool = self.tools_mgr.create_record_tool(
+            model_class=StateClarification,
+            name="determine_state",
+            description="Determine the current state. States: finished (task complete), error (task failed)",
+            parameters={
+                "type": "object",
+                "properties": {
+                    "state": {"type": "string", "description": "Available states:\n- finished: task complete\n- error: task failed", "enum": ["finished", "error"]},
+                    "reason": {"type": "string", "description": "Reason for choosing this state"},
+                },
+                "required": ["state", "reason"],
+            },
         )
 
-    def create_state_clarify_collector(self):
-        name = "determine_state"
-        description = "Determine the current state. States: finished (task complete), error (task failed)"
-        tool_schema = {
-            "type": "object",
-            "properties": {
-                "state": {
-                    "type": "string",
-                    "description": "Available states:\n- finished: task complete\n- error: task failed",
-                    "enum": ["finished", "error"],
-                },
-                "reason": {
-                    "type": "string",
-                    "description": "Reason for choosing this state",
-                },
-            },
-            "required": ["state", "reason"],
-        }
-        self.state_collector = self.tools_mgr.create_collector(
-            StateClarification, name, description, tool_schema
-        )
-
-    def wrap_tools(self):
-        # Wrap define_task to abort agent on call
-        task_tool = self.task_collector.tools[0]
-        task_original = task_tool.execute
-        async def task_execute(
-            tool_call_id: str,
-            params: dict[str, Any],
-            cancel_event: asyncio.Event | None = None,
-            on_update: AgentToolUpdateCallback | None = None,
-        ) -> AgentToolResult:
-            res = await task_original(tool_call_id, params, cancel_event, on_update)
-            print(f"sub-task defined: {params.get('input', '')[:60]}...")
-            self.agent.abort()
-            return res
-        task_tool.execute = task_execute
-
-        # Wrap determine_state to abort agent on call
-        state_tool = self.state_collector.tools[0]
-        state_original = state_tool.execute
-        async def state_execute(
-            tool_call_id: str,
-            params: dict[str, Any],
-            cancel_event: asyncio.Event | None = None,
-            on_update: AgentToolUpdateCallback | None = None,
-        ) -> AgentToolResult:
-            res = await state_original(tool_call_id, params, cancel_event, on_update)
-            if self.state_collector.item:
-                state = self.state_collector.item[0].state
-                print(f"abort on state {state}")
-                self.agent.abort()
-            return res
-        state_tool.execute = state_execute
+        proc = AgentProcess(get_model("deepseek", "deepseek-v4-pro"))
+        proc.add_tool(define_task_tool, on_call=lambda self: self.stop_agent("define_task"), store=True)
+        proc.add_tool(determine_state_tool, on_call=lambda self: self.stop_agent("determine_state"), store=True)
+        proc.agent.subscribe(stream_event)
+        self.proc = proc
 
     def format_result_message(self, task: Task, state: str = "finished") -> list[AgentMessage]:
         from simple_agent.format import format_results
         return format_results(self.tools_mgr, task, status=state)
 
-    async def _step(self, tool_list: list[AgentTool], system_prompt: str, messages: list[AgentMessage], user_prompt: str) -> list[AgentMessage]:
-        self.agent.set_system_prompt(system_prompt)
-        self.agent.set_tools(tool_list)
-        self.agent.replace_messages(messages)
-        await self.agent.prompt(user_prompt)
-        return self.agent.state.messages
+    async def try_sub_task(self) -> Task | StateClarification | None:
+        await self.proc.step(
+            SYSTEM_PROMPT, self.message,
+            "now based on the history, determine whether to define a sub task or this task is completed",
+        )
+        new_messages, finish_reason, results = self.proc.result()
 
-    async def try_sub_task(self) -> Task | StateClarification:
-        """Prompt the agent to define a sub-task or complete. Returns sub-Task or None."""
-        self.task_collector.clear()
-        self.state_collector.clear()
+        task_result = results.get("define_task")
+        if isinstance(task_result, Task):
+            return task_result
 
-        await self._step(self._tools, SYSTEM_PROMPT, self.message, "now based on the history, determine whether to define a sub task or this task is completed")
-
-        if self.task_collector.item and isinstance(self.task_collector.item[0], Task):
-            sub_task = self.task_collector.item[0]
-            sub_task.result = []
-            return sub_task
-
-        if self.state_collector.item and isinstance(self.state_collector.item[0], StateClarification):
-            return self.state_collector[0]
+        state_result = results.get("determine_state")
+        if isinstance(state_result, StateClarification):
+            return state_result
 
         return None
 
     async def process(self, task: Task, context: list[AgentMessage] = []) -> list[AgentMessage]:
-        self.agent.reset()
-        self.agent.subscribe(stream_event)
 
         index = len(context)
         self.message = context
@@ -187,9 +115,10 @@ class SubTaskProcess:
             res = await self.try_sub_task()
 
             if isinstance(res, Task):
+                res.result = []
                 task.subTasks.append(res)
                 explore_proc = ExploreProcess(tools_mgr=self.tools_mgr, db=self._db)
-                sub_msgs = await explore_proc.process(res)
+                sub_msgs = await explore_proc.process(res, self.message)
                 self.message.extend(sub_msgs)
                 continue
 
@@ -198,6 +127,7 @@ class SubTaskProcess:
                 await collectProc.process(task, self.message[index:])
                 break
 
+            break
 
         self._db.save_task(
             task_type="sub_task",

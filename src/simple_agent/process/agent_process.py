@@ -19,9 +19,9 @@ HookFn = Callable[["AgentProcess"], None]
 class AgentProcess:
     agent: Agent
     finish_reason: str | None
+    _tools: list[AgentTool]
     message: list[AgentMessage]
     _results: dict[str, Any]
-    _tools: list[AgentTool]
 
     def __init__(self, model):
         register_custom_models()
@@ -59,17 +59,21 @@ class AgentProcess:
         self._tools.append(tool)
         return self
 
+    def reset(self):
+        self.message = []
+        self.finish_reason = None
+        self._results = None
+        self.agent.reset()
+
     async def step(
         self,
         system_prompt: str,
         messages: list[AgentMessage],
         user_prompt: str,
-        tools: list | None = None,
     ) -> AgentProcess:
         """Run the agent. Returns self for chaining."""
-        self.finish_reason = None
+        self.reset()
         self.agent.set_system_prompt(system_prompt)
-        self.agent.set_tools(tools if tools is not None else self._tools)
         self.agent.replace_messages(messages)
         await self.agent.prompt(user_prompt)
         self.message = self.agent.state.messages
@@ -89,7 +93,4 @@ class AgentProcess:
     def result(self) -> tuple:
         """Return the recorded result for the named tool, or None."""
         res = (self.message, self.finish_reason, self._results)
-        self.message = []
-        self.finish_reason = None
-        self._results = None
         return res
