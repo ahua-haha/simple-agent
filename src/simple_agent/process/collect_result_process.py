@@ -64,9 +64,9 @@ class CollectResultProcess:
         new_messages, _, results = self.proc.result()
         self.message = new_messages
 
-        text_result = results.get("record_textresult")
-        if isinstance(text_result, TextResult):
-            task.result = [text_result]
+        items = results.get("record_textresult", [])
+        if items:
+            task.result = [i for i in items if isinstance(i, TextResult)]
 
         self._db.save_task(
             task_type="collect result",

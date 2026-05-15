@@ -90,13 +90,13 @@ class SubTaskProcess:
         )
         new_messages, finish_reason, results = self.proc.result()
 
-        task_result = results.get("define_task")
-        if isinstance(task_result, Task):
-            return task_result
+        items = results.get("define_task", [])
+        if items and isinstance(items[-1], Task):
+            return items[-1]
 
-        state_result = results.get("determine_state")
-        if isinstance(state_result, StateClarification):
-            return state_result
+        items = results.get("determine_state", [])
+        if items and isinstance(items[-1], StateClarification):
+            return items[-1]
 
         return None
 

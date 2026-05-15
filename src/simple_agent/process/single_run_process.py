@@ -73,9 +73,9 @@ class SingleRunProcess:
         new_messages, _, results = self.proc.prune("determine_state").result()
         self.message = new_messages
 
-        state_result = results.get("determine_state")
-        if isinstance(state_result, StateClarification):
-            return state_result
+        items = results.get("determine_state", [])
+        if items and isinstance(items[-1], StateClarification):
+            return items[-1]
         return None
 
     async def process(self, task: Task, context: list[AgentMessage] = []) -> list[AgentMessage]:

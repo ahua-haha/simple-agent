@@ -21,12 +21,12 @@ class AgentProcess:
     finish_reason: str | None
     _tools: list[AgentTool]
     message: list[AgentMessage]
-    _results: dict[str, Any]
+    _results: dict[str, list]
 
     def __init__(self, model):
         register_custom_models()
         self._tools = []
-        self._results: dict[str, Any] = {}
+        self._results: dict[str, list] = {}
         self.message = []
         self.finish_reason = None
 
@@ -54,7 +54,7 @@ class AgentProcess:
                 ) -> AgentToolResult:
                     res = await original(tool_call_id, params, cancel_event, on_update)
                     if store and t.result is not None:
-                        self._results[t.name] = t.result
+                        self._results.setdefault(t.name, []).append(t.result)
                         t.result = None
                     on_call(self)
                     return res
@@ -65,7 +65,7 @@ class AgentProcess:
     def reset(self):
         self.message = []
         self.finish_reason = None
-        self._results = None
+        self._results.clear()
         self.agent.reset()
 
     async def step(
