@@ -44,21 +44,21 @@ class AgentProcess:
         if isinstance(tool, AgentTool):
             tool = [tool]
         for t in tool:
-            if on_call:
-                original = t.execute
-                async def wrapped(
-                    tool_call_id: str,
-                    params: dict[str, Any],
-                    cancel_event: asyncio.Event | None = None,
-                    on_update: AgentToolUpdateCallback | None = None,
-                ) -> AgentToolResult:
-                    res = await original(tool_call_id, params, cancel_event, on_update)
-                    if store and t.result is not None:
-                        self._results.setdefault(t.name, []).append(t.result)
-                        t.result = None
+            original = t.execute
+            async def wrapped(
+                tool_call_id: str,
+                params: dict[str, Any],
+                cancel_event: asyncio.Event | None = None,
+                on_update: AgentToolUpdateCallback | None = None,
+            ) -> AgentToolResult:
+                res = await original(tool_call_id, params, cancel_event, on_update)
+                if store and t.result is not None:
+                    self._results.setdefault(t.name, []).append(t.result)
+                    t.result = None
+                if on_call:
                     on_call(self)
-                    return res
-                t.execute = wrapped
+                return res
+            t.execute = wrapped
             self._tools.append(t)
         return self
 
@@ -76,8 +76,10 @@ class AgentProcess:
     ) -> AgentProcess:
         """Run the agent. Returns self for chaining."""
         self.reset()
+
         self.agent.set_system_prompt(system_prompt)
         self.agent.replace_messages(messages)
+        self.agent.set_tools(self._tools)
         await self.agent.prompt(user_prompt)
         self.message = self.agent.state.messages
         return self
