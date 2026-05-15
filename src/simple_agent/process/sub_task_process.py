@@ -118,7 +118,7 @@ class SubTaskProcess:
                 res.result = []
                 task.subTasks.append(res)
                 explore_proc = ExploreProcess(tools_mgr=self.tools_mgr, db=self._db)
-                sub_msgs = await explore_proc.process(res)
+                sub_msgs = await explore_proc.process(res, self.message[index+1:])
                 self.message.extend(sub_msgs)
                 continue
 

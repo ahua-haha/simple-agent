@@ -32,27 +32,10 @@ class ToolMgr:
             tool = self.wrap_tools(tool)
         return tools
 
-    def get_all_messages(self, log_id: list[int]) -> list[AgentMessage]:
-        res = []
+    def get_all_messages(self, log_id: list[int]) -> list[ToolExecMessage]:
         if not log_id:
-            return res
-
-        records = self._db.get_tool_calls_by_ids(log_id)
-        for record in records:
-            assistant_msg = AssistantMessage(
-                role="assistant",
-                content=[record.tool_call],
-                stop_reason="tool_use",
-            )
-            tool_result_msg = ToolResultMessage(
-                tool_call_id=record.tool_call.id,
-                tool_name=record.tool_call.name,
-                content=record.tool_result.content,
-                details=record.tool_result.details,
-                is_error=False,
-            )
-            res.extend([assistant_msg, tool_result_msg])
-        return res
+            return []
+        return self._db.get_tool_calls_by_ids(log_id)
 
 
 
