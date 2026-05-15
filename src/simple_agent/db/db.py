@@ -63,6 +63,11 @@ class Database:
 
     # --- ToolCall operations ---
 
+    def next_tool_call_id(self) -> int:
+        with self._get_session() as session:
+            max_record = session.exec(select(ToolCallRecord).order_by(ToolCallRecord.id.desc())).first()
+            return (max_record.id + 1) if max_record else 0
+
     def insert_tool_call(self, tool_exec: ToolExecMessage) -> int:
         """Insert a tool call record and return its ID.
 
@@ -74,8 +79,7 @@ class Database:
         """
         with self._get_session() as session:
             # Get next ID
-            max_record = session.exec(select(ToolCallRecord).order_by(ToolCallRecord.id.desc())).first()
-            next_id = (max_record.id + 1) if max_record else 0
+            next_id = self.next_tool_call_id()
 
             record = ToolCallRecord(
                 id=next_id,

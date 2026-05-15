@@ -48,15 +48,16 @@ class ToolMgr:
             on_update: AgentToolUpdateCallback | None = None,
         ) -> AgentToolResult:
             res = await original(tool_call_id, params, cancel_event, on_update)
-            raw_output = res.content[0].text
+            raw = res.content[0].text
+            next_id = self._db.next_tool_call_id()
+            res = _format(next_id, res)
 
             tool_exec = ToolExecMessage(
                 tool_call=ToolCall(id=tool_call_id, arguments=params, name=tool.name),
-                raw_output=raw_output,
-                tool_result=res
+                raw_output=raw,
+                tool_result=res,
             )
-            next_id = self._db.insert_tool_call(tool_exec)
-            res = _format(next_id, res)
+            self._db.insert_tool_call(tool_exec)
             return res
         tool.execute = execute
         return tool
