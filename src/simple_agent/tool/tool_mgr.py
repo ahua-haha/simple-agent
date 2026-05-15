@@ -8,8 +8,7 @@ from pi.agent import AgentTool, AgentToolResult, AgentToolUpdateCallback, AgentM
 from pi.ai.types import TextContent
 from pi.coding import create_all_tools
 
-from simple_agent.state.state import TextResult, TEXT_RESULT_JSON_SCHEMA, ToolExecMessage
-from simple_agent.tool.collector import Collector
+from simple_agent.state.state import ToolExecMessage
 from simple_agent.db.db import Database
 
 
@@ -79,15 +78,22 @@ class ToolMgr:
         tool.execute = execute
         return tool
 
-    def create_collector(self, model_class: type, name: str, description: str, parameters: dict[str, Any]) -> Collector:
-        collector = Collector()
-        tool = collector.create_record_tool(
-            model_class=model_class,
-            name=name,
-            description=description,
-            parameters=parameters,
-        )
-        wrapped_tool = self.wrap_tools(tool)
-        collector.register_record_tool(wrapped_tool)
+    def create_record_tool(self, model_class: type, name: str, description: str, parameters: dict[str, Any]) -> AgentTool:
+        tool = AgentTool(name=name, description=description, parameters=parameters)
+        async def execute(
+            tool_call_id: str,
+            params: dict[str, Any],
+            cancel_event: asyncio.Event | None = None,
+            on_update: AgentToolUpdateCallback | None = None,
+        ) -> AgentToolResult:
+            try:
+                item = model_class.model_validate(params)
+                tool.result = item
+                return AgentToolResult(content=[TextContent(text="ok")])
+            except Exception as e:
+                return AgentToolResult(content=[TextContent(text=f"validation failed: {e}")])
 
-        return collector
+        tool.execute = execute
+        tool.result = None
+        wrapped_tool = self.wrap_tools(tool)
+        return wrapped_tool
