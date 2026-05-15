@@ -38,25 +38,28 @@ class AgentProcess:
         self.finish_reason = reason
         self.agent.abort()
 
-    def add_tool(self, tool: AgentTool, on_call: HookFn | None = None, store: bool = False) -> AgentProcess:
-        """Add a tool. If on_call is given, the tool's .result is captured to self._results[tool.name]
-        and on_call(self) is invoked after execution. Returns self."""
-        if on_call:
-            original = tool.execute
-            async def wrapped(
-                tool_call_id: str,
-                params: dict[str, Any],
-                cancel_event: asyncio.Event | None = None,
-                on_update: AgentToolUpdateCallback | None = None,
-            ) -> AgentToolResult:
-                res = await original(tool_call_id, params, cancel_event, on_update)
-                if store:
-                    self._results[tool.name] = tool.result
-                    tool.result = None
-                on_call(self)
-                return res
-            tool.execute = wrapped
-        self._tools.append(tool)
+    def add_tool(self, tool: AgentTool | list[AgentTool], on_call: HookFn | None = None, store: bool = False) -> AgentProcess:
+        """Add one or more tools. If on_call is given, the tool's .result is captured to
+        self._results[tool.name] and on_call(self) is invoked after execution. Returns self."""
+        if isinstance(tool, AgentTool):
+            tool = [tool]
+        for t in tool:
+            if on_call:
+                original = t.execute
+                async def wrapped(
+                    tool_call_id: str,
+                    params: dict[str, Any],
+                    cancel_event: asyncio.Event | None = None,
+                    on_update: AgentToolUpdateCallback | None = None,
+                ) -> AgentToolResult:
+                    res = await original(tool_call_id, params, cancel_event, on_update)
+                    if store and t.result is not None:
+                        self._results[t.name] = t.result
+                        t.result = None
+                    on_call(self)
+                    return res
+                t.execute = wrapped
+            self._tools.append(t)
         return self
 
     def reset(self):
