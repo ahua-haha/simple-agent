@@ -61,8 +61,7 @@ class SingleRunProcess:
         proc = AgentProcess(get_model("deepseek", "deepseek-v4-pro"))
         proc.agent.subscribe(stream_event)
         proc.add_tool(determine_state_tool, on_call=lambda self: self.stop_agent("determine_state"), store=True)
-        for tool in self.tools_mgr.create_all_tools("."):
-            proc.add_tool(tool)
+        proc.add_tool(self.tools_mgr.create_all_tools("."))
         self.proc = proc
 
     def format_result_message(self, task: Task, state: str = "finished") -> list[AgentMessage]:

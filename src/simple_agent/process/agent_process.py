@@ -44,21 +44,22 @@ class AgentProcess:
         if isinstance(tool, AgentTool):
             tool = [tool]
         for t in tool:
-            original = t.execute
-            async def wrapped(
-                tool_call_id: str,
-                params: dict[str, Any],
-                cancel_event: asyncio.Event | None = None,
-                on_update: AgentToolUpdateCallback | None = None,
-            ) -> AgentToolResult:
-                res = await original(tool_call_id, params, cancel_event, on_update)
-                if store and t.result is not None:
-                    self._results.setdefault(t.name, []).append(t.result)
-                    t.result = None
-                if on_call:
-                    on_call(self)
-                return res
-            t.execute = wrapped
+            if on_call or store:
+                original = t.execute
+                async def wrapped(
+                    tool_call_id: str,
+                    params: dict[str, Any],
+                    cancel_event: asyncio.Event | None = None,
+                    on_update: AgentToolUpdateCallback | None = None,
+                ) -> AgentToolResult:
+                    res = await original(tool_call_id, params, cancel_event, on_update)
+                    if store and t.result is not None:
+                        self._results.setdefault(t.name, []).append(t.result)
+                        t.result = None
+                    if on_call:
+                        on_call(self)
+                    return res
+                t.execute = wrapped
             self._tools.append(t)
         return self
 

@@ -42,6 +42,8 @@ Final response: "Found 4 modules: process, state, tool, db"
 
 class ExploreProcess:
 
+    proc: AgentProcess
+
     def __init__(self, tools_mgr: ToolMgr | None = None, db: Database | None = None):
         self.tools_mgr = tools_mgr or ToolMgr()
         self._db = db or Database()
@@ -65,11 +67,11 @@ class ExploreProcess:
             },
         )
 
-        self.proc = AgentProcess(get_model("deepseek", "deepseek-v4-pro"))
-        self.proc.agent.subscribe(stream_event)
-        self.proc.add_tool(determine_state_tool, on_call=lambda self: self.stop_agent("determine_state"), store=True)
-        for tool in self.tools_mgr.create_all_tools("."):
-            self.proc.add_tool(tool)
+        proc = AgentProcess(get_model("deepseek", "deepseek-v4-pro"))
+        proc.agent.subscribe(stream_event)
+        proc.add_tool(determine_state_tool, on_call=lambda self: self.stop_agent("determine_state"), store=True)
+        proc.add_tool(self.tools_mgr.create_all_tools("."))
+        self.proc = proc
 
     def format_result_message(self, task: Task, state: str = "finished") -> list[AgentMessage]:
         from simple_agent.format import format_results

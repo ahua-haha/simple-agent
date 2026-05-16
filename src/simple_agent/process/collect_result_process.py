@@ -51,8 +51,7 @@ class CollectResultProcess:
         proc = AgentProcess(get_model("deepseek", "deepseek-v4-pro"))
         proc.agent.subscribe(stream_event)
         proc.add_tool(record_tool, store=True)
-        for tool in self.tools_mgr.create_all_tools("."):
-            proc.add_tool(tool)
+        proc.add_tool(self.tools_mgr.create_all_tools("."))
         self.proc = proc
 
     async def process(self, task: Task, context: list[AgentMessage]) -> list[AgentMessage]:
