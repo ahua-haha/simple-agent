@@ -1,30 +1,30 @@
 import os
 from git import Repo, GitCommandError
 
-class ShadowGitAuditor:
-    def __init__(self, project_root, shadow_meta_dir):
+class RepoWatcher:
+    def __init__(self, project_root, metadata_dir):
         """
         :param project_root: The actual source code directory.
         :param shadow_meta_dir: Where the 'ghost' .git and indices will live.
         """
         self.project_root = os.path.abspath(project_root)
-        self.shadow_dir = os.path.abspath(shadow_meta_dir)
-        self.shadow_git_dir = os.path.join(self.shadow_dir, "ghost_repo")
-        self.index_file = os.path.join(self.shadow_dir, "shadow.index")
+        self.metadata_dir = os.path.abspath(metadata_dir)
+        self.git_dir = os.path.join(self.metadata_dir, "git")
+        self.index_file = os.path.join(self.metadata_dir, "index")
         
-        os.makedirs(self.shadow_dir, exist_ok=True)
+        os.makedirs(self.metadata_dir, exist_ok=True)
         
         # Initialize a bare repo to serve as our private object database
-        if not os.path.exists(self.shadow_git_dir):
-            self.repo = Repo.init(self.shadow_git_dir, bare=True)
+        if not os.path.exists(self.git_dir):
+            self.repo = Repo.init(self.git_dir, bare=True)
         else:
-            self.repo = Repo(self.shadow_git_dir)
+            self.repo = Repo(self.git_dir)
 
         # Ensure the shadow repo doesn't track the actual .git folder
         self._exclude_real_git()
 
     def _exclude_real_git(self):
-        exclude_path = os.path.join(self.shadow_git_dir, "info", "exclude")
+        exclude_path = os.path.join(self.git_dir, "info", "exclude")
         os.makedirs(os.path.dirname(exclude_path), exist_ok=True)
         with open(exclude_path, "w") as f:
             f.write(".git/\n")
@@ -32,7 +32,7 @@ class ShadowGitAuditor:
     def _get_env(self):
         """Standard environment for isolated plumbing operations."""
         return {
-            "GIT_DIR": self.shadow_git_dir,
+            "GIT_DIR": self.git_dir,
             "GIT_WORK_TREE": self.project_root,
             "GIT_INDEX_FILE": self.index_file
         }
@@ -57,5 +57,10 @@ class ShadowGitAuditor:
         """Compares two Tree Hashes and returns the patch."""
         env = self._get_env()
         with self.repo.git.custom_environment(**env):
-            # diff-tree is the plumbing command for comparing tree objects
             return self.repo.git.diff(old_hash, new_hash)
+
+    def get_file_diff(self, old_hash, new_hash, path):
+        """Compares two Tree Hashes for a single file and returns the patch."""
+        env = self._get_env()
+        with self.repo.git.custom_environment(**env):
+            return self.repo.git.diff(old_hash, new_hash, "--", path)

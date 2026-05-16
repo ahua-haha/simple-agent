@@ -10,6 +10,7 @@ from pi.coding import create_all_tools
 
 from simple_agent.state.state import ToolExecMessage
 from simple_agent.db.db import Database
+from simple_agent.snapshot.ghost_indexer import RepoWatcher
 
 
 def _format(id: int, result: AgentToolResult) -> AgentToolResult:
@@ -81,3 +82,35 @@ class ToolMgr:
         tool.result = None
         wrapped_tool = self.wrap_tools(tool)
         return wrapped_tool
+
+    def create_diff_tool(self, repo_watcher: RepoWatcher, start_hash: str, end_hash: str) -> AgentTool:
+        tool = AgentTool(
+            name="diff",
+            description="Show changes between the start and end of the task. Use optional 'path' to diff a single file.",
+            parameters={
+                "type": "object",
+                "properties": {
+                    "path": {"type": "string", "description": "Optional file path to diff a single file"},
+                },
+                "required": [],
+            },
+        )
+
+        async def execute(
+            tool_call_id: str,
+            params: dict[str, Any],
+            cancel_event: asyncio.Event | None = None,
+            on_update: AgentToolUpdateCallback | None = None,
+        ) -> AgentToolResult:
+            path = params.get("path")
+            try:
+                if path:
+                    output = repo_watcher.get_file_diff(start_hash, end_hash, path)
+                else:
+                    output = repo_watcher.get_diff(start_hash, end_hash)
+                return AgentToolResult(content=[TextContent(text=output or "(no changes)")])
+            except Exception as e:
+                return AgentToolResult(content=[TextContent(text=f"diff failed: {e}")])
+
+        tool.execute = execute
+        return self.wrap_tools(tool)

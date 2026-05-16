@@ -35,6 +35,11 @@ class Task(BaseModel):
     input: str
     result: list[TextResult] = None
     subTasks: list[Task] = None
+    start_snapshot: str | None = None
+    end_snapshot: str | None = None
+    repo_watcher: object | None = None
+
+    model_config = {"arbitrary_types_allowed": True}
 
 class RunRecord(BaseModel):
     input: str

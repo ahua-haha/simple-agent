@@ -6,6 +6,7 @@ from pi.agent.types import AgentMessage
 
 from simple_agent.process.collect_result_process import CollectResultProcess
 from simple_agent.process.agent_process import AgentProcess
+from simple_agent.snapshot.ghost_indexer import RepoWatcher
 from simple_agent.state.state import Task, StateClarification
 from simple_agent.tool.tool_mgr import ToolMgr
 from simple_agent.db.db import Database
@@ -87,7 +88,13 @@ class SingleRunProcess:
         if task.result is None:
             task.result = []
 
+        if task.repo_watcher is None:
+            task.repo_watcher = RepoWatcher(".", "./data/snapshots")
+        task.start_snapshot = task.repo_watcher.take_snapshot()
+
         state_result = await self.try_run(task)
+
+        task.end_snapshot = task.repo_watcher.take_snapshot()
 
         collectProc = CollectResultProcess(tools_mgr=self.tools_mgr, db=self._db)
         await collectProc.process(task, self.message[index:])
