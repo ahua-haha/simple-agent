@@ -32,6 +32,15 @@ Examples:
 """
 
 
+def build_user_prompt(task: Task) -> str:
+    """Build the user prompt for the collect result agent, including diff context when snapshots are available."""
+    prompt = "Please review the conversation history and record all useful results as TextResult using the record_textresult tool. When done, respond with only FINISH."
+    if task.start_snapshot and task.end_snapshot and task.repo_watcher:
+        changed = task.repo_watcher.get_changed_files(task.start_snapshot, task.end_snapshot)
+        prompt += f"\n\nFiles changed during this task:\n{changed}\nUse the diff tool to inspect specific file changes."
+    return prompt
+
+
 class CollectResultProcess:
     
     proc: AgentProcess
@@ -61,10 +70,7 @@ class CollectResultProcess:
         if task.start_snapshot and task.end_snapshot and task.repo_watcher:
             self.proc.add_tool(self.tools_mgr.create_diff_tool(task.repo_watcher, task.start_snapshot, task.end_snapshot))
 
-        user_prompt = "Please review the conversation history and record all useful results as TextResult using the record_textresult tool. When done, respond with only FINISH."
-        if task.start_snapshot and task.end_snapshot and task.repo_watcher:
-            user_prompt += "\n\nUse the diff tool to inspect what changed in the repo between the task start and end."
-        await self.proc.step(SYSTEM_PROMPT, self.message, user_prompt)
+        await self.proc.step(SYSTEM_PROMPT, self.message, build_user_prompt(task))
         new_messages, _, results = self.proc.result()
         self.message = new_messages
 
