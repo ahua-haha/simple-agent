@@ -62,8 +62,9 @@ class RepoWatcher:
     def get_file_diff(self, old_hash, new_hash, path):
         """Compares two Tree Hashes for a single file and returns the patch."""
         env = self._get_env()
+        absolute_path = os.path.join(self.project_root, path)
         with self.repo.git.custom_environment(**env):
-            return self.repo.git.diff(old_hash, new_hash, "--", path)
+            return self.repo.git.diff(old_hash, new_hash, "--", absolute_path)
 
     def get_changed_files(self, old_hash, new_hash):
         """List changed files with their lifecycle state (A, M, D)."""

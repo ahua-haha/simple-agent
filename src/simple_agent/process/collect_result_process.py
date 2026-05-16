@@ -23,12 +23,16 @@ Focus on WHAT was accomplished, not HOW. Each TextResult description MUST:
 - Use past tense declarative form: "Found X", "Created Y", "Identified Z"
 - Be self-contained — readable without seeing the tool calls
 
+Important rules for modified files:
+- Do NOT record TextResult entries from write/edit tool calls for files that were modified. Use the diff tool to see what changed and record the actual outcome instead.
+- Use the provided 'diff' tool to inspect file changes — do NOT run raw git commands via bash. The diff tool is already configured with the correct snapshot hashes.
+
 When done, respond with only FINISH. Do NOT generate verbose output.
 
 Examples:
 - record_textresult(desc="Found main entry point at src/main.py with FastAPI app", toolCallLogID=[3])
 - record_textresult(desc="Identified 3 core modules: process, state, and tool", toolCallLogID=[1,2])
-- record_textresult(desc="Created test suite covering 12 functions across 3 modules", toolCallLogID=[5,6,7])
+- record_textresult(desc="Refactored auth module to use JWT token validation", toolCallLogID=[5,6])
 """
 
 
