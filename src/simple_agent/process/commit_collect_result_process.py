@@ -19,7 +19,6 @@ from simple_agent.state.state import (
     TextResult,
 )
 from simple_agent.tool.tool_mgr import ToolMgr
-from simple_agent.tool.collector import Collector
 from simple_agent.stream import stream_event
 
 
@@ -67,8 +66,6 @@ When done, respond with only FINISH."""
 
 class CommitCollectResultProcess:
     agent: Agent
-    instruction_collector: Collector
-    result_collector: Collector
     tools_mgr: ToolMgr
     message: list[AgentMessage]
     _db: Database
@@ -79,14 +76,14 @@ class CommitCollectResultProcess:
         self.tools_mgr = tools_mgr or ToolMgr()
         self._db = db or Database()
 
-        self.instruction_collector = self.tools_mgr.create_collector(
+        self.instruction_collector = self.tools_mgr.create_record_tool(
             model_class=ExtractedInstruction,
             name="extract_instruction",
             description="Extract a user instruction from the session history",
             parameters=EXTRACTED_INSTRUCTION_JSON_SCHEMA,
         )
 
-        self.result_collector = self.tools_mgr.create_collector(
+        self.result_collector = self.tools_mgr.create_record_tool(
             model_class=TextResult,
             name="record_textresult",
             description="Record a TextResult instance capturing a final outcome from the full session",
@@ -101,7 +98,7 @@ class CommitCollectResultProcess:
         self.agent = agent
 
     def wrap_tools(self):
-        tool = self.instruction_collector.tools[0]
+        tool = self.instruction_collector
         original = tool.execute
         async def execute(
             tool_call_id: str,
@@ -110,7 +107,7 @@ class CommitCollectResultProcess:
             on_update: AgentToolUpdateCallback | None = None,
         ) -> AgentToolResult:
             res = await original(tool_call_id, params, cancel_event, on_update)
-            if not self.instruction_collector.item:
+            if tool.result is None:
                 return res
             print("abort on instruction extracted")
             self.agent.abort()
@@ -130,14 +127,14 @@ class CommitCollectResultProcess:
     @property
     def commit_data(self) -> CommitData:
         instructions: list[str] = []
-        if self.instruction_collector.item:
-            for item in self.instruction_collector.item:
-                if isinstance(item, ExtractedInstruction):
-                    instructions.append(item.instruction)
+        r = self.instruction_collector.result
+        if isinstance(r, ExtractedInstruction):
+            instructions.append(r.instruction)
 
         results: list[TextResult] = []
-        if self.result_collector.item:
-            results = [item for item in self.result_collector.item if isinstance(item, TextResult)]
+        r2 = self.result_collector.result
+        if isinstance(r2, TextResult):
+            results.append(r2)
 
         return CommitData(
             extracted_instructions=instructions,

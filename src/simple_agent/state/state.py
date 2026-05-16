@@ -9,6 +9,8 @@ from pydantic import BaseModel
 from pi.agent.types import AgentMessage, AgentToolResult
 from pi.ai.types import ToolCall
 
+from simple_agent.snapshot.ghost_indexer import RepoWatcher
+
 
 class ToolExecMessage(BaseModel):
     tool_call: ToolCall
@@ -37,7 +39,7 @@ class Task(BaseModel):
     subTasks: list[Task] = None
     start_snapshot: str | None = None
     end_snapshot: str | None = None
-    repo_watcher: object | None = None
+    repo_watcher: RepoWatcher | None = None
 
     model_config = {"arbitrary_types_allowed": True}
 

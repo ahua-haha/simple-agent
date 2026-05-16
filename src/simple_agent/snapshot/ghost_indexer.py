@@ -64,3 +64,9 @@ class RepoWatcher:
         env = self._get_env()
         with self.repo.git.custom_environment(**env):
             return self.repo.git.diff(old_hash, new_hash, "--", path)
+
+    def get_changed_files(self, old_hash, new_hash):
+        """List changed files with their lifecycle state (A, M, D)."""
+        env = self._get_env()
+        with self.repo.git.custom_environment(**env):
+            return self.repo.git.diff("--name-status", old_hash, new_hash)
