@@ -8,6 +8,7 @@ from pi.agent.types import AgentMessage
 from simple_agent.process.explore_process import ExploreProcess
 from simple_agent.process.collect_result_process import CollectResultProcess
 from simple_agent.process.agent_process import AgentProcess
+from simple_agent.snapshot.ghost_indexer import RepoWatcher
 from simple_agent.state.state import Task, StateClarification
 from simple_agent.tool.tool_mgr import ToolMgr
 from simple_agent.db.db import Database
@@ -105,6 +106,10 @@ class SubTaskProcess:
         index = len(context)
         self.message = context
         self.message.append(UserMessage(content=[TextContent(text=task.input)], timestamp=0))
+
+        if task.repo_watcher is None:
+            task.repo_watcher = RepoWatcher(".", "./data/snapshots")
+        task.start_snapshot = task.repo_watcher.take_snapshot()
 
         if task.result is None:
             task.result = []
