@@ -16,7 +16,6 @@ class IndexEntry(SQLModel, table=True):
     path: str = Field(primary_key=True)
     parent_path: str = Field(index=True, default="")
     name: str = Field(index=True)
-    depth: int = Field(default=0)
     type: str = Field(default="file")
     description: str = Field(default="")
     updated_at: int = Field(default_factory=lambda: int(time.time()))
@@ -51,11 +50,6 @@ class AgentIndex:
     def _get_session(self) -> Session:
         return Session(self._engine)
 
-    @staticmethod
-    def _path_depth(path: str) -> int:
-        """Compute tree depth from a path by counting separators."""
-        return path.count("/") + path.count(":")
-
     def _derive_parent_and_name(self, path: str) -> tuple[str, str]:
         """Derive parent_path and name from a path.
 
@@ -86,8 +80,7 @@ class AgentIndex:
                 if not existing:
                     parent_path, name = self._derive_parent_and_name(ancestor)
                     session.add(IndexEntry(
-                        path=ancestor, parent_path=parent_path, name=name,
-                        depth=self._path_depth(ancestor), type="directory", description="",
+                        path=ancestor, parent_path=parent_path, name=name, type="directory", description="",
                     ))
             session.commit()
         finally:
@@ -111,7 +104,6 @@ class AgentIndex:
                     path=path,
                     parent_path=parent_path,
                     name=name,
-                    depth=self._path_depth(path),
                     type=type,
                     description=description,
                 ))
