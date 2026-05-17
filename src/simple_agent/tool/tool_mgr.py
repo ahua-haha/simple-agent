@@ -11,6 +11,7 @@ from pi.coding import create_all_tools
 from simple_agent.state.state import ToolExecMessage
 from simple_agent.db.db import Database
 from simple_agent.snapshot.ghost_indexer import RepoWatcher
+from simple_agent.index.indexer import AgentIndex
 
 
 def _format(id: int, result: AgentToolResult) -> AgentToolResult:
@@ -114,3 +115,87 @@ class ToolMgr:
 
         tool.execute = execute
         return self.wrap_tools(tool)
+
+    def create_index_tools(self, agent_index: AgentIndex) -> list[AgentTool]:
+        tree_tool = AgentTool(
+            name="index_tree",
+            description="Render the project index as a tree with # descriptions. Use to review what's known about the codebase structure.",
+            parameters={
+                "type": "object",
+                "properties": {
+                    "path": {"type": "string", "description": "Subtree path to render (default: root)"},
+                    "depth": {"type": "integer", "description": "Max depth to render (default: unlimited)"},
+                    "filter": {"type": "string", "description": "Show only entries whose name contains this text"},
+                },
+                "required": [],
+            },
+        )
+
+        async def tree_execute(
+            tool_call_id: str,
+            params: dict[str, Any],
+            cancel_event: asyncio.Event | None = None,
+            on_update: AgentToolUpdateCallback | None = None,
+        ) -> AgentToolResult:
+            output = agent_index.tree(
+                path=params.get("path", ""),
+                depth=params.get("depth"),
+                filter=params.get("filter"),
+            )
+            return AgentToolResult(content=[TextContent(text=output)])
+
+        tree_tool.execute = tree_execute
+
+        update_tool = AgentTool(
+            name="index_update",
+            description="Add or update an entry in the project index. Use after discovering a new file, class, function, or module.",
+            parameters={
+                "type": "object",
+                "properties": {
+                    "path": {"type": "string", "description": "Entry path, e.g. 'src/main.py' or 'src/main.py:main()'"},
+                    "type": {"type": "string", "description": "Entry type: folder, file, class, function, method"},
+                    "description": {"type": "string", "description": "Text description of what this entry does"},
+                },
+                "required": ["path", "type", "description"],
+            },
+        )
+
+        async def update_execute(
+            tool_call_id: str,
+            params: dict[str, Any],
+            cancel_event: asyncio.Event | None = None,
+            on_update: AgentToolUpdateCallback | None = None,
+        ) -> AgentToolResult:
+            agent_index.update(
+                path=params["path"],
+                type=params["type"],
+                description=params["description"],
+            )
+            return AgentToolResult(content=[TextContent(text="ok")])
+
+        update_tool.execute = update_execute
+
+        remove_tool = AgentTool(
+            name="index_remove",
+            description="Remove an entry and all its children from the project index.",
+            parameters={
+                "type": "object",
+                "properties": {
+                    "path": {"type": "string", "description": "Path to remove, e.g. 'src/old_module/'"},
+                },
+                "required": ["path"],
+            },
+        )
+
+        async def remove_execute(
+            tool_call_id: str,
+            params: dict[str, Any],
+            cancel_event: asyncio.Event | None = None,
+            on_update: AgentToolUpdateCallback | None = None,
+        ) -> AgentToolResult:
+            agent_index.remove(path=params["path"])
+            return AgentToolResult(content=[TextContent(text="ok")])
+
+        remove_tool.execute = remove_execute
+
+        return [self.wrap_tools(t) for t in [tree_tool, update_tool, remove_tool]]
