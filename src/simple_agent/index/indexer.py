@@ -122,55 +122,56 @@ class AgentIndex:
 
     def update(
         self,
-        entries: list[IndexEntry],
-        fields: list | None = None,
+        path: str,
+        *,
+        type: str | None = None,
+        description: str | None = None,
+        line_start: int | None = None,
+        line_end: int | None = None,
         _session: Session | None = None,
     ) -> None:
-        """Upsert multiple index entries in a single SQL statement.
+        """Upsert a single index entry by path.
 
-        *fields* specifies which columns to update on conflict, using the
-        ``IndexEntry`` column attributes (e.g. ``[IndexEntry.description]``).
-        If ``None``, all columns are updated. ``updated_at`` is always updated.
+        Only fields that are not None are updated on an existing entry.
+        For a new entry, None fields get their model defaults.
         """
-        if not entries:
-            return
         _close = _session is None
         sess = _session or self._get_session()
+        p = path.rstrip("/")
+        parent_path, name = self._derive_parent_and_name(p)
+        self._ensure_parents(parent_path, _session=sess)
 
         from sqlalchemy.dialects.sqlite import insert as sqlite_insert
-        # Resolve which fields get updated on conflict
-        if fields is None:
-            update_keys = {IndexEntry.updated_at, IndexEntry.type,
-                           IndexEntry.description, IndexEntry.line_start, IndexEntry.line_end}
-        else:
-            update_keys = {IndexEntry.updated_at}
-            for f in fields:
-                update_keys.add(f)
 
-        t = int(time.time())
-        rows: list[dict[str, Any]] = []
-        for e in entries:
-            p = e.path.rstrip("/")
-            parent_path, name = self._derive_parent_and_name(p)
-            self._ensure_parents(parent_path, _session=sess)
-            rows.append(dict(
-                path=p, parent_path=parent_path, name=name,
-                type=e.type, description=e.description,
-                line_start=e.line_start, line_end=e.line_end,
-                updated_at=t,
-            ))
+        now = int(time.time())
 
-        ins = sqlite_insert(IndexEntry).values(rows)
+        stmt = sqlite_insert(IndexEntry).values(
+            path=p,
+            parent_path=parent_path,
+            name=name,
+            type=type or "file",
+            description=description or "",
+            line_start=line_start,
+            line_end=line_end,
+            updated_at=now,
+        )
 
-        set_vals: dict = {}
-        for col in update_keys:
-            set_vals[col.name] = getattr(ins.excluded, col.name)
+        update_cols: set[str] = {"updated_at"}
+        if type is not None:
+            update_cols.add("type")
+        if description is not None:
+            update_cols.add("description")
+        if line_start is not None:
+            update_cols.add("line_start")
+        if line_end is not None:
+            update_cols.add("line_end")
 
-        stmt = ins.on_conflict_do_update(
+        set_vals = {c: getattr(stmt.excluded, c) for c in update_cols}
+
+        sess.exec(stmt.on_conflict_do_update(
             index_elements=[IndexEntry.path],
             set_=set_vals,
-        )
-        sess.exec(stmt)
+        ))
 
         if _close:
             sess.commit()

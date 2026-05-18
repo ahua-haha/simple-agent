@@ -7,7 +7,7 @@ import tempfile
 
 import pytest
 
-from simple_agent.index.indexer import AgentIndex, IndexEntry
+from simple_agent.index.indexer import AgentIndex
 from simple_agent.tool.tool_mgr import ToolMgr
 
 
@@ -23,7 +23,7 @@ class TestAgentIndexCRUD:
             db_path = f.name
         try:
             idx = self._make_index(db_path)
-            idx.update([IndexEntry(path="src/main.py", type="file", description="App entry point")])
+            idx.update(path="src/main.py", type="file", description="App entry point")
 
             output = idx.tree()
             assert "main.py" in output
@@ -37,8 +37,8 @@ class TestAgentIndexCRUD:
             db_path = f.name
         try:
             idx = self._make_index(db_path)
-            idx.update([IndexEntry(path="src/main.py", type="file", description="Old description")])
-            idx.update([IndexEntry(path="src/main.py", type="file", description="New description")])
+            idx.update(path="src/main.py", type="file", description="Old description")
+            idx.update(path="src/main.py", type="file", description="New description")
 
             output = idx.tree()
             assert "New description" in output
@@ -52,10 +52,10 @@ class TestAgentIndexCRUD:
             db_path = f.name
         try:
             idx = self._make_index(db_path)
-            idx.update([IndexEntry(path="src/old/", type="folder", description="Old module")])
-            idx.update([IndexEntry(path="src/old/module.py", type="file", description="Old file")])
-            idx.update([IndexEntry(path="src/old/module.py:old_func", type="function", description="Old function")])
-            idx.update([IndexEntry(path="src/other.py", type="file", description="Other file")])
+            idx.update(path="src/old/", type="folder", description="Old module")
+            idx.update(path="src/old/module.py", type="file", description="Old file")
+            idx.update(path="src/old/module.py:old_func", type="function", description="Old function")
+            idx.update(path="src/other.py", type="file", description="Other file")
 
             idx.remove("src/old/")
 
@@ -73,9 +73,9 @@ class TestAgentIndexCRUD:
             db_path = f.name
         try:
             idx = self._make_index(db_path)
-            idx.update([IndexEntry(path="src/__init__.py", type="file", description="Package init")])
-            idx.update([IndexEntry(path="src/process/", type="folder", description="Process modules")])
-            idx.update([IndexEntry(path="src/process/agent_process.py", type="file", description="Agent process")])
+            idx.update(path="src/__init__.py", type="file", description="Package init")
+            idx.update(path="src/process/", type="folder", description="Process modules")
+            idx.update(path="src/process/agent_process.py", type="file", description="Agent process")
 
             output = idx.tree()
             assert "src/" in output
@@ -93,9 +93,9 @@ class TestAgentIndexCRUD:
             db_path = f.name
         try:
             idx = self._make_index(db_path)
-            idx.update([IndexEntry(path="src/", type="folder", description="Source")])
-            idx.update([IndexEntry(path="src/process/", type="folder", description="Processes")])
-            idx.update([IndexEntry(path="src/process/file.py", type="file", description="File")])
+            idx.update(path="src/", type="folder", description="Source")
+            idx.update(path="src/process/", type="folder", description="Processes")
+            idx.update(path="src/process/file.py", type="file", description="File")
 
             output = idx.tree(depth=1)
             assert "src/" in output
@@ -110,9 +110,9 @@ class TestAgentIndexCRUD:
             db_path = f.name
         try:
             idx = self._make_index(db_path)
-            idx.update([IndexEntry(path="src/explore.py", type="file", description="Explore module")])
-            idx.update([IndexEntry(path="src/process.py", type="file", description="Process module")])
-            idx.update([IndexEntry(path="src/other.py", type="file", description="Other module")])
+            idx.update(path="src/explore.py", type="file", description="Explore module")
+            idx.update(path="src/process.py", type="file", description="Process module")
+            idx.update(path="src/other.py", type="file", description="Other module")
 
             output = idx.tree(filter="explore")
             assert "explore.py" in output
@@ -127,9 +127,9 @@ class TestAgentIndexCRUD:
             db_path = f.name
         try:
             idx = self._make_index(db_path)
-            idx.update([IndexEntry(path="src/state/", type="folder", description="State module")])
-            idx.update([IndexEntry(path="src/state/models.py", type="file", description="Data models")])
-            idx.update([IndexEntry(path="tests/", type="folder", description="Test suite")])
+            idx.update(path="src/state/", type="folder", description="State module")
+            idx.update(path="src/state/models.py", type="file", description="Data models")
+            idx.update(path="tests/", type="folder", description="Test suite")
 
             output = idx.tree(path="src/state/")
             assert "models.py" in output
@@ -143,8 +143,8 @@ class TestAgentIndexCRUD:
             db_path = f.name
         try:
             idx = self._make_index(db_path)
-            idx.update([IndexEntry(path="src/main.py", type="file", description="Entry point")])
-            idx.update([IndexEntry(path="src/main.py:main", type="function", description="Main function")])
+            idx.update(path="src/main.py", type="file", description="Entry point")
+            idx.update(path="src/main.py:main", type="function", description="Main function")
 
             output = idx.tree(path="src/main.py")
             assert "main" in output
@@ -176,7 +176,7 @@ class TestAgentIndexRealSrc:
                 entry_type = "file"
                 if suffix == ".html":
                     entry_type = "template"
-                idx.update([IndexEntry(path=entry_path, type=entry_type, description=full)])
+                idx.update(path=entry_path, type=entry_type, description=full)
 
             for name in dirnames:
                 if name.startswith("__pycache__") or name.startswith("."):
@@ -187,7 +187,7 @@ class TestAgentIndexRealSrc:
                 if depth >= max_depth:
                     dirnames.remove(name)  # don't descend further
                     continue
-                idx.update([IndexEntry(path=entry_path + "/", type="directory", description="")])
+                idx.update(path=entry_path + "/", type="directory", description="")
 
     def test_src_tree_max_depth_3(self):
         """Index the real src/ directory with max depth 3 and print the tree."""
@@ -321,9 +321,9 @@ class TestInvalidateStale:
             db_path = f.name
         try:
             idx = self._make_index(db_path)
-            idx.update([IndexEntry(path="src/main.py", type="file", description="Main")])
-            idx.update([IndexEntry(path="src/main.py:setup", type="function", description="Setup", line_start=9, line_end=14)])
-            idx.update([IndexEntry(path="src/main.py:process", type="function", description="Process", line_start=15, line_end=22)])
+            idx.update(path="src/main.py", type="file", description="Main")
+            idx.update(path="src/main.py:setup", type="function", description="Setup", line_start=9, line_end=14)
+            idx.update(path="src/main.py:process", type="function", description="Process", line_start=15, line_end=22)
 
             diff = "@@ -10,3 +10,4 @@\n context\n-old\n+new\n\n"
             deleted = idx.invalidate_stale("src/main.py", diff)
@@ -341,8 +341,8 @@ class TestInvalidateStale:
             db_path = f.name
         try:
             idx = self._make_index(db_path)
-            idx.update([IndexEntry(path="src/main.py", type="file", description="Main")])
-            idx.update([IndexEntry(path="src/main.py:teardown", type="function", description="Cleanup", line_start=23, line_end=30)])
+            idx.update(path="src/main.py", type="file", description="Main")
+            idx.update(path="src/main.py:teardown", type="function", description="Cleanup", line_start=23, line_end=30)
 
             diff = "@@ -10,3 +10,4 @@\n context\n-old\n+new\n\n"
             deleted = idx.invalidate_stale("src/main.py", diff)
@@ -359,7 +359,7 @@ class TestInvalidateStale:
             db_path = f.name
         try:
             idx = self._make_index(db_path)
-            idx.update([IndexEntry(path="src/main.py", type="file", description="Main")])
+            idx.update(path="src/main.py", type="file", description="Main")
 
             diff = "@@ -1,5 +1,5 @@\n-old\n+new\n\n"
             deleted = idx.invalidate_stale("src/main.py", diff)
@@ -376,7 +376,7 @@ class TestInvalidateStale:
             db_path = f.name
         try:
             idx = self._make_index(db_path)
-            idx.update([IndexEntry(path="src/utils.py", type="file", description="Utils")])
+            idx.update(path="src/utils.py", type="file", description="Utils")
 
             diff = "@@ -3,2 +3,2 @@\n-old\n+new\n\n"
             deleted = idx.invalidate_stale("src/utils.py", diff)
@@ -391,7 +391,7 @@ class TestInvalidateStale:
             db_path = f.name
         try:
             idx = self._make_index(db_path)
-            idx.update([IndexEntry(path="src/main.py:func", type="function", description="Func", line_start=5, line_end=10)])
+            idx.update(path="src/main.py:func", type="function", description="Func", line_start=5, line_end=10)
 
             deleted = idx.invalidate_stale("src/main.py", "")
             assert deleted == 0
@@ -404,8 +404,8 @@ class TestInvalidateStale:
             db_path = f.name
         try:
             idx = self._make_index(db_path)
-            idx.update([IndexEntry(path="src/main.py:setup", type="function", description="Setup", line_start=9, line_end=14)])
-            idx.update([IndexEntry(path="src/main.py:process", type="function", description="Process", line_start=15, line_end=22)])
+            idx.update(path="src/main.py:setup", type="function", description="Setup", line_start=9, line_end=14)
+            idx.update(path="src/main.py:process", type="function", description="Process", line_start=15, line_end=22)
 
             diff = "@@ -4,2 +4,2 @@\n-old\n+new\n\n@@ -16,3 +16,4 @@\n x\n-y\n+z\n\n"
             deleted = idx.invalidate_stale("src/main.py", diff)
@@ -430,7 +430,7 @@ class TestUpdateWithLineRange:
             db_path = f.name
         try:
             idx = self._make_index(db_path)
-            idx.update([IndexEntry(path="src/main.py:main", type="function", description="Main", line_start=10, line_end=25)])
+            idx.update(path="src/main.py:main", type="function", description="Main", line_start=10, line_end=25)
 
             output = idx.tree(path="src/main.py")
             assert "main" in output
@@ -444,7 +444,7 @@ class TestUpdateWithLineRange:
             db_path = f.name
         try:
             idx = self._make_index(db_path)
-            idx.update([IndexEntry(path="src/main.py:main", type="function", description="Main")])
+            idx.update(path="src/main.py:main", type="function", description="Main")
 
             output = idx.tree()
             assert "main" in output
@@ -457,8 +457,8 @@ class TestUpdateWithLineRange:
             db_path = f.name
         try:
             idx = self._make_index(db_path)
-            idx.update([IndexEntry(path="src/main.py:main", type="function", description="Main", line_start=10, line_end=25)])
-            idx.update([IndexEntry(path="src/main.py:main", type="function", description="Main v2", line_start=12, line_end=28)])
+            idx.update(path="src/main.py:main", type="function", description="Main", line_start=10, line_end=25)
+            idx.update(path="src/main.py:main", type="function", description="Main v2", line_start=12, line_end=28)
 
             # Old range [10, 25] should be overwritten — diff at [10, 11] should not match new [12, 28]
             diff = "@@ -10,2 +10,2 @@\n-old\n+new\n\n"
@@ -516,9 +516,9 @@ class TestRename:
             db_path = f.name
         try:
             idx = self._make_index(db_path)
-            idx.update([IndexEntry(path="src/old.py", type="file", description="Old")])
-            idx.update([IndexEntry(path="src/old.py:setup", type="function", description="Setup", line_start=9, line_end=14)])
-            idx.update([IndexEntry(path="src/old.py:process", type="function", description="Process", line_start=15, line_end=22)])
+            idx.update(path="src/old.py", type="file", description="Old")
+            idx.update(path="src/old.py:setup", type="function", description="Setup", line_start=9, line_end=14)
+            idx.update(path="src/old.py:process", type="function", description="Process", line_start=15, line_end=22)
 
             count = idx.rename("src/old.py", "src/new.py")
             assert count == 3
@@ -540,7 +540,7 @@ class TestRename:
             db_path = f.name
         try:
             idx = self._make_index(db_path)
-            idx.update([IndexEntry(path="src/solo.py", type="file", description="Solo")])
+            idx.update(path="src/solo.py", type="file", description="Solo")
 
             count = idx.rename("src/solo.py", "src/duo.py")
             assert count == 1
@@ -566,7 +566,7 @@ class TestRename:
             db_path = f.name
         try:
             idx = self._make_index(db_path)
-            idx.update([IndexEntry(path="src/old.py:setup", type="function", description="Setup", line_start=10, line_end=20)])
+            idx.update(path="src/old.py:setup", type="function", description="Setup", line_start=10, line_end=20)
 
             idx.rename("src/old.py", "src/new.py")
 
@@ -672,8 +672,8 @@ class TestSync:
             watcher = RepoWatcher(tmpdir, os.path.join(tmpdir, "shadow"))
             h1 = watcher.take_snapshot()
 
-            idx.update([IndexEntry(path="del.py", type="file", description="To delete")])
-            idx.update([IndexEntry(path="del.py:func", type="function", description="Func", line_start=1, line_end=3)])
+            idx.update(path="del.py", type="file", description="To delete")
+            idx.update(path="del.py:func", type="function", description="Func", line_start=1, line_end=3)
             idx.sync(None, h1, watcher)
 
             os.unlink(os.path.join(tmpdir, "del.py"))
@@ -707,9 +707,9 @@ class TestSync:
             watcher = RepoWatcher(tmpdir, os.path.join(tmpdir, "shadow"))
             h1 = watcher.take_snapshot()
 
-            idx.update([IndexEntry(path="mod.py", type="file", description="Mod")])
-            idx.update([IndexEntry(path="mod.py:setup", type="function", description="Setup", line_start=1, line_end=3)])
-            idx.update([IndexEntry(path="mod.py:teardown", type="function", description="Teardown", line_start=5, line_end=6)])
+            idx.update(path="mod.py", type="file", description="Mod")
+            idx.update(path="mod.py:setup", type="function", description="Setup", line_start=1, line_end=3)
+            idx.update(path="mod.py:teardown", type="function", description="Teardown", line_start=5, line_end=6)
             idx.sync(None, h1, watcher)
 
             with open(os.path.join(tmpdir, "mod.py"), "w") as fh:
