@@ -6,7 +6,7 @@ import fnmatch
 import os
 import time
 
-from typing import Optional
+from typing import Any, Optional
 from sqlmodel import SQLModel, Field, Session, create_engine, select
 
 from simple_agent.snapshot.ghost_indexer import RepoWatcher
@@ -129,31 +129,64 @@ class AgentIndex:
         line_end: int | None = None,
         _session: Session | None = None,
     ) -> None:
-        """Upsert an index entry."""
+        """Upsert a single index entry. Delegates to :meth:`update_batch`."""
+        self.update_batch(
+            [IndexEntry(
+                path=path, type=type, description=description,
+                line_start=line_start, line_end=line_end,
+            )],
+            _session=_session,
+        )
+
+    def update_batch(
+        self,
+        entries: list[IndexEntry],
+        fields: list | None = None,
+        _session: Session | None = None,
+    ) -> None:
+        """Upsert multiple index entries in a single SQL statement.
+
+        *fields* specifies which columns to update on conflict, using the
+        ``IndexEntry`` column attributes (e.g. ``[IndexEntry.description]``).
+        If ``None``, all columns are updated. ``updated_at`` is always updated.
+        """
+        if not entries:
+            return
         _close = _session is None
         sess = _session or self._get_session()
-        path = path.rstrip("/")
-        parent_path, name = self._derive_parent_and_name(path)
-        self._ensure_parents(parent_path, _session=sess)
-        existing = sess.exec(
-            select(IndexEntry).where(IndexEntry.path == path)
-        ).first()
-        if existing:
-            existing.type = type
-            existing.description = description
-            existing.line_start = line_start
-            existing.line_end = line_end
-            existing.updated_at = int(time.time())
-        else:
-            sess.add(IndexEntry(
-                path=path,
-                parent_path=parent_path,
-                name=name,
-                type=type,
-                description=description,
-                line_start=line_start,
-                line_end=line_end,
+
+        from sqlalchemy.dialects.sqlite import insert as sqlite_insert
+        from sqlalchemy.orm.attributes import InstrumentedAttribute
+        # Resolve which fields get updated on conflict
+        _update_keys: set[InstrumentedAttribute] | None = {IndexEntry.updated_at}
+        for f in fields:
+            _update_keys.add(f)
+
+        t = int(time.time())
+        rows: list[dict[str, Any]] = []
+        for e in entries:
+            p = e.path.rstrip("/")
+            parent_path, name = self._derive_parent_and_name(p)
+            self._ensure_parents(parent_path, _session=sess)
+            rows.append(dict(
+                path=p, parent_path=parent_path, name=name,
+                type=e.type, description=e.description,
+                line_start=e.line_start, line_end=e.line_end,
+                updated_at=t,
             ))
+
+        ins = sqlite_insert(IndexEntry).values(rows)
+
+        set_vals: dict = {}
+        for col in _update_keys:
+            set_vals[col.name] = getattr(ins.excluded, col.name)
+
+        stmt = ins.on_conflict_do_update(
+            index_elements=[IndexEntry.path],
+            set_=set_vals,
+        )
+        sess.exec(stmt)
+
         if _close:
             sess.commit()
             sess.close()
