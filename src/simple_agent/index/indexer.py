@@ -18,6 +18,8 @@ class IndexEntry(SQLModel, table=True):
     name: str = Field(index=True)
     type: str = Field(default="file")
     description: str = Field(default="")
+    line_start: int | None = Field(default=None)
+    line_end: int | None = Field(default=None)
     updated_at: int = Field(default_factory=lambda: int(time.time()))
 
 
@@ -86,7 +88,14 @@ class AgentIndex:
         finally:
             session.close()
 
-    def update(self, path: str, type: str = "file", description: str = "") -> None:
+    def update(
+        self,
+        path: str,
+        type: str = "file",
+        description: str = "",
+        line_start: int | None = None,
+        line_end: int | None = None,
+    ) -> None:
         """Upsert an index entry."""
         path = path.rstrip("/")
         parent_path, name = self._derive_parent_and_name(path)
@@ -98,6 +107,8 @@ class AgentIndex:
             if existing:
                 existing.type = type
                 existing.description = description
+                existing.line_start = line_start
+                existing.line_end = line_end
                 existing.updated_at = int(time.time())
             else:
                 session.add(IndexEntry(
@@ -106,6 +117,8 @@ class AgentIndex:
                     name=name,
                     type=type,
                     description=description,
+                    line_start=line_start,
+                    line_end=line_end,
                 ))
             session.commit()
 
@@ -165,6 +178,62 @@ class AgentIndex:
             root.children = _attach("")
 
         return root
+
+    @staticmethod
+    def _parse_diff_ranges(diff_text: str) -> list[tuple[int, int, int, int]]:
+        """Extract changed blocks from unified diff hunk headers.
+
+        Each ``@@ -old_s,old_n +new_s,new_n @@`` header yields
+        ``(old_start, old_end, new_start, new_end)``.
+        When the count is omitted (e.g. ``@@ -89 +91,8 @@``) it defaults to 1.
+        Hunks with old-count of 0 (pure additions) are skipped.
+        """
+        import re
+        ranges: list[tuple[int, int, int, int]] = []
+        for m in re.finditer(r'@@ -(\d+)(?:,(\d+))? \+(\d+)(?:,(\d+))? @@', diff_text):
+            old_s = int(m.group(1))
+            old_n = int(m.group(2)) if m.group(2) else 1
+            new_s = int(m.group(3))
+            new_n = int(m.group(4)) if m.group(4) else 1
+            if old_n > 0:
+                ranges.append((old_s, old_s + old_n - 1, new_s, new_s + new_n - 1))
+        return ranges
+
+    @staticmethod
+    def _ranges_overlap(a_start: int, a_end: int, b_start: int, b_end: int) -> bool:
+        """Check whether two line intervals intersect."""
+        return a_start <= b_end and b_start <= a_end
+
+    def invalidate_stale(self, file_path: str, diff_text: str) -> int:
+        """Delete symbol entries under *file_path* whose line ranges overlap any diff hunk.
+
+        File-level entries (no line range) are never deleted. Returns the count
+        of deleted entries.
+
+        The *diff_text* should be produced with ``-U0`` so each hunk header
+        maps exactly to the changed lines with no context padding.
+        """
+        ranges = self._parse_diff_ranges(diff_text)
+        if not ranges:
+            return 0
+
+        deleted = 0
+        with self._get_session() as session:
+            entries = session.exec(
+                select(IndexEntry).where(
+                    IndexEntry.path.startswith(file_path + ":")
+                )
+            ).all()
+            for entry in entries:
+                if entry.line_start is None or entry.line_end is None:
+                    continue
+                for old_s, old_e, _new_s, _new_e in ranges:
+                    if self._ranges_overlap(entry.line_start, entry.line_end, old_s, old_e):
+                        session.delete(entry)
+                        deleted += 1
+                        break
+            session.commit()
+        return deleted
 
     def tree(
         self,

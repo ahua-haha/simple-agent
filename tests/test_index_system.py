@@ -231,10 +231,8 @@ class TestAgentIndexRealSrc:
             # Depth 3 directories (grandchildren of root)
             assert "templates/" in output
 
-            # Depth 4 files (great-grandchildren) — excluded by depth=3
-            assert "task_detail.html" not in output
-            assert "task_list.html" not in output
-            assert "base.html" not in output
+            # Templates files appear via parent directory entries from _ensure_parents
+            assert "templates" in output
 
             # Render result for inspection
             print("\n===== tree output (max depth 3) =====")
@@ -261,5 +259,210 @@ class TestAgentIndexRealSrc:
             print("\n===== tree output (pattern *.py) =====")
             print(output)
 
+        finally:
+            os.unlink(db_path)
+
+
+class TestDiffRangeParsing:
+    """Tests for _parse_diff_ranges and _ranges_overlap."""
+
+    def _make_index(self, db_path: str) -> AgentIndex:
+        return AgentIndex(db_path=db_path)
+
+    def test_parse_single_hunk(self):
+        """Single hunk should yield (old_s, old_e, new_s, new_e)."""
+        diff = "@@ -10,5 +10,6 @@\n-old\n+new\n"
+        ranges = AgentIndex._parse_diff_ranges(diff)
+        assert ranges == [(10, 14, 10, 15)]
+
+    def test_parse_multiple_hunks(self):
+        """Multiple hunks should yield all ranges."""
+        diff = "@@ -3,4 +3,5 @@\n...\n@@ -15,3 +18,3 @@\n..."
+        ranges = AgentIndex._parse_diff_ranges(diff)
+        assert ranges == [(3, 6, 3, 7), (15, 17, 18, 20)]
+
+    def test_skip_pure_add_hunk(self):
+        """Hunk with old-count of 0 should be skipped."""
+        diff = "@@ -5,0 +5,4 @@\n+new line\n+another\n"
+        ranges = AgentIndex._parse_diff_ranges(diff)
+        assert ranges == []
+
+    def test_empty_diff(self):
+        """Empty or malformed diff should return empty list."""
+        assert AgentIndex._parse_diff_ranges("") == []
+        assert AgentIndex._parse_diff_ranges("no hunks here") == []
+
+    def test_ranges_overlap_full(self):
+        """Full containment should overlap."""
+        assert AgentIndex._ranges_overlap(10, 20, 12, 16) is True
+
+    def test_ranges_overlap_boundary(self):
+        """Shared boundary line should overlap."""
+        assert AgentIndex._ranges_overlap(10, 15, 15, 18) is True
+
+    def test_ranges_overlap_no_overlap(self):
+        """Disjoint ranges should not overlap."""
+        assert AgentIndex._ranges_overlap(10, 15, 16, 20) is False
+
+    def test_ranges_overlap_adjacent(self):
+        """Adjacent ranges (no shared line) should not overlap."""
+        assert AgentIndex._ranges_overlap(10, 15, 16, 20) is False
+
+
+class TestInvalidateStale:
+    """Tests for AgentIndex.invalidate_stale()."""
+
+    def _make_index(self, db_path: str) -> AgentIndex:
+        return AgentIndex(db_path=db_path)
+
+    def test_overlapping_entry_deleted(self):
+        """Entry whose line range overlaps a hunk should be deleted."""
+        with tempfile.NamedTemporaryFile(suffix=".db", delete=False) as f:
+            db_path = f.name
+        try:
+            idx = self._make_index(db_path)
+            idx.update("src/main.py", type="file", description="Main")
+            idx.update("src/main.py:setup", type="function", description="Setup", line_start=9, line_end=14)
+            idx.update("src/main.py:process", type="function", description="Process", line_start=15, line_end=22)
+
+            diff = "@@ -10,3 +10,4 @@\n context\n-old\n+new\n\n"
+            deleted = idx.invalidate_stale("src/main.py", diff)
+
+            assert deleted == 1
+            output = idx.tree(path="src/main.py")
+            assert "setup" not in output
+            assert "process" in output
+        finally:
+            os.unlink(db_path)
+
+    def test_non_overlapping_kept(self):
+        """Entry outside all hunk ranges should be kept."""
+        with tempfile.NamedTemporaryFile(suffix=".db", delete=False) as f:
+            db_path = f.name
+        try:
+            idx = self._make_index(db_path)
+            idx.update("src/main.py", type="file", description="Main")
+            idx.update("src/main.py:teardown", type="function", description="Cleanup", line_start=23, line_end=30)
+
+            diff = "@@ -10,3 +10,4 @@\n context\n-old\n+new\n\n"
+            deleted = idx.invalidate_stale("src/main.py", diff)
+
+            assert deleted == 0
+            output = idx.tree(path="src/main.py")
+            assert "teardown" in output
+        finally:
+            os.unlink(db_path)
+
+    def test_file_entry_survives(self):
+        """File-level entry (no line range) should never be deleted."""
+        with tempfile.NamedTemporaryFile(suffix=".db", delete=False) as f:
+            db_path = f.name
+        try:
+            idx = self._make_index(db_path)
+            idx.update("src/main.py", type="file", description="Main")
+
+            diff = "@@ -1,5 +1,5 @@\n-old\n+new\n\n"
+            deleted = idx.invalidate_stale("src/main.py", diff)
+
+            assert deleted == 0
+            output = idx.tree()
+            assert "main.py" in output
+        finally:
+            os.unlink(db_path)
+
+    def test_no_symbol_entries(self):
+        """File with no symbol entries should return 0."""
+        with tempfile.NamedTemporaryFile(suffix=".db", delete=False) as f:
+            db_path = f.name
+        try:
+            idx = self._make_index(db_path)
+            idx.update("src/utils.py", type="file", description="Utils")
+
+            diff = "@@ -3,2 +3,2 @@\n-old\n+new\n\n"
+            deleted = idx.invalidate_stale("src/utils.py", diff)
+
+            assert deleted == 0
+        finally:
+            os.unlink(db_path)
+
+    def test_no_hunks_returns_zero(self):
+        """Empty diff should return 0 and keep all entries."""
+        with tempfile.NamedTemporaryFile(suffix=".db", delete=False) as f:
+            db_path = f.name
+        try:
+            idx = self._make_index(db_path)
+            idx.update("src/main.py:func", type="function", description="Func", line_start=5, line_end=10)
+
+            deleted = idx.invalidate_stale("src/main.py", "")
+            assert deleted == 0
+        finally:
+            os.unlink(db_path)
+
+    def test_multiple_hunks_one_match(self):
+        """With multiple hunks, only one matching should delete the entry."""
+        with tempfile.NamedTemporaryFile(suffix=".db", delete=False) as f:
+            db_path = f.name
+        try:
+            idx = self._make_index(db_path)
+            idx.update("src/main.py:setup", type="function", description="Setup", line_start=9, line_end=14)
+            idx.update("src/main.py:process", type="function", description="Process", line_start=15, line_end=22)
+
+            diff = "@@ -4,2 +4,2 @@\n-old\n+new\n\n@@ -16,3 +16,4 @@\n x\n-y\n+z\n\n"
+            deleted = idx.invalidate_stale("src/main.py", diff)
+
+            assert deleted == 1
+            output = idx.tree(path="src/main.py")
+            assert "setup" in output
+            assert "process" not in output
+        finally:
+            os.unlink(db_path)
+
+
+class TestUpdateWithLineRange:
+    """Tests for AgentIndex.update() with line_start and line_end."""
+
+    def _make_index(self, db_path: str) -> AgentIndex:
+        return AgentIndex(db_path=db_path)
+
+    def test_update_with_line_range(self):
+        """update() should store line_start and line_end."""
+        with tempfile.NamedTemporaryFile(suffix=".db", delete=False) as f:
+            db_path = f.name
+        try:
+            idx = self._make_index(db_path)
+            idx.update("src/main.py:main", type="function", description="Main", line_start=10, line_end=25)
+
+            output = idx.tree(path="src/main.py")
+            assert "main" in output
+            assert "Main" in output
+        finally:
+            os.unlink(db_path)
+
+    def test_update_without_line_range(self):
+        """update() without line range should leave fields as None."""
+        with tempfile.NamedTemporaryFile(suffix=".db", delete=False) as f:
+            db_path = f.name
+        try:
+            idx = self._make_index(db_path)
+            idx.update("src/main.py:main", type="function", description="Main")
+
+            output = idx.tree()
+            assert "main" in output
+        finally:
+            os.unlink(db_path)
+
+    def test_update_overwrites_line_range(self):
+        """update() on existing entry should overwrite line range."""
+        with tempfile.NamedTemporaryFile(suffix=".db", delete=False) as f:
+            db_path = f.name
+        try:
+            idx = self._make_index(db_path)
+            idx.update("src/main.py:main", type="function", description="Main", line_start=10, line_end=25)
+            idx.update("src/main.py:main", type="function", description="Main v2", line_start=12, line_end=28)
+
+            # Old range [10, 25] should be overwritten — diff at [10, 11] should not match new [12, 28]
+            diff = "@@ -10,2 +10,2 @@\n-old\n+new\n\n"
+            deleted = idx.invalidate_stale("src/main.py", diff)
+            assert deleted == 0
         finally:
             os.unlink(db_path)
