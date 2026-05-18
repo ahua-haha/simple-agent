@@ -122,24 +122,6 @@ class AgentIndex:
 
     def update(
         self,
-        path: str,
-        type: str = "file",
-        description: str = "",
-        line_start: int | None = None,
-        line_end: int | None = None,
-        _session: Session | None = None,
-    ) -> None:
-        """Upsert a single index entry. Delegates to :meth:`update_batch`."""
-        self.update_batch(
-            [IndexEntry(
-                path=path, type=type, description=description,
-                line_start=line_start, line_end=line_end,
-            )],
-            _session=_session,
-        )
-
-    def update_batch(
-        self,
         entries: list[IndexEntry],
         fields: list | None = None,
         _session: Session | None = None,
@@ -156,11 +138,14 @@ class AgentIndex:
         sess = _session or self._get_session()
 
         from sqlalchemy.dialects.sqlite import insert as sqlite_insert
-        from sqlalchemy.orm.attributes import InstrumentedAttribute
         # Resolve which fields get updated on conflict
-        _update_keys: set[InstrumentedAttribute] | None = {IndexEntry.updated_at}
-        for f in fields:
-            _update_keys.add(f)
+        if fields is None:
+            update_keys = {IndexEntry.updated_at, IndexEntry.type,
+                           IndexEntry.description, IndexEntry.line_start, IndexEntry.line_end}
+        else:
+            update_keys = {IndexEntry.updated_at}
+            for f in fields:
+                update_keys.add(f)
 
         t = int(time.time())
         rows: list[dict[str, Any]] = []
@@ -178,7 +163,7 @@ class AgentIndex:
         ins = sqlite_insert(IndexEntry).values(rows)
 
         set_vals: dict = {}
-        for col in _update_keys:
+        for col in update_keys:
             set_vals[col.name] = getattr(ins.excluded, col.name)
 
         stmt = ins.on_conflict_do_update(
@@ -196,15 +181,14 @@ class AgentIndex:
         _close = _session is None
         sess = _session or self._get_session()
         clean = path.rstrip("/")
-        entries = sess.exec(
-            select(IndexEntry).where(
+        from sqlalchemy import delete
+        sess.exec(
+            delete(IndexEntry).where(
                 (IndexEntry.path == clean) |
                 (IndexEntry.path.startswith(clean + "/")) |
                 (IndexEntry.path.startswith(clean + ":"))
             )
-        ).all()
-        for entry in entries:
-            sess.delete(entry)
+        )
         if _close:
             sess.commit()
             sess.close()
@@ -323,32 +307,45 @@ class AgentIndex:
         sess = _session or self._get_session()
         old_path = old_path.rstrip("/")
         new_path = new_path.rstrip("/")
-        renamed = 0
         entries = sess.exec(
             select(IndexEntry).where(
                 (IndexEntry.path == old_path) |
                 (IndexEntry.path.startswith(old_path + ":"))
             )
         ).all()
+        if not entries:
+            if _close:
+                sess.close()
+            return 0
+
+        from sqlalchemy import update, bindparam
+
+        params: list[dict[str, str]] = []
         for entry in entries:
             updated_path = new_path + entry.path[len(old_path):]
-            updated_parent, updated_name = self._derive_parent_and_name(updated_path)
-            sess.delete(entry)
-            sess.add(IndexEntry(
-                path=updated_path,
-                parent_path=updated_parent,
-                name=updated_name,
-                type=entry.type,
-                description=entry.description,
-                line_start=entry.line_start,
-                line_end=entry.line_end,
-                updated_at=int(time.time()),
+            parent_path, name = self._derive_parent_and_name(updated_path)
+            params.append(dict(
+                old_p=entry.path,
+                new_p=updated_path,
+                parent_p=parent_path,
+                new_name=name,
             ))
-            renamed += 1
+
+        stmt = (
+            update(IndexEntry)
+            .where(IndexEntry.path == bindparam("old_p"))
+            .values(
+                path=bindparam("new_p"),
+                parent_path=bindparam("parent_p"),
+                name=bindparam("new_name"),
+            )
+        )
+        sess.exec(stmt, params)
+
         if _close:
             sess.commit()
             sess.close()
-        return renamed
+        return len(params)
 
     def sync(self, old_hash: str | None, new_hash: str, repo_watcher: RepoWatcher) -> int:
         """Sync the index to *new_hash* by processing all file changes since *old_hash*.

@@ -11,7 +11,7 @@ from pi.coding import create_all_tools
 from simple_agent.state.state import ToolExecMessage
 from simple_agent.db.db import Database
 from simple_agent.snapshot.ghost_indexer import RepoWatcher
-from simple_agent.index.indexer import AgentIndex
+from simple_agent.index.indexer import AgentIndex, IndexEntry
 
 
 def _format(id: int, result: AgentToolResult) -> AgentToolResult:
@@ -166,11 +166,13 @@ class ToolMgr:
             cancel_event: asyncio.Event | None = None,
             on_update: AgentToolUpdateCallback | None = None,
         ) -> AgentToolResult:
-            agent_index.update(
-                path=params["path"],
-                type=params["type"],
-                description=params["description"],
-            )
+            agent_index.update([
+                IndexEntry(
+                    path=params["path"],
+                    type=params.get("type", "file"),
+                    description=params.get("description", ""),
+                )
+            ])
             return AgentToolResult(content=[TextContent(text="ok")])
 
         update_tool.execute = update_execute
