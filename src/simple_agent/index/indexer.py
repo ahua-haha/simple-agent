@@ -9,6 +9,8 @@ import time
 from typing import Optional
 from sqlmodel import SQLModel, Field, Session, create_engine, select
 
+from simple_agent.snapshot.ghost_indexer import RepoWatcher
+
 
 class IndexEntry(SQLModel, table=True):
     __tablename__ = "index_entries"
@@ -21,6 +23,13 @@ class IndexEntry(SQLModel, table=True):
     line_start: int | None = Field(default=None)
     line_end: int | None = Field(default=None)
     updated_at: int = Field(default_factory=lambda: int(time.time()))
+
+
+class IndexMeta(SQLModel, table=True):
+    __tablename__ = "index_meta"
+
+    key: str = Field(primary_key=True)
+    value: str = Field(default="")
 
 
 class TreeNode:
@@ -52,6 +61,29 @@ class AgentIndex:
     def _get_session(self) -> Session:
         return Session(self._engine)
 
+    def _get_hash(self, _session: Session | None = None) -> str | None:
+        sess = _session or self._get_session()
+        meta = sess.exec(
+            select(IndexMeta).where(IndexMeta.key == "repo_hash")
+        ).first()
+        if _session is None:
+            sess.close()
+        return meta.value if meta else None
+
+    def _set_hash(self, hash_value: str, _session: Session | None = None) -> None:
+        _close = _session is None
+        sess = _session or self._get_session()
+        meta = sess.exec(
+            select(IndexMeta).where(IndexMeta.key == "repo_hash")
+        ).first()
+        if meta:
+            meta.value = hash_value
+        else:
+            sess.add(IndexMeta(key="repo_hash", value=hash_value))
+        if _close:
+            sess.commit()
+            sess.close()
+
     def _derive_parent_and_name(self, path: str) -> tuple[str, str]:
         """Derive parent_path and name from a path.
 
@@ -67,26 +99,26 @@ class AgentIndex:
             return parent, name
         return "", path
 
-    def _ensure_parents(self, path: str) -> None:
+    def _ensure_parents(self, path: str, _session: Session | None = None) -> None:
         """Create intermediate folder entries for all ancestors of the given path."""
         if not path:
             return
+        _close = _session is None
+        sess = _session or self._get_session()
         parts = path.split("/")
-        session = self._get_session()
-        try:
-            for i in range(1, len(parts) + 1):
-                ancestor = "/".join(parts[:i])
-                existing = session.exec(
-                    select(IndexEntry).where(IndexEntry.path == ancestor)
-                ).first()
-                if not existing:
-                    parent_path, name = self._derive_parent_and_name(ancestor)
-                    session.add(IndexEntry(
-                        path=ancestor, parent_path=parent_path, name=name, type="directory", description="",
-                    ))
-            session.commit()
-        finally:
-            session.close()
+        for i in range(1, len(parts) + 1):
+            ancestor = "/".join(parts[:i])
+            existing = sess.exec(
+                select(IndexEntry).where(IndexEntry.path == ancestor)
+            ).first()
+            if not existing:
+                parent_path, name = self._derive_parent_and_name(ancestor)
+                sess.add(IndexEntry(
+                    path=ancestor, parent_path=parent_path, name=name, type="directory", description="",
+                ))
+        if _close:
+            sess.commit()
+            sess.close()
 
     def update(
         self,
@@ -95,63 +127,72 @@ class AgentIndex:
         description: str = "",
         line_start: int | None = None,
         line_end: int | None = None,
+        _session: Session | None = None,
     ) -> None:
         """Upsert an index entry."""
+        _close = _session is None
+        sess = _session or self._get_session()
         path = path.rstrip("/")
         parent_path, name = self._derive_parent_and_name(path)
-        self._ensure_parents(parent_path)
-        with self._get_session() as session:
-            existing = session.exec(
-                select(IndexEntry).where(IndexEntry.path == path)
-            ).first()
-            if existing:
-                existing.type = type
-                existing.description = description
-                existing.line_start = line_start
-                existing.line_end = line_end
-                existing.updated_at = int(time.time())
-            else:
-                session.add(IndexEntry(
-                    path=path,
-                    parent_path=parent_path,
-                    name=name,
-                    type=type,
-                    description=description,
-                    line_start=line_start,
-                    line_end=line_end,
-                ))
-            session.commit()
+        self._ensure_parents(parent_path, _session=sess)
+        existing = sess.exec(
+            select(IndexEntry).where(IndexEntry.path == path)
+        ).first()
+        if existing:
+            existing.type = type
+            existing.description = description
+            existing.line_start = line_start
+            existing.line_end = line_end
+            existing.updated_at = int(time.time())
+        else:
+            sess.add(IndexEntry(
+                path=path,
+                parent_path=parent_path,
+                name=name,
+                type=type,
+                description=description,
+                line_start=line_start,
+                line_end=line_end,
+            ))
+        if _close:
+            sess.commit()
+            sess.close()
 
-    def remove(self, path: str) -> None:
+    def remove(self, path: str, _session: Session | None = None) -> None:
         """Remove an entry and all its descendants."""
+        _close = _session is None
+        sess = _session or self._get_session()
         clean = path.rstrip("/")
-        with self._get_session() as session:
-            entries = session.exec(
-                select(IndexEntry).where(
-                    (IndexEntry.path == clean) |
-                    (IndexEntry.path.startswith(clean + "/")) |
-                    (IndexEntry.path.startswith(clean + ":"))
-                )
-            ).all()
-            for entry in entries:
-                session.delete(entry)
-            session.commit()
+        entries = sess.exec(
+            select(IndexEntry).where(
+                (IndexEntry.path == clean) |
+                (IndexEntry.path.startswith(clean + "/")) |
+                (IndexEntry.path.startswith(clean + ":"))
+            )
+        ).all()
+        for entry in entries:
+            sess.delete(entry)
+        if _close:
+            sess.commit()
+            sess.close()
 
-    def _load_tree(self, root_path: str) -> TreeNode | None:
+    def _load_tree(self, root_path: str, _session: Session | None = None) -> TreeNode | None:
         """Load all descendants of *root_path* in one query, returning the root node."""
-        with self._get_session() as session:
-            if root_path:
-                entries = session.exec(
-                    select(IndexEntry).where(
-                        (IndexEntry.path == root_path) |
-                        (IndexEntry.path.startswith(root_path + "/")) |
-                        (IndexEntry.path.startswith(root_path + ":"))
-                    ).order_by(IndexEntry.type.desc(), IndexEntry.name)
-                ).all()
-            else:
-                entries = session.exec(
-                    select(IndexEntry).order_by(IndexEntry.type.desc(), IndexEntry.name)
-                ).all()
+        sess = _session or self._get_session()
+        if root_path:
+            entries = sess.exec(
+                select(IndexEntry).where(
+                    (IndexEntry.path == root_path) |
+                    (IndexEntry.path.startswith(root_path + "/")) |
+                    (IndexEntry.path.startswith(root_path + ":"))
+                ).order_by(IndexEntry.type.desc(), IndexEntry.name)
+            ).all()
+        else:
+            entries = sess.exec(
+                select(IndexEntry).order_by(IndexEntry.type.desc(), IndexEntry.name)
+            ).all()
+        if _session is None:
+            sess.close()
 
         if not entries and root_path:
             return None
@@ -204,7 +245,7 @@ class AgentIndex:
         """Check whether two line intervals intersect."""
         return a_start <= b_end and b_start <= a_end
 
-    def invalidate_stale(self, file_path: str, diff_text: str) -> int:
+    def invalidate_stale(self, file_path: str, diff_text: str, _session: Session | None = None) -> int:
         """Delete symbol entries under *file_path* whose line ranges overlap any diff hunk.
 
         File-level entries (no line range) are never deleted. Returns the count
@@ -217,23 +258,108 @@ class AgentIndex:
         if not ranges:
             return 0
 
+        _close = _session is None
+        sess = _session or self._get_session()
         deleted = 0
-        with self._get_session() as session:
-            entries = session.exec(
-                select(IndexEntry).where(
-                    IndexEntry.path.startswith(file_path + ":")
-                )
-            ).all()
-            for entry in entries:
-                if entry.line_start is None or entry.line_end is None:
-                    continue
-                for old_s, old_e, _new_s, _new_e in ranges:
-                    if self._ranges_overlap(entry.line_start, entry.line_end, old_s, old_e):
-                        session.delete(entry)
-                        deleted += 1
-                        break
-            session.commit()
+        entries = sess.exec(
+            select(IndexEntry).where(
+                IndexEntry.path.startswith(file_path + ":")
+            )
+        ).all()
+        for entry in entries:
+            if entry.line_start is None or entry.line_end is None:
+                continue
+            for old_s, old_e, _new_s, _new_e in ranges:
+                if self._ranges_overlap(entry.line_start, entry.line_end, old_s, old_e):
+                    sess.delete(entry)
+                    deleted += 1
+                    break
+        if _close:
+            sess.commit()
+            sess.close()
         return deleted
+
+    def rename(self, old_path: str, new_path: str, _session: Session | None = None) -> int:
+        """Rename a file entry and all its symbol children.
+
+        Every entry whose path equals *old_path* or starts with ``old_path:``
+        has its path, parent_path, and name updated to reflect *new_path*.
+        Returns the count of renamed entries.
+        """
+        _close = _session is None
+        sess = _session or self._get_session()
+        old_path = old_path.rstrip("/")
+        new_path = new_path.rstrip("/")
+        renamed = 0
+        entries = sess.exec(
+            select(IndexEntry).where(
+                (IndexEntry.path == old_path) |
+                (IndexEntry.path.startswith(old_path + ":"))
+            )
+        ).all()
+        for entry in entries:
+            updated_path = new_path + entry.path[len(old_path):]
+            updated_parent, updated_name = self._derive_parent_and_name(updated_path)
+            sess.delete(entry)
+            sess.add(IndexEntry(
+                path=updated_path,
+                parent_path=updated_parent,
+                name=updated_name,
+                type=entry.type,
+                description=entry.description,
+                line_start=entry.line_start,
+                line_end=entry.line_end,
+                updated_at=int(time.time()),
+            ))
+            renamed += 1
+        if _close:
+            sess.commit()
+            sess.close()
+        return renamed
+
+    def sync(self, old_hash: str | None, new_hash: str, repo_watcher: RepoWatcher) -> int:
+        """Sync the index to *new_hash* by processing all file changes since *old_hash*.
+
+        Uses rename detection (``-M50%``) to handle renames before deletions
+        and modifications. All operations run in a single transaction.
+        Returns the count of files processed.
+        """
+        if old_hash is None:
+            self._set_hash(new_hash)
+            return 0
+
+        changes = repo_watcher.get_changed_files_with_rename(old_hash, new_hash)
+        if not changes:
+            self._set_hash(new_hash)
+            return 0
+
+        processed = 0
+        session = self._get_session()
+        try:
+            # Phase 1: renames (status is like "R100", "R087")
+            for status, old, new in changes:
+                if status.startswith("R") and new is not None:
+                    self.rename(old, new, _session=session)
+                    processed += 1
+
+            # Phase 2: deletes
+            for status, old, _new in changes:
+                if status == "D":
+                    self.remove(old, _session=session)
+                    processed += 1
+
+            # Phase 3: modifications
+            for status, old, _new in changes:
+                if status == "M":
+                    diff_text = repo_watcher.get_file_diff(old_hash, new_hash, old, context_lines=0)
+                    self.invalidate_stale(old, diff_text, _session=session)
+                    processed += 1
+
+            self._set_hash(new_hash, _session=session)
+            session.commit()
+        finally:
+            session.close()
+        return processed
 
     def tree(
         self,

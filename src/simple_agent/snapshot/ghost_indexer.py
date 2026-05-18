@@ -71,3 +71,25 @@ class RepoWatcher:
         env = self._get_env()
         with self.repo.git.custom_environment(**env):
             return self.repo.git.diff("--name-status", old_hash, new_hash)
+
+    def get_changed_files_with_rename(self, old_hash, new_hash):
+        """List changed files with rename detection.
+
+        Returns a list of ``(status, old_path, new_path_or_None)`` tuples.
+        Renames (status ``R``) include the new path; other statuses have
+        ``None`` in the third position.
+        """
+        env = self._get_env()
+        with self.repo.git.custom_environment(**env):
+            raw = self.repo.git.diff("--name-status", "-M50%", old_hash, new_hash)
+        result: list[tuple[str, str, str | None]] = []
+        for line in raw.strip().split("\n"):
+            line = line.strip()
+            if not line:
+                continue
+            parts = line.split("\t")
+            if len(parts) == 2:
+                result.append((parts[0], parts[1], None))
+            elif len(parts) == 3:
+                result.append((parts[0], parts[1], parts[2]))
+        return result

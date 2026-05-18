@@ -466,3 +466,261 @@ class TestUpdateWithLineRange:
             assert deleted == 0
         finally:
             os.unlink(db_path)
+
+
+class TestIndexMeta:
+    """Tests for IndexMeta hash storage."""
+
+    def _make_index(self, db_path: str) -> AgentIndex:
+        return AgentIndex(db_path=db_path)
+
+    def test_hash_none_before_first_sync(self):
+        with tempfile.NamedTemporaryFile(suffix=".db", delete=False) as f:
+            db_path = f.name
+        try:
+            idx = self._make_index(db_path)
+            assert idx._get_hash() is None
+        finally:
+            os.unlink(db_path)
+
+    def test_hash_stored_and_retrieved(self):
+        with tempfile.NamedTemporaryFile(suffix=".db", delete=False) as f:
+            db_path = f.name
+        try:
+            idx = self._make_index(db_path)
+            idx._set_hash("abc123")
+            assert idx._get_hash() == "abc123"
+        finally:
+            os.unlink(db_path)
+
+    def test_hash_overwritten(self):
+        with tempfile.NamedTemporaryFile(suffix=".db", delete=False) as f:
+            db_path = f.name
+        try:
+            idx = self._make_index(db_path)
+            idx._set_hash("abc123")
+            idx._set_hash("def456")
+            assert idx._get_hash() == "def456"
+        finally:
+            os.unlink(db_path)
+
+
+class TestRename:
+    """Tests for AgentIndex.rename()."""
+
+    def _make_index(self, db_path: str) -> AgentIndex:
+        return AgentIndex(db_path=db_path)
+
+    def test_rename_file_with_symbols(self):
+        with tempfile.NamedTemporaryFile(suffix=".db", delete=False) as f:
+            db_path = f.name
+        try:
+            idx = self._make_index(db_path)
+            idx.update("src/old.py", type="file", description="Old")
+            idx.update("src/old.py:setup", type="function", description="Setup", line_start=9, line_end=14)
+            idx.update("src/old.py:process", type="function", description="Process", line_start=15, line_end=22)
+
+            count = idx.rename("src/old.py", "src/new.py")
+            assert count == 3
+
+            output = idx.tree()
+            assert "new.py" in output
+            assert "old.py" not in output
+            assert "setup" in output
+            assert "process" in output
+
+            subtree = idx.tree(path="src/new.py")
+            assert "setup" in subtree
+            assert "process" in subtree
+        finally:
+            os.unlink(db_path)
+
+    def test_rename_file_only(self):
+        with tempfile.NamedTemporaryFile(suffix=".db", delete=False) as f:
+            db_path = f.name
+        try:
+            idx = self._make_index(db_path)
+            idx.update("src/solo.py", type="file", description="Solo")
+
+            count = idx.rename("src/solo.py", "src/duo.py")
+            assert count == 1
+
+            output = idx.tree()
+            assert "duo.py" in output
+            assert "solo.py" not in output
+        finally:
+            os.unlink(db_path)
+
+    def test_rename_nonexistent(self):
+        with tempfile.NamedTemporaryFile(suffix=".db", delete=False) as f:
+            db_path = f.name
+        try:
+            idx = self._make_index(db_path)
+            count = idx.rename("src/nope.py", "src/yep.py")
+            assert count == 0
+        finally:
+            os.unlink(db_path)
+
+    def test_rename_preserves_line_range(self):
+        with tempfile.NamedTemporaryFile(suffix=".db", delete=False) as f:
+            db_path = f.name
+        try:
+            idx = self._make_index(db_path)
+            idx.update("src/old.py:setup", type="function", description="Setup", line_start=10, line_end=20)
+
+            idx.rename("src/old.py", "src/new.py")
+
+            diff = "@@ -10,3 +10,4 @@\n-old\n+new\n\n"
+            deleted = idx.invalidate_stale("src/new.py", diff)
+            assert deleted == 1
+        finally:
+            os.unlink(db_path)
+
+
+class TestGetChangedFilesWithRename:
+    """Tests for RepoWatcher.get_changed_files_with_rename()."""
+
+    def test_detect_rename(self):
+        import tempfile
+        with tempfile.TemporaryDirectory() as tmpdir:
+            from git import Repo
+            from simple_agent.snapshot.ghost_indexer import RepoWatcher
+
+            repo = Repo.init(tmpdir)
+            fpath = os.path.join(tmpdir, "old.py")
+            with open(fpath, "w") as fh:
+                fh.write("print('hello')\n")
+            repo.index.add(["old.py"])
+            repo.index.commit("initial")
+
+            watcher = RepoWatcher(tmpdir, os.path.join(tmpdir, "shadow"))
+            old_hash = watcher.take_snapshot()
+
+            os.rename(fpath, os.path.join(tmpdir, "new.py"))
+            repo.index.remove(["old.py"])
+            repo.index.add(["new.py"])
+            repo.index.commit("renamed")
+
+            new_hash = watcher.take_snapshot()
+            changes = watcher.get_changed_files_with_rename(old_hash, new_hash)
+
+            assert any(s.startswith("R") for s, _, _ in changes)
+
+    def test_no_changes(self):
+        import tempfile
+        with tempfile.TemporaryDirectory() as tmpdir:
+            from git import Repo
+            from simple_agent.snapshot.ghost_indexer import RepoWatcher
+
+            repo = Repo.init(tmpdir)
+            with open(os.path.join(tmpdir, "a.py"), "w") as fh:
+                fh.write("x\n")
+            repo.index.add(["a.py"])
+            repo.index.commit("initial")
+
+            watcher = RepoWatcher(tmpdir, os.path.join(tmpdir, "shadow"))
+            h = watcher.take_snapshot()
+            changes = watcher.get_changed_files_with_rename(h, h)
+            assert changes == []
+
+
+class TestSync:
+    """Tests for AgentIndex.sync()."""
+
+    def _make_index(self, db_path: str) -> AgentIndex:
+        return AgentIndex(db_path=db_path)
+
+    def test_sync_stores_new_hash(self):
+        import tempfile
+        with tempfile.TemporaryDirectory() as tmpdir:
+            from git import Repo
+            from simple_agent.snapshot.ghost_indexer import RepoWatcher
+
+            repo = Repo.init(tmpdir)
+            db_path = os.path.join(tmpdir, "index.db")
+            idx = self._make_index(db_path)
+
+            with open(os.path.join(tmpdir, "f.py"), "w") as fh:
+                fh.write("x\n")
+            repo.index.add(["f.py"])
+            repo.index.commit("init")
+
+            watcher = RepoWatcher(tmpdir, os.path.join(tmpdir, "shadow"))
+            h1 = watcher.take_snapshot()
+
+            idx.sync(None, h1, watcher)
+            assert idx._get_hash() == h1
+
+            idx.sync(h1, h1, watcher)
+            assert idx._get_hash() == h1
+
+    def test_sync_delete_removes_entry(self):
+        import tempfile
+        with tempfile.TemporaryDirectory() as tmpdir:
+            from git import Repo
+            from simple_agent.snapshot.ghost_indexer import RepoWatcher
+
+            repo = Repo.init(tmpdir)
+            db_path = os.path.join(tmpdir, "index.db")
+            idx = self._make_index(db_path)
+
+            with open(os.path.join(tmpdir, "del.py"), "w") as fh:
+                fh.write("x\n")
+            repo.index.add(["del.py"])
+            repo.index.commit("init")
+
+            watcher = RepoWatcher(tmpdir, os.path.join(tmpdir, "shadow"))
+            h1 = watcher.take_snapshot()
+
+            idx.update("del.py", type="file", description="To delete")
+            idx.update("del.py:func", type="function", description="Func", line_start=1, line_end=3)
+            idx.sync(None, h1, watcher)
+
+            os.unlink(os.path.join(tmpdir, "del.py"))
+            repo.index.remove(["del.py"])
+            repo.index.commit("deleted")
+            h2 = watcher.take_snapshot()
+
+            processed = idx.sync(h1, h2, watcher)
+            assert processed >= 1
+
+            output = idx.tree()
+            assert "del.py" not in output
+            assert "func" not in output
+            assert idx._get_hash() == h2
+
+    def test_sync_modify_invalidates(self):
+        import tempfile
+        with tempfile.TemporaryDirectory() as tmpdir:
+            from git import Repo
+            from simple_agent.snapshot.ghost_indexer import RepoWatcher
+
+            repo = Repo.init(tmpdir)
+            db_path = os.path.join(tmpdir, "index.db")
+            idx = self._make_index(db_path)
+
+            with open(os.path.join(tmpdir, "mod.py"), "w") as fh:
+                fh.write("def setup():\n    x = 1\n    return x\n\ndef teardown():\n    pass\n")
+            repo.index.add(["mod.py"])
+            repo.index.commit("init")
+
+            watcher = RepoWatcher(tmpdir, os.path.join(tmpdir, "shadow"))
+            h1 = watcher.take_snapshot()
+
+            idx.update("mod.py", type="file", description="Mod")
+            idx.update("mod.py:setup", type="function", description="Setup", line_start=1, line_end=3)
+            idx.update("mod.py:teardown", type="function", description="Teardown", line_start=5, line_end=6)
+            idx.sync(None, h1, watcher)
+
+            with open(os.path.join(tmpdir, "mod.py"), "w") as fh:
+                fh.write("def setup(config):\n    x = 1\n    return x\n\ndef teardown():\n    pass\n")
+            repo.index.add(["mod.py"])
+            repo.index.commit("modified")
+            h2 = watcher.take_snapshot()
+
+            processed = idx.sync(h1, h2, watcher)
+            assert processed >= 0
+
+            output = idx.tree(path="mod.py")
+            assert "teardown" in output
+            assert idx._get_hash() == h2
