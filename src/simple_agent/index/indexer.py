@@ -99,6 +99,20 @@ class AgentIndex:
             return parent, name
         return "", path
 
+    @staticmethod
+    def _get_parent(path: str) -> str | None:
+        """Return the parent directory of *path*, or None at root.
+
+        ``'src/utils/helper.py'`` → ``'src/utils'``
+        ``'src'`` → ``''``
+        ``''`` → ``None``
+        """
+        if not path:
+            return None
+        if "/" not in path:
+            return ""
+        return path.rsplit("/", 1)[0]
+
     def _ensure_parents(self, path: str, _session: Session | None = None) -> None:
         """Create intermediate folder entries for all ancestors of the given path."""
         if not path:
@@ -263,16 +277,12 @@ class AgentIndex:
         """Check whether two line intervals intersect."""
         return a_start <= b_end and b_start <= a_end
 
-    def invalidate_stale(self, file_path: str, diff_text: str, _session: Session | None = None) -> int:
-        """Delete symbol entries under *file_path* whose line ranges overlap any diff hunk.
-
-        File-level entries (no line range) are never deleted. Returns the count
-        of deleted entries.
-
-        The *diff_text* should be produced with ``-U0`` so each hunk header
-        maps exactly to the changed lines with no context padding.
-        """
-        ranges = self._parse_diff_ranges(diff_text)
+    def invalidate_ranges(
+        self, file_path: str, ranges: list[tuple[int, int, int, int]],
+        _session: Session | None = None,
+    ) -> int:
+        """Delete symbol entries under *file_path* whose line ranges overlap any
+        given range. Returns the count of deleted entries."""
         if not ranges:
             return 0
 
@@ -296,6 +306,18 @@ class AgentIndex:
             sess.commit()
             sess.close()
         return deleted
+
+    def invalidate_stale(self, file_path: str, diff_text: str, _session: Session | None = None) -> int:
+        """Delete symbol entries under *file_path* whose line ranges overlap any diff hunk.
+
+        File-level entries (no line range) are never deleted. Returns the count
+        of deleted entries.
+
+        The *diff_text* should be produced with ``-U0`` so each hunk header
+        maps exactly to the changed lines with no context padding.
+        """
+        ranges = self._parse_diff_ranges(diff_text)
+        return self.invalidate_ranges(file_path, ranges, _session=_session)
 
     def rename(self, old_path: str, new_path: str, _session: Session | None = None) -> int:
         """Rename a file entry and all its symbol children.
@@ -348,6 +370,50 @@ class AgentIndex:
             sess.close()
         return len(params)
 
+    @staticmethod
+    def parse_diff(
+        changes: list[tuple[str, str, str | None]],
+        dir_exists,
+        get_file_diff=None,
+    ) -> dict:
+        """Parse git diff changes into structured form.
+
+        Returns a dict with:
+        - ``deleted``: set of paths to delete (files + orphan directories)
+        - ``modified``: dict mapping path to list of ``(old_s, old_e, new_s, new_e)`` hunk ranges
+        - ``renamed``: dict mapping old_path → new_path
+        - ``appended``: set of newly added file paths
+        """
+        deleted: set[str] = set()
+        modified: dict[str, list[tuple[int, int, int, int]]] = {}
+        renamed: dict[str, str] = {}
+        appended: set[str] = set()
+
+        for status, old_path, new_path in changes:
+            if status == "D":
+                deleted.add(old_path)
+                parent = AgentIndex._get_parent(old_path)
+                while parent is not None and parent not in deleted:
+                    if parent and not dir_exists(parent):
+                        deleted.add(parent)
+                    parent = AgentIndex._get_parent(parent)
+            elif status == "M":
+                ranges: list[tuple[int, int, int, int]] = []
+                if get_file_diff:
+                    ranges = AgentIndex._parse_diff_ranges(get_file_diff(old_path))
+                modified[old_path] = ranges
+            elif status.startswith("R") and new_path is not None:
+                renamed[old_path] = new_path
+            elif status == "A":
+                appended.add(old_path)
+
+        return {
+            "deleted": deleted,
+            "modified": modified,
+            "renamed": renamed,
+            "appended": appended,
+        }
+
     def sync(self, old_hash: str | None, new_hash: str, repo_watcher: RepoWatcher) -> int:
         """Sync the index to *new_hash* by processing all file changes since *old_hash*.
 
@@ -364,27 +430,26 @@ class AgentIndex:
             self._set_hash(new_hash)
             return 0
 
+        parsed = self.parse_diff(
+            changes,
+            dir_exists=lambda p: repo_watcher.path_exists_in_tree(new_hash, p),
+            get_file_diff=lambda p: repo_watcher.get_file_diff(old_hash, new_hash, p, context_lines=0),
+        )
+
         processed = 0
         session = self._get_session()
         try:
-            # Phase 1: renames (status is like "R100", "R087")
-            for status, old, new in changes:
-                if status.startswith("R") and new is not None:
-                    self.rename(old, new, _session=session)
-                    processed += 1
+            for old, new in parsed["renamed"].items():
+                self.rename(old, new, _session=session)
+                processed += 1
 
-            # Phase 2: deletes
-            for status, old, _new in changes:
-                if status == "D":
-                    self.remove(old, _session=session)
-                    processed += 1
+            for path in parsed["deleted"]:
+                self.remove(path, _session=session)
+                processed += 1
 
-            # Phase 3: modifications
-            for status, old, _new in changes:
-                if status == "M":
-                    diff_text = repo_watcher.get_file_diff(old_hash, new_hash, old, context_lines=0)
-                    self.invalidate_stale(old, diff_text, _session=session)
-                    processed += 1
+            for path, ranges in parsed["modified"].items():
+                self.invalidate_ranges(path, ranges, _session=session)
+                processed += 1
 
             self._set_hash(new_hash, _session=session)
             session.commit()

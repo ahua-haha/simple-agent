@@ -724,3 +724,131 @@ class TestSync:
             output = idx.tree(path="mod.py")
             assert "teardown" in output
             assert idx._get_hash() == h2
+
+
+class TestGetParent:
+    """Tests for AgentIndex._get_parent()."""
+
+    def test_file_with_multiple_ancestors(self):
+        assert AgentIndex._get_parent("src/utils/helper.py") == "src/utils"
+
+    def test_single_level(self):
+        assert AgentIndex._get_parent("src") == ""
+
+    def test_empty_string(self):
+        assert AgentIndex._get_parent("") is None
+
+    def test_top_level_file(self):
+        assert AgentIndex._get_parent("README.md") == ""
+
+
+class TestParseDiff:
+    """Tests for AgentIndex.parse_diff()."""
+
+    def test_file_deleted_parent_still_exists(self):
+        changes = [("D", "src/config.py", None)]
+        result = AgentIndex.parse_diff(changes, dir_exists=lambda p: True)
+        assert result["deleted"] == {"src/config.py"}
+        assert result["renamed"] == {}
+        assert result["appended"] == set()
+
+    def test_last_file_deleted_parent_orphaned(self):
+        changes = [("D", "old/legacy.py", None)]
+        result = AgentIndex.parse_diff(changes, dir_exists=lambda p: False)
+        assert result["deleted"] == {"old/legacy.py", "old"}
+
+    def test_nested_dirs_both_orphaned(self):
+        changes = [("D", "a/b/c.py", None)]
+        result = AgentIndex.parse_diff(changes, dir_exists=lambda p: False)
+        assert result["deleted"] == {"a/b/c.py", "a/b", "a"}
+
+    def test_mixed_changes_all_categories(self):
+        changes = [
+            ("M", "mod.py", None),
+            ("R", "old.py", "new.py"),
+            ("D", "gone.py", None),
+            ("A", "added.py", None),
+        ]
+        result = AgentIndex.parse_diff(changes, dir_exists=lambda p: True)
+        assert result["deleted"] == {"gone.py"}
+        assert result["renamed"] == {"old.py": "new.py"}
+        assert result["appended"] == {"added.py"}
+        assert "mod.py" in result["modified"]
+
+    def test_multiple_deleted_files_shared_parent(self):
+        changes = [
+            ("D", "pkg/a.py", None),
+            ("D", "pkg/b.py", None),
+        ]
+        result = AgentIndex.parse_diff(changes, dir_exists=lambda p: False)
+        assert "pkg/a.py" in result["deleted"]
+        assert "pkg/b.py" in result["deleted"]
+        assert "pkg" in result["deleted"]
+
+    def test_modified_file_with_hunks(self):
+        diff_text = "@@ -10,3 +12,4 @@\n-old\n+new\n@@ -30 +35,2 @@\n-old2\n+new2"
+        changes = [("M", "mod.py", None)]
+        result = AgentIndex.parse_diff(
+            changes,
+            dir_exists=lambda p: True,
+            get_file_diff=lambda p: diff_text,
+        )
+        assert "mod.py" in result["modified"]
+        ranges = result["modified"]["mod.py"]
+        assert len(ranges) == 2
+        assert ranges[0] == (10, 12, 12, 15)
+        assert ranges[1] == (30, 30, 35, 36)
+
+    def test_renamed_with_status_code(self):
+        changes = [("R100", "old/file.py", "new/file.py")]
+        result = AgentIndex.parse_diff(changes, dir_exists=lambda p: True)
+        assert result["renamed"] == {"old/file.py": "new/file.py"}
+
+
+class TestSyncOrphanDirectory:
+    """Integration test: sync removes orphan directory entries."""
+
+    def _make_index(self, db_path: str) -> AgentIndex:
+        return AgentIndex(db_path=db_path)
+
+    def test_sync_removes_directory_when_all_files_deleted(self):
+        import tempfile
+        with tempfile.TemporaryDirectory() as tmpdir:
+            from git import Repo
+            from simple_agent.snapshot.ghost_indexer import RepoWatcher
+
+            repo = Repo.init(tmpdir)
+            db_path = os.path.join(tmpdir, "index.db")
+            idx = self._make_index(db_path)
+
+            # Create file in a subdirectory
+            subdir = os.path.join(tmpdir, "mylib")
+            os.makedirs(subdir)
+            with open(os.path.join(subdir, "util.py"), "w") as fh:
+                fh.write("x\n")
+            repo.index.add(["mylib/util.py"])
+            repo.index.commit("init")
+
+            watcher = RepoWatcher(tmpdir, os.path.join(tmpdir, "shadow"))
+            h1 = watcher.take_snapshot()
+
+            # Index has both the file and the directory entry
+            idx.update(path="mylib/util.py", type="file", description="Util")
+            idx.sync(None, h1, watcher)
+
+            tree_before = idx.tree()
+            assert "mylib/" in tree_before
+
+            # Delete the file and the directory
+            os.unlink(os.path.join(subdir, "util.py"))
+            os.rmdir(subdir)
+            repo.index.remove(["mylib/util.py"])
+            repo.index.commit("deleted")
+            h2 = watcher.take_snapshot()
+
+            processed = idx.sync(h1, h2, watcher)
+            assert processed >= 1
+
+            tree_after = idx.tree()
+            assert "mylib/" not in tree_after
+            assert "util.py" not in tree_after

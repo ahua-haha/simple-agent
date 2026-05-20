@@ -93,3 +93,13 @@ class RepoWatcher:
             elif len(parts) == 3:
                 result.append((parts[0], parts[1], parts[2]))
         return result
+
+    def path_exists_in_tree(self, tree_hash: str, path: str) -> bool:
+        """Return True if *path* exists in the given tree hash."""
+        env = self._get_env()
+        try:
+            with self.repo.git.custom_environment(**env):
+                self.repo.git.cat_file("-t", f"{tree_hash}:{path}")
+                return True
+        except GitCommandError:
+            return False
