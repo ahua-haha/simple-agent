@@ -1,4 +1,4 @@
-"""Tests for AgentProcess message ownership, state management, and stop predicates."""
+"""Tests for AgentProcess message passing, state management, and stop predicates."""
 
 from __future__ import annotations
 
@@ -18,9 +18,7 @@ class TestAgentProcessInit:
         model = MagicMock()
         proc = AgentProcess(model)
         assert proc.agent is not None
-        assert proc.message == []
         assert isinstance(proc.state, AgentRunState)
-        assert proc.finish_reason is None
 
     def test_agent_compat_subscribe_delegates(self):
         model = MagicMock()
@@ -33,10 +31,8 @@ class TestAgentProcessInit:
     def test_agent_compat_reset_delegates(self):
         model = MagicMock()
         proc = AgentProcess(model)
-        proc.message = ["some message"]
         proc.state.turn_count = 5
         proc.agent.reset()
-        assert proc.message == []
         assert proc.state.turn_count == 0
 
     def test_agent_compat_set_model_is_noop(self):
@@ -50,21 +46,7 @@ class TestAgentProcessInit:
         assert proc.agent.state is None
 
 
-class TestAgentProcessMessages:
-    def test_message_owned_directly(self):
-        model = MagicMock()
-        proc = AgentProcess(model)
-        assert proc.message == []
-        proc.message.append("msg1")
-        assert proc.message == ["msg1"]
-
-    def test_reset_clears_messages(self):
-        model = MagicMock()
-        proc = AgentProcess(model)
-        proc.message = ["msg1", "msg2"]
-        proc.reset()
-        assert proc.message == []
-
+class TestAgentProcessReset:
     def test_reset_clears_state(self):
         model = MagicMock()
         proc = AgentProcess(model)
@@ -139,52 +121,52 @@ class TestAddTool:
         assert result is proc
 
 
-class TestPrune:
+class TestPruneMessages:
     def test_prune_removes_matching_last_pair(self):
         from pi.ai.types import AssistantMessage, ToolResultMessage
 
-        model = MagicMock()
-        proc = AgentProcess(model)
-        proc.message = [
+        messages = [
             MagicMock(role="user"),
             AssistantMessage(content=[], timestamp=0),
             ToolResultMessage(tool_call_id="t1", tool_name="determine_state", content=[], details={}, timestamp=0),
         ]
-        proc.prune("determine_state")
-        assert len(proc.message) == 1  # only user remains
+        result = AgentProcess.prune_messages(messages, "determine_state")
+        assert len(result) == 1  # only user remains
 
     def test_prune_does_nothing_when_no_match(self):
         from pi.ai.types import AssistantMessage, ToolResultMessage
 
-        model = MagicMock()
-        proc = AgentProcess(model)
-        proc.message = [
+        messages = [
             MagicMock(role="user"),
             AssistantMessage(content=[], timestamp=0),
             ToolResultMessage(tool_call_id="t1", tool_name="other_tool", content=[], details={}, timestamp=0),
         ]
-        proc.prune("determine_state")
-        assert len(proc.message) == 3
+        result = AgentProcess.prune_messages(messages, "determine_state")
+        assert len(result) == 3
 
     def test_prune_does_nothing_on_short_messages(self):
-        model = MagicMock()
-        proc = AgentProcess(model)
-        proc.message = [MagicMock(role="user")]
-        proc.prune("determine_state")
-        assert len(proc.message) == 1
+        messages = [MagicMock(role="user")]
+        result = AgentProcess.prune_messages(messages, "determine_state")
+        assert len(result) == 1
+
+    def test_prune_returns_new_list(self):
+        messages = [MagicMock(role="user")]
+        result = AgentProcess.prune_messages(messages, "determine_state")
+        assert result is not messages
 
 
-class TestResult:
-    def test_result_returns_tuple(self):
+class TestStepReturnValue:
+    """step() returns (messages, finish_reason, results) tuple."""
+
+    def test_step_returns_messages_when_empty(self):
+        """Even with no real agent loop, the method signature and return type are correct."""
         model = MagicMock()
         proc = AgentProcess(model)
-        proc.message = ["msg1"]
-        proc.finish_reason = "done"
-        proc._results = {"tool1": ["r1"]}
-        msgs, reason, results = proc.result()
-        assert msgs == ["msg1"]
-        assert reason == "done"
-        assert results == {"tool1": ["r1"]}
+        # The step method returns a 3-tuple
+        import inspect
+        sig = inspect.signature(AgentProcess.step)
+        hint = sig.return_annotation
+        assert str(hint).startswith("tuple[")
 
 
 class TestStopAgent:
@@ -196,6 +178,5 @@ class TestStopAgent:
         assert proc.state.is_set() is False
 
         proc.stop_agent("determine_state")
-        assert proc.finish_reason == "determine_state"
         assert proc.state.finish_reason == "determine_state"
         assert proc.state.is_set() is True

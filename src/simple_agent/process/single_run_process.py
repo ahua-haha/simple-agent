@@ -69,9 +69,9 @@ class SingleRunProcess:
         return format_results(self.tools_mgr, task, status=state)
 
     async def try_run(self, task: Task) -> StateClarification | None:
-        await self.proc.step(SYSTEM_PROMPT, self.message, task.input)
-        new_messages, _, results = self.proc.prune("determine_state").result()
-        self.message = new_messages
+        new_messages, _, results = await self.proc.step(SYSTEM_PROMPT, self.message, task.input)
+        new_messages = self.proc.prune_messages(new_messages, "determine_state")
+        self.message.extend(new_messages)
 
         items = results.get("determine_state", [])
         if items and isinstance(items[-1], StateClarification):

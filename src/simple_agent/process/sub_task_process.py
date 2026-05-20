@@ -85,11 +85,10 @@ class SubTaskProcess:
         return format_results(self.tools_mgr, task, status=state)
 
     async def try_sub_task(self) -> Task | StateClarification | None:
-        await self.proc.step(
+        new_messages, finish_reason, results = await self.proc.step(
             SYSTEM_PROMPT, self.message,
             "now based on the history, determine whether to define a sub task or this task is completed",
         )
-        new_messages, finish_reason, results = self.proc.result()
 
         items = results.get("define_task", [])
         if items and isinstance(items[-1], Task):

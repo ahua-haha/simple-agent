@@ -74,9 +74,8 @@ class CollectResultProcess:
         if task.start_snapshot and task.end_snapshot and task.repo_watcher:
             self.proc.add_tool(self.tools_mgr.create_diff_tool(task.repo_watcher, task.start_snapshot, task.end_snapshot))
 
-        await self.proc.step(SYSTEM_PROMPT, self.message, build_user_prompt(task))
-        new_messages, _, results = self.proc.result()
-        self.message = new_messages
+        new_messages, _, results = await self.proc.step(SYSTEM_PROMPT, self.message, build_user_prompt(task))
+        self.message.extend(new_messages)
 
         items = results.get("record_textresult", [])
         if items:

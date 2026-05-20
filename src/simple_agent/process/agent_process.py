@@ -35,9 +35,8 @@ class _AgentCompat:
 
 
 class AgentProcess:
-    """Owns messages, state, and tools. Reuses agent_loop as a stateless engine."""
+    """Owns state and tools. Reuses agent_loop as a stateless engine."""
 
-    finish_reason: str | None
     _results: dict[str, list]
 
     def __init__(self, model):
@@ -47,9 +46,7 @@ class AgentProcess:
         self._tools: list[AgentTool] = []
         self._results: dict[str, list] = {}
         self._listeners: list[Callable] = []
-        self.message: list[AgentMessage] = []
         self.state = AgentRunState()
-        self.finish_reason = None
 
         self.agent = _AgentCompat(self)
 
@@ -62,7 +59,6 @@ class AgentProcess:
 
     def stop_agent(self, reason: str):
         self.state.finish_reason = reason
-        self.finish_reason = reason
         self.state.set()
 
     def add_tool(self, tool: AgentTool | list[AgentTool], on_call: HookFn | None = None, store: bool = False) -> "AgentProcess":
@@ -89,10 +85,8 @@ class AgentProcess:
         return self
 
     def reset(self):
-        self.message = []
         self.state = AgentRunState()
         self._results.clear()
-        self.finish_reason = None
 
     async def step(
         self,
@@ -100,12 +94,7 @@ class AgentProcess:
         messages: list[AgentMessage],
         user_prompt: str,
         stop_condition: Callable[[AgentRunState], bool] | None = None,
-    ) -> "AgentProcess":
-        """Run the agent. Returns self for chaining.
-
-        If *stop_condition* is provided, it replaces state.stop_condition for
-        this run. Otherwise the default (checks finish_reason) is used.
-        """
+    ) -> tuple[list[AgentMessage], str | None, dict[str, list]]:
         self.reset()
 
         if stop_condition is not None:
@@ -113,11 +102,10 @@ class AgentProcess:
 
         now_ms = int(time.time() * 1000)
         user_msg = UserMessage(content=[TextContent(text=user_prompt)], timestamp=now_ms)
-        self.message = list(messages)
 
         context = AgentContext(
             system_prompt=system_prompt,
-            messages=list(self.message),
+            messages=list(messages),
             tools=self._tools,
         )
         config = AgentLoopConfig(
@@ -133,9 +121,11 @@ class AgentProcess:
             cancel_event=self.state,
         )
 
+        appended: list[AgentMessage] = []
+
         async for event in stream:
             if isinstance(event, AgentEndEvent):
-                self.message.extend(event.messages)
+                appended = event.messages
             if isinstance(event, ToolExecutionEndEvent):
                 self.state.tool_calls.setdefault(event.tool_name, []).append(
                     {"tool_call_id": event.tool_call_id, "args": event.args}
@@ -144,23 +134,20 @@ class AgentProcess:
                 self.state.turn_count += 1
             self._emit(event)
 
-        self.finish_reason = self.state.finish_reason
-        return self
+        return appended, self.state.finish_reason, self._results
 
-    def prune(self, tool_name: str) -> "AgentProcess":
-        """Remove the last tool call pair if it matches tool_name. Returns self for chaining."""
-        last_two = self.message[-2:]
+    @staticmethod
+    def prune_messages(messages: list[AgentMessage], tool_name: str) -> list[AgentMessage]:
+        """Remove the last tool call pair if it matches tool_name. Returns a new list."""
+        if len(messages) < 2:
+            return list(messages)
+        last_two = messages[-2:]
         if (
-            len(last_two) >= 2
-            and hasattr(last_two[0], "content")
+            hasattr(last_two[0], "content")
             and hasattr(last_two[1], "tool_name")
             and last_two[1].tool_name == tool_name
         ):
             from pi.ai.types import AssistantMessage
             if isinstance(last_two[0], AssistantMessage):
-                del self.message[-2:]
-        return self
-
-    def result(self) -> tuple:
-        """Return the recorded result: (messages, finish_reason, stored_results)."""
-        return (self.message, self.finish_reason, self._results)
+                return messages[:-2]
+        return list(messages)
