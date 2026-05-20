@@ -7,7 +7,7 @@ import os
 import pytest
 
 from simple_agent.process.sub_task_process import SubTaskProcess, SYSTEM_PROMPT
-from simple_agent.state.state import Task
+from simple_agent.state.state import Task, SessionState
 
 requires_api_key = pytest.mark.skipif(
     not os.environ.get("DEEPSEEK_API_KEY"),
@@ -21,22 +21,20 @@ class TestSubTaskProcess:
     def test_process_init(self):
         """SubTaskProcess should initialize without errors."""
         proc = SubTaskProcess()
-        assert proc.agent is not None
-        assert proc.task_collector is not None
-        assert proc.state_collector is not None
+        assert proc.proc is not None
+        assert proc.tools_mgr is not None
 
-    def test_planner_has_define_task_only(self):
+    def test_planner_has_define_task_and_determine_state(self):
         """Planner should have define_task and determine_state tools."""
         proc = SubTaskProcess()
-        task_tool_names = [t.name for t in proc.task_collector.tools]
-        state_tool_names = [t.name for t in proc.state_collector.tools]
-        assert "define_task" in task_tool_names
-        assert "determine_state" in state_tool_names
+        tool_names = [t.name for t in proc.proc._tools]
+        assert "define_task" in tool_names
+        assert "determine_state" in tool_names
 
     def test_define_task_tool_has_input(self):
         """define_task tool should have input parameter."""
         proc = SubTaskProcess()
-        for tool in proc.task_collector.tools:
+        for tool in proc.proc._tools:
             if tool.name == "define_task":
                 props = tool.parameters.get("properties", {})
                 assert "input" in props
@@ -46,7 +44,7 @@ class TestSubTaskProcess:
     def test_determine_state_tool_has_state_and_reason(self):
         """determine_state tool should have state and reason."""
         proc = SubTaskProcess()
-        for tool in proc.state_collector.tools:
+        for tool in proc.proc._tools:
             if tool.name == "determine_state":
                 props = tool.parameters.get("properties", {})
                 assert "state" in props
@@ -67,18 +65,18 @@ class TestSubTaskProcess:
     async def test_process_single_sub_task(self):
         """process() should handle a task with sub-tasks."""
         task = Task(input="explore the project and summarize findings")
+        state = SessionState(name="test")
         proc = SubTaskProcess()
-        await proc.process(task)
+        await proc.process(task, state)
 
         assert task.subTasks is not None
-        # At least one sub-task should have been defined
-        # (or the planner may have determined it can answer directly)
 
     @requires_api_key
     @pytest.mark.asyncio
     async def test_process_accumulates_sub_tasks(self):
         """process() should accumulate sub-tasks in task.subTasks."""
         task = Task(input="explore src/ and tests/ separately then summarize")
+        state = SessionState(name="test")
         proc = SubTaskProcess()
-        await proc.process(task)
+        await proc.process(task, state)
         assert task.subTasks is not None

@@ -3,13 +3,12 @@
 from __future__ import annotations
 
 from pi.ai import UserMessage, TextContent, get_model
-from pi.agent.types import AgentMessage
 
 from simple_agent.process.explore_process import ExploreProcess
 from simple_agent.process.collect_result_process import CollectResultProcess
 from simple_agent.process.agent_process import AgentProcess
 from simple_agent.snapshot.ghost_indexer import RepoWatcher
-from simple_agent.state.state import Task, StateClarification
+from simple_agent.state.state import Task, StateClarification, SessionState
 from simple_agent.tool.tool_mgr import ToolMgr
 from simple_agent.db.db import Database
 from simple_agent.stream import stream_event
@@ -46,7 +45,6 @@ class SubTaskProcess:
     def __init__(self, tools_mgr: ToolMgr | None = None, db: Database | None = None):
         self.tools_mgr = tools_mgr or ToolMgr()
         self._db = db or Database()
-        self.message: list[AgentMessage] = []
 
         define_task_tool = self.tools_mgr.create_record_tool(
             model_class=Task,
@@ -80,15 +78,16 @@ class SubTaskProcess:
         proc.agent.subscribe(stream_event)
         self.proc = proc
 
-    def format_result_message(self, task: Task, state: str = "finished") -> list[AgentMessage]:
+    def _append_format_results(self, task: Task, state: SessionState, status: str = "finished") -> None:
         from simple_agent.format import format_results
-        return format_results(self.tools_mgr, task, status=state)
+        state.messages.extend(format_results(self.tools_mgr, task, status=status))
 
-    async def try_sub_task(self) -> Task | StateClarification | None:
+    async def _try_sub_task(self, task: Task, state: SessionState) -> Task | StateClarification | None:
         new_messages, finish_reason, results = await self.proc.step(
-            SYSTEM_PROMPT, self.message,
+            SYSTEM_PROMPT, task.messages or [],
             "now based on the history, determine whether to define a sub task or this task is completed",
         )
+        task.messages.extend(new_messages)
 
         items = results.get("define_task", [])
         if items and isinstance(items[-1], Task):
@@ -100,11 +99,10 @@ class SubTaskProcess:
 
         return None
 
-    async def process(self, task: Task, context: list[AgentMessage] = []) -> list[AgentMessage]:
+    async def process(self, task: Task, state: SessionState) -> None:
 
-        index = len(context)
-        self.message = context
-        self.message.append(UserMessage(content=[TextContent(text=task.input)], timestamp=0))
+        index = len(task.messages or [])
+        task.messages.append(UserMessage(content=[TextContent(text=task.input)], timestamp=0))
 
         if task.repo_watcher is None:
             task.repo_watcher = RepoWatcher(".", "./data/snapshots")
@@ -116,29 +114,32 @@ class SubTaskProcess:
             task.subTasks = []
 
         while True:
-            res = await self.try_sub_task()
+            res = await self._try_sub_task(task, state)
 
             if isinstance(res, Task):
                 res.result = []
+                res.messages = []
                 task.subTasks.append(res)
                 explore_proc = ExploreProcess(tools_mgr=self.tools_mgr, db=self._db)
-                sub_msgs = await explore_proc.process(res, self.message[index+1:])
-                self.message.extend(sub_msgs)
+                await explore_proc.process(res, state)
                 continue
 
             if isinstance(res, StateClarification):
                 collectProc = CollectResultProcess(tools_mgr=self.tools_mgr, db=self._db)
-                await collectProc.process(task, self.message[index:])
+                await collectProc.process(task, state)
                 break
 
             break
 
+        task.end_snapshot = task.repo_watcher.take_snapshot()
+
         self._db.save_task(
             task_type="sub_task",
             task_input=task.input,
-            messages=self.message,
+            messages=task.messages,
             results=task.result,
             status="finished",
         )
 
-        return self.format_result_message(task, state="finished")
+        self._append_format_results(task, state, status="finished")
+        task.messages.clear()

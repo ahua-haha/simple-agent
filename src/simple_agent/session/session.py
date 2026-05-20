@@ -1,28 +1,23 @@
-"""Session - orchestrates multiple SingleRunProcess runs with persistence."""
+"""Session - orchestrates multiple processes with shared SessionState."""
 
 from __future__ import annotations
 
 import os
-import tempfile
 import time
-
-from pi.agent.types import AgentMessage
-from pydantic import TypeAdapter
 
 from simple_agent.process.single_run_process import SingleRunProcess
 from simple_agent.process.commit_collect_result_process import CommitCollectResultProcess
-from simple_agent.state.state import CommitData, RunRecord, SessionData, Task
+from simple_agent.state.state import SessionState, Task
 from simple_agent.tool.tool_mgr import ToolMgr
 from simple_agent.db.db import Database
 
 
 class Session:
-    messages: list[AgentMessage]
-    uncommitted_task: list[Task]
-    _name: str
-    _base_dir: str
-    _created_at: float
-    _commit_index: int
+    """Orchestrates runs with a single shared SessionState instance.
+
+    Infrastructure (tools_mgr, db) lives on Session. State lives on SessionState.
+    """
+
     _tools_mgr: ToolMgr
     _db: Database
 
@@ -31,15 +26,12 @@ class Session:
         self._base_dir = base_dir
         self._tools_mgr = tools_mgr or ToolMgr()
         self._db = db or Database()
-        self._created_at = time.time()
 
         filepath = self._session_filepath()
         if os.path.exists(filepath):
-            self._load(filepath)
+            self.state = SessionState.load(filepath)
         else:
-            self.messages = []
-            self.uncommitted_task = []
-            self._commit_index = 0
+            self.state = SessionState(name=name)
 
     def _session_filepath(self) -> str:
         return os.path.join(self._base_dir, f"{self._name}.json")
@@ -47,79 +39,40 @@ class Session:
     def _commit_filepath(self, index: int) -> str:
         return os.path.join(self._base_dir, self._name, f"commit_{index:04d}.json")
 
-    def _load(self, filepath: str) -> None:
-        with open(filepath, "r") as f:
-            data = SessionData.model_validate_json(f.read())
-        self.messages = data.messages
-        self._created_at = data.created_at
-        self._commit_index = data.commit_index
-        self.uncommitted_task = data.uncommitted_task
-
     async def run(self, user_input: str) -> Task:
-        task = Task(input=user_input)
+        task = Task(input=user_input, messages=[])
+        self.state.current_task = task
 
         proc = SingleRunProcess(tools_mgr=self._tools_mgr, db=self._db)
-        new_msgs = await proc.process(task, context=self.messages)
-        self.messages.extend(new_msgs)
+        await proc.process(task, self.state)
 
-        self.uncommitted_task.append(task)
+        self.state.current_task = None
+        self.state.uncommitted_task.append(task)
+        self.state.checkpoint(self._session_filepath())
         return task
 
     def checkpoint(self) -> str:
-        os.makedirs(self._base_dir, exist_ok=True)
-
-        model = SessionData(
-            name=self._name,
-            messages=self.messages,
-            commit_index=self._commit_index,
-            uncommitted_task=self.uncommitted_task,
-            created_at=self._created_at,
-            updated_at=time.time(),
-        )
-
         filepath = self._session_filepath()
-        tmp = tempfile.NamedTemporaryFile(
-            mode="w",
-            dir=self._base_dir,
-            prefix=f".{self._name}.",
-            suffix=".tmp",
-            delete=False,
-        )
-        try:
-            tmp.write(model.model_dump_json(indent=2))
-            tmp.flush()
-            os.fsync(tmp.fileno())
-            tmp.close()
-            os.rename(tmp.name, filepath)
-        except Exception:
-            tmp.close()
-            os.unlink(tmp.name)
-            raise
-
+        self.state.checkpoint(filepath)
         return filepath
 
     async def commit(self) -> str:
         task = Task(input="")
 
         proc = CommitCollectResultProcess(tools_mgr=self._tools_mgr, db=self._db)
-        commit_msgs = await proc.process(task, self.messages)
+        await proc.process(task, self.state)
 
-        task.subTasks = list(self.uncommitted_task)
+        task.subTasks = list(self.state.uncommitted_task)
 
-        # Write committed task to its own file
-        self._commit_index += 1
-        task_path = self._commit_filepath(self._commit_index)
+        self.state.commit_index += 1
+        task_path = self._commit_filepath(self.state.commit_index)
         os.makedirs(os.path.dirname(task_path), exist_ok=True)
 
         with open(task_path, "w") as f:
             f.write(task.model_dump_json(indent=2))
 
-        # Checkpoint session context
-
-        self.messages.extend(commit_msgs)
-        self.uncommitted_task.clear()
-
-        self.checkpoint()
+        self.state.uncommitted_task.clear()
+        self.state.checkpoint(self._session_filepath())
 
         return task_path
 

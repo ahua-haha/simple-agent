@@ -11,7 +11,7 @@ from simple_agent.process.commit_collect_result_process import (
     INSTRUCTION_SYSTEM_PROMPT,
     COLLECT_RESULT_SYSTEM_PROMPT,
 )
-from simple_agent.state.state import Task
+from simple_agent.state.state import Task, SessionState
 
 requires_api_key = pytest.mark.skipif(
     not os.environ.get("DEEPSEEK_API_KEY"),
@@ -32,14 +32,12 @@ class TestCommitCollectResultProcess:
     def test_process_has_extract_instruction_tool(self):
         """Should have extract_instruction tool via instruction_collector."""
         proc = CommitCollectResultProcess()
-        tool_names = [t.name for t in proc.instruction_collector.tools]
-        assert "extract_instruction" in tool_names
+        assert proc.instruction_collector.name == "extract_instruction"
 
     def test_process_has_record_textresult_tool(self):
         """Should have record_textresult tool via result_collector."""
         proc = CommitCollectResultProcess()
-        tool_names = [t.name for t in proc.result_collector.tools]
-        assert "record_textresult" in tool_names
+        assert proc.result_collector.name == "record_textresult"
 
     def test_commit_data_property_empty_by_default(self):
         """commit_data property should return empty CommitData by default."""
@@ -69,7 +67,8 @@ class TestCommitCollectResultProcess:
     async def test_process_populates_task_result(self):
         """process() should populate task.result with TextResults."""
         task = Task(input="")
+        state = SessionState(name="test")
         proc = CommitCollectResultProcess()
-        await proc.process(task, context=[])
+        await proc.process(task, state)
 
         assert task.result is not None

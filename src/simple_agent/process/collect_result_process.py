@@ -3,12 +3,10 @@
 from __future__ import annotations
 
 from pi.ai import get_model
-from pi.agent.types import AgentMessage
 
 from simple_agent.process.agent_process import AgentProcess
 from simple_agent.db.db import Database
-from simple_agent.models import register_custom_models, get_api_key
-from simple_agent.state.state import TEXT_RESULT_JSON_SCHEMA, Task, TextResult
+from simple_agent.state.state import TEXT_RESULT_JSON_SCHEMA, Task, TextResult, SessionState
 from simple_agent.tool.tool_mgr import ToolMgr
 from simple_agent.stream import stream_event
 
@@ -46,13 +44,12 @@ def build_user_prompt(task: Task) -> str:
 
 
 class CollectResultProcess:
-    
+
     proc: AgentProcess
 
     def __init__(self, tools_mgr: ToolMgr | None = None, db: Database | None = None):
         self.tools_mgr = tools_mgr or ToolMgr()
         self._db = db or Database()
-        self.message: list[AgentMessage] = []
 
         record_tool = self.tools_mgr.create_record_tool(
             model_class=TextResult,
@@ -67,15 +64,12 @@ class CollectResultProcess:
         proc.add_tool(self.tools_mgr.create_all_tools("."))
         self.proc = proc
 
-    async def process(self, task: Task, context: list[AgentMessage]) -> list[AgentMessage]:
-        index = len(context)
-        self.message = context
-
+    async def process(self, task: Task, state: SessionState) -> None:
         if task.start_snapshot and task.end_snapshot and task.repo_watcher:
             self.proc.add_tool(self.tools_mgr.create_diff_tool(task.repo_watcher, task.start_snapshot, task.end_snapshot))
 
-        new_messages, _, results = await self.proc.step(SYSTEM_PROMPT, self.message, build_user_prompt(task))
-        self.message.extend(new_messages)
+        new_messages, _, results = await self.proc.step(SYSTEM_PROMPT, task.messages or [], build_user_prompt(task))
+        task.messages.extend(new_messages)
 
         items = results.get("record_textresult", [])
         if items:
@@ -84,9 +78,7 @@ class CollectResultProcess:
         self._db.save_task(
             task_type="collect result",
             task_input=task.input,
-            messages=self.message,
+            messages=state.messages,
             results=task.result,
             status="finished",
         )
-
-        return self.message[index:]

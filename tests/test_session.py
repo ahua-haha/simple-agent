@@ -9,7 +9,7 @@ import tempfile
 import pytest
 
 from simple_agent.session import Session
-from simple_agent.state.state import CommitData, RunRecord, SessionData
+from simple_agent.state.state import CommitData, RunRecord
 
 
 class TestSessionCommit:

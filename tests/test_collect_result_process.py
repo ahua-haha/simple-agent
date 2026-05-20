@@ -14,8 +14,7 @@ class TestCollectResultProcess:
     def test_collect_result_process_init(self):
         """CollectResultProcess should initialize without errors."""
         proc = CollectResultProcess()
-        assert proc.agent is not None
-        assert proc.collector is not None
+        assert proc.proc is not None
         assert proc.tools_mgr is not None
 
     def test_system_prompt_contains_finish_instruction(self):
@@ -29,49 +28,6 @@ class TestCollectResultProcess:
     def test_system_prompt_mentions_record_textresult(self):
         """SYSTEM_PROMPT should mention record_textresult."""
         assert "record_textresult" in SYSTEM_PROMPT
-
-    def test_collector_has_record_tool(self):
-        """Collector should have record_textresult tool."""
-        proc = CollectResultProcess()
-        tool_names = [t.name for t in proc.collector.tools]
-        assert "record_textresult" in tool_names
-
-    def test_process_has_finish_detection_flag(self):
-        """Process should have _finish_detected flag."""
-        proc = CollectResultProcess()
-        assert hasattr(proc, "_finish_detected")
-        assert proc._finish_detected == False
-
-    def test_on_event_detects_finish(self):
-        """on_event should detect FINISH in text delta."""
-        proc = CollectResultProcess()
-        proc._finish_detected = False
-
-        # Create a mock event with text_delta containing FINISH
-        class MockDeltaEvent:
-            type = "message_update"
-            class MockAssistantMessage:
-                type = "text_delta"
-                delta = "FINISH"
-            assistant_message_event = MockAssistantMessage()
-
-        proc.on_event(MockDeltaEvent())
-        assert proc._finish_detected == True
-
-    def test_on_event_ignores_non_finish(self):
-        """on_event should not set flag for non-FINISH text."""
-        proc = CollectResultProcess()
-        proc._finish_detected = False
-
-        class MockDeltaEvent:
-            type = "message_update"
-            class MockAssistantMessage:
-                type = "text_delta"
-                delta = "Some regular text"
-            assistant_message_event = MockAssistantMessage()
-
-        proc.on_event(MockDeltaEvent())
-        assert proc._finish_detected == False
 
     def test_task_creation(self):
         """Task should be creatable with input and result."""

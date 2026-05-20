@@ -3,12 +3,11 @@
 from __future__ import annotations
 
 from pi.ai import get_model
-from pi.agent.types import AgentMessage
 
 from simple_agent.process.collect_result_process import CollectResultProcess
 from simple_agent.process.agent_process import AgentProcess
 from simple_agent.snapshot.ghost_indexer import RepoWatcher
-from simple_agent.state.state import Task, StateClarification
+from simple_agent.state.state import Task, StateClarification, SessionState
 from simple_agent.tool.tool_mgr import ToolMgr
 from simple_agent.db.db import Database
 from simple_agent.stream import stream_event
@@ -47,7 +46,6 @@ class ExploreProcess:
     def __init__(self, tools_mgr: ToolMgr | None = None, db: Database | None = None):
         self.tools_mgr = tools_mgr or ToolMgr()
         self._db = db or Database()
-        self.message: list[AgentMessage] = []
 
         determine_state_tool = self.tools_mgr.create_record_tool(
             model_class=StateClarification,
@@ -73,47 +71,47 @@ class ExploreProcess:
         proc.add_tool(self.tools_mgr.create_all_tools("."))
         self.proc = proc
 
-    def format_result_message(self, task: Task, state: str = "finished") -> list[AgentMessage]:
+    def _append_format_results(self, task: Task, state: SessionState, status: str = "finished") -> None:
         from simple_agent.format import format_results
-        return format_results(self.tools_mgr, task, status=state)
+        state.messages.extend(format_results(self.tools_mgr, task, status=status))
 
-    async def try_explore(self, task: Task) -> StateClarification | None:
-        new_messages, finish_reason, results = await self.proc.step(SYSTEM_PROMPT, self.message, task.input)
+    async def _try_explore(self, task: Task, state: SessionState) -> StateClarification | None:
+        new_messages, finish_reason, results = await self.proc.step(SYSTEM_PROMPT, task.messages or [], task.input)
         new_messages = self.proc.prune_messages(new_messages, "determine_state")
-        self.message.extend(new_messages)
+        task.messages.extend(new_messages)
 
         items = results.get("determine_state", [])
         if items and isinstance(items[-1], StateClarification):
             return items[-1]
         return None
 
-    async def process(self, task: Task, context: list[AgentMessage] = []) -> list[AgentMessage]:
+    async def process(self, task: Task, state: SessionState) -> None:
         self.proc.agent.reset()
 
-        index = len(context)
-        self.message = context
+        index = len(state.messages)
 
         if task.repo_watcher is None:
             task.repo_watcher = RepoWatcher(".", "./data/snapshots")
         task.start_snapshot = task.repo_watcher.take_snapshot()
 
-        state_result = await self.try_explore(task)
+        state_result = await self._try_explore(task, state)
 
         task.end_snapshot = task.repo_watcher.take_snapshot()
 
         collectProc = CollectResultProcess(tools_mgr=self.tools_mgr, db=self._db)
-        await collectProc.process(task, self.message[index:])
+        await collectProc.process(task, state)
 
-        state = "finished"
+        status = "finished"
         if state_result is not None:
-            state = state_result.state
+            status = state_result.state
 
         self._db.save_task(
             task_type="explore",
             task_input=task.input,
-            messages=self.message,
+            messages=task.messages,
             results=task.result,
-            status=state,
+            status=status,
         )
 
-        return self.format_result_message(task, state=state)
+        self._append_format_results(task, state, status=status)
+        task.messages.clear()

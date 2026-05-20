@@ -15,6 +15,7 @@ from simple_agent.state.state import (
     TEXT_RESULT_JSON_SCHEMA,
     CommitData,
     ExtractedInstruction,
+    SessionState,
     Task,
     TextResult,
 )
@@ -67,7 +68,6 @@ When done, respond with only FINISH."""
 class CommitCollectResultProcess:
     agent: Agent
     tools_mgr: ToolMgr
-    message: list[AgentMessage]
     _db: Database
 
     def __init__(self, tools_mgr: ToolMgr | None = None, db: Database | None = None):
@@ -89,7 +89,6 @@ class CommitCollectResultProcess:
             description="Record a TextResult instance capturing a final outcome from the full session",
             parameters=TEXT_RESULT_JSON_SCHEMA,
         )
-        self.message = []
 
         self.wrap_tools()
 
@@ -114,15 +113,15 @@ class CommitCollectResultProcess:
             return res
         tool.execute = execute
 
-    def format_result_message(self) -> list[AgentMessage]:
+    def _append_format_results(self, state: SessionState) -> None:
         from simple_agent.format import format_results
         instructions = self.commit_data.extracted_instructions
         instructions_text = "\n".join(f"- {i}" for i in instructions) if instructions else "(none)"
         task = Task(input="", result=self.commit_data.aggregated_results)
-        return format_results(
+        state.messages.extend(format_results(
             self.tools_mgr, task, status="finished",
             label=f"the session\ninstructions:\n{instructions_text}",
-        )
+        ))
 
     @property
     def commit_data(self) -> CommitData:
@@ -141,19 +140,16 @@ class CommitCollectResultProcess:
             aggregated_results=results,
         )
 
-    async def _step(self, system_prompt: str, tool_list: list, user_prompt: str):
+    async def _step(self, system_prompt: str, tool_list: list, user_prompt: str, state: SessionState):
         self.agent.set_system_prompt(system_prompt)
         self.agent.set_tools(tool_list)
-        self.agent.replace_messages(self.message)
+        self.agent.replace_messages(state.messages)
         await self.agent.prompt(user_prompt)
-        self.message = self.agent.state.messages
+        state.messages = self.agent.state.messages
 
-    async def process(self, task: Task, context: list[AgentMessage]) -> list[AgentMessage]:
+    async def process(self, task: Task, state: SessionState) -> None:
         self.agent.reset()
         self.agent.subscribe(stream_event)
-
-        index = len(context)
-        self.message = context
 
         # Phase 1: Extract user instructions
         self.instruction_collector.clear()
@@ -164,6 +160,7 @@ class CommitCollectResultProcess:
             system_prompt=INSTRUCTION_SYSTEM_PROMPT,
             tool_list=phase1_tools,
             user_prompt=INSTRUCTION_USER_PROMPT,
+            state=state,
         )
 
         # Build instructions text for phase 2 prompt
@@ -179,6 +176,7 @@ class CommitCollectResultProcess:
             system_prompt=COLLECT_RESULT_SYSTEM_PROMPT,
             tool_list=phase2_tools,
             user_prompt=COLLECT_RESULT_USER_PROMPT.format(instructions=instructions_text),
+            state=state,
         )
 
         if self.result_collector.item:
@@ -189,9 +187,9 @@ class CommitCollectResultProcess:
         self._db.save_task(
             task_type="commit_collect_result",
             task_input=task.input,
-            messages=self.message,
+            messages=state.messages,
             results=task.result,
             status="finished",
         )
 
-        return self.format_result_message()
+        self._append_format_results(state)

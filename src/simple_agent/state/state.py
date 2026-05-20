@@ -2,6 +2,9 @@
 
 from __future__ import annotations
 
+import os
+import tempfile
+import time
 from typing import Generic, TypeVar
 
 from pydantic import BaseModel
@@ -36,6 +39,7 @@ TEXT_RESULT_JSON_SCHEMA: dict = {
 class Task(BaseModel):
     input: str
     result: list[TextResult] = None
+    messages: list[AgentMessage] = None
     subTasks: list[Task] = None
     start_snapshot: str | None = None
     end_snapshot: str | None = None
@@ -52,13 +56,56 @@ class RunRecord(BaseModel):
     finished_at: float
 
 
-class SessionData(BaseModel):
+class SessionState(BaseModel):
+    """Live mutable state shared across all processes in a session.
+
+    A single instance is passed by reference to every process.
+    """
+
     name: str
-    messages: list[AgentMessage]
+    messages: list[AgentMessage] = []
+    current_task: "Task | None" = None
     commit_index: int = 0
     uncommitted_task: list["Task"] = []
-    created_at: float
-    updated_at: float
+    created_at: float = 0.0
+    updated_at: float = 0.0
+
+    model_config = {"arbitrary_types_allowed": True}
+
+    def __init__(self, **data):
+        now = time.time()
+        data.setdefault("created_at", now)
+        data.setdefault("updated_at", now)
+        super().__init__(**data)
+
+    def checkpoint(self, filepath: str) -> None:
+        """Persist state to *filepath* atomically (temp file + rename)."""
+        os.makedirs(os.path.dirname(filepath) or ".", exist_ok=True)
+        self.updated_at = time.time()
+
+        tmp = tempfile.NamedTemporaryFile(
+            mode="w",
+            dir=os.path.dirname(filepath) or ".",
+            prefix=f".{self.name}.",
+            suffix=".tmp",
+            delete=False,
+        )
+        try:
+            tmp.write(self.model_dump_json(indent=2))
+            tmp.flush()
+            os.fsync(tmp.fileno())
+            tmp.close()
+            os.rename(tmp.name, filepath)
+        except Exception:
+            tmp.close()
+            os.unlink(tmp.name)
+            raise
+
+    @classmethod
+    def load(cls, filepath: str) -> "SessionState":
+        """Restore state from a checkpoint file."""
+        with open(filepath, "r") as f:
+            return cls.model_validate_json(f.read())
 
 
 class CommitData(BaseModel):
