@@ -422,6 +422,57 @@ class AgentIndex:
             sess.close()
         return list(removed)
 
+    def _reset_file_ranges(
+        self,
+        file_path: str,
+        repo_watcher: RepoWatcher,
+        old_hash: str,
+        new_hash: str,
+        _session: Session,
+    ) -> tuple[list[str], list[tuple[int, int, int, int]]]:
+        """Reset symbol line ranges for one modified file.
+
+        Parses the file diff, deletes symbols overlapping old-ranges,
+        shifts non-overlapping symbols by the cumulative delta.
+        Returns ``(deleted_paths, ranges)``.
+        """
+        diff_text = repo_watcher.get_file_diff(old_hash, new_hash, file_path, context_lines=0)
+        ranges = self._parse_diff_ranges(diff_text)
+        if not ranges:
+            return [], []
+
+        symbols = _session.exec(
+            select(IndexEntry).where(
+                IndexEntry.path.startswith(file_path + ":")
+            )
+        ).all()
+
+        deleted_paths: list[str] = []
+
+        for sym in symbols:
+            if sym.line_start is None or sym.line_end is None:
+                continue
+
+            new_start, new_end = sym.line_start, sym.line_end
+            deleted = False
+
+            for old_s, old_e, new_s, new_e in ranges:
+                if self._ranges_overlap(new_start, new_end, old_s, old_e):
+                    _session.delete(sym)
+                    deleted = True
+                    deleted_paths.append(sym.path)
+                    break
+                elif new_start > old_e:
+                    delta = (new_e - new_s + 1) - (old_e - old_s + 1)
+                    new_start += delta
+                    new_end += delta
+
+            if not deleted and (new_start != sym.line_start or new_end != sym.line_end):
+                sym.line_start = new_start
+                sym.line_end = new_end
+
+        return deleted_paths, ranges
+
     def _handle_modified(
         self,
         changes: list[tuple[str, str, str | None]],
@@ -430,15 +481,17 @@ class AgentIndex:
         new_hash: str,
         _session: Session | None = None,
     ) -> list[str]:
-        """Handle modified files: collect the narrowest symbol path for
-        each hunk, then clear descriptions on those paths and their children.
+        """Handle modified files: reset symbol line ranges from the diff,
+        collect directly-modified entries, then clear descriptions.
 
-        Returns the collected paths for propagation.
+        Returns collected paths + deleted-symbol parents for propagation.
         """
         _close = _session is None
         sess = _session or self._get_session()
 
-        def _containing_symbol(file_path: str, old_s: int, old_e: int) -> str | None:
+        from sqlalchemy import update as sql_update
+
+        def _containing_symbol(file_path: str, line_s: int, line_e: int) -> str | None:
             symbols = sess.exec(
                 select(IndexEntry).where(
                     IndexEntry.path.startswith(file_path + ":")
@@ -447,14 +500,14 @@ class AgentIndex:
             containing = [
                 s for s in symbols
                 if s.line_start is not None and s.line_end is not None
-                and s.line_start <= old_s and old_e <= s.line_end
+                and s.line_start <= line_s and line_e <= s.line_end
             ]
             if containing:
                 return min(containing, key=lambda s: s.line_end - s.line_start).path
             return None
 
-        # Phase 1: collect paths
         collected: set[str] = set()
+        propagate: set[str] = set()
 
         for status, old_path, _ in changes:
             if status != "M":
@@ -464,32 +517,32 @@ class AgentIndex:
             if file_entry is None:
                 continue
 
-            diff_text = repo_watcher.get_file_diff(old_hash, new_hash, old_path, context_lines=0)
-            ranges = self._parse_diff_ranges(diff_text)
-
-            if not ranges:
+            deleted, ranges = self._reset_file_ranges(old_path, repo_watcher, old_hash, new_hash, _session=sess)
+            if not deleted and not ranges:
                 collected.add(old_path)
-            else:
-                for old_s, old_e, _new_s, _new_e in ranges:
-                    sym_path = _containing_symbol(old_path, old_s, old_e)
-                    collected.add(sym_path if sym_path is not None else old_path)
+                continue
 
-        # Phase 2: clear descriptions on each path and its children
-        from sqlalchemy import update as sql_update
+            for sym_path in deleted:
+                parent, _ = self._derive_parent_and_name(sym_path)
+                if parent:
+                    propagate.add(parent)
+
+            for old_s, old_e, new_s, new_e in ranges:
+                sym_path = _containing_symbol(old_path, new_s, new_e)
+                collected.add(sym_path if sym_path is not None else old_path)
+
+        # Phase 3: clear descriptions
         for path in collected:
             sess.exec(
                 sql_update(IndexEntry)
-                .where(
-                    (IndexEntry.path == path) |
-                    (IndexEntry.path.startswith(path + ":"))
-                )
+                .where(IndexEntry.path == path)
                 .values(description="")
             )
 
         if _close:
             sess.commit()
             sess.close()
-        return list(collected)
+        return list(collected | propagate)
 
     @staticmethod
     def _handle_appended(
