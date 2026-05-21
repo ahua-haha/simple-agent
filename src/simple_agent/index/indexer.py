@@ -279,99 +279,6 @@ class AgentIndex:
         """Check whether two line intervals intersect."""
         return a_start <= b_end and b_start <= a_end
 
-    def invalidate_ranges(
-        self, file_path: str, ranges: list[tuple[int, int, int, int]],
-        _session: Session | None = None,
-    ) -> int:
-        """Delete symbol entries under *file_path* whose line ranges overlap any
-        given range. Returns the count of deleted entries."""
-        if not ranges:
-            return 0
-
-        _close = _session is None
-        sess = _session or self._get_session()
-        deleted = 0
-        entries = sess.exec(
-            select(IndexEntry).where(
-                IndexEntry.path.startswith(file_path + ":")
-            )
-        ).all()
-        for entry in entries:
-            if entry.line_start is None or entry.line_end is None:
-                continue
-            for old_s, old_e, _new_s, _new_e in ranges:
-                if self._ranges_overlap(entry.line_start, entry.line_end, old_s, old_e):
-                    sess.delete(entry)
-                    deleted += 1
-                    break
-        if _close:
-            sess.commit()
-            sess.close()
-        return deleted
-
-    def invalidate_stale(self, file_path: str, diff_text: str, _session: Session | None = None) -> int:
-        """Delete symbol entries under *file_path* whose line ranges overlap any diff hunk.
-
-        File-level entries (no line range) are never deleted. Returns the count
-        of deleted entries.
-
-        The *diff_text* should be produced with ``-U0`` so each hunk header
-        maps exactly to the changed lines with no context padding.
-        """
-        ranges = self._parse_diff_ranges(diff_text)
-        return self.invalidate_ranges(file_path, ranges, _session=_session)
-
-    def rename(self, old_path: str, new_path: str, _session: Session | None = None) -> int:
-        """Rename a file entry and all its symbol children.
-
-        Every entry whose path equals *old_path* or starts with ``old_path:``
-        has its path, parent_path, and name updated to reflect *new_path*.
-        Returns the count of renamed entries.
-        """
-        _close = _session is None
-        sess = _session or self._get_session()
-        old_path = old_path.rstrip("/")
-        new_path = new_path.rstrip("/")
-        entries = sess.exec(
-            select(IndexEntry).where(
-                (IndexEntry.path == old_path) |
-                (IndexEntry.path.startswith(old_path + ":"))
-            )
-        ).all()
-        if not entries:
-            if _close:
-                sess.close()
-            return 0
-
-        from sqlalchemy import update, bindparam
-
-        params: list[dict[str, str]] = []
-        for entry in entries:
-            updated_path = new_path + entry.path[len(old_path):]
-            parent_path, name = self._derive_parent_and_name(updated_path)
-            params.append(dict(
-                old_p=entry.path,
-                new_p=updated_path,
-                parent_p=parent_path,
-                new_name=name,
-            ))
-
-        stmt = (
-            update(IndexEntry)
-            .where(IndexEntry.path == bindparam("old_p"))
-            .values(
-                path=bindparam("new_p"),
-                parent_path=bindparam("parent_p"),
-                name=bindparam("new_name"),
-            )
-        )
-        sess.exec(stmt, params)
-
-        if _close:
-            sess.commit()
-            sess.close()
-        return len(params)
-
     def _handle_deletes(
         self,
         changes: list[tuple[str, str, str | None]],
@@ -610,23 +517,17 @@ class AgentIndex:
         processed = 0
         session = self._get_session()
         try:
-            # Phase 1: renames (handled directly from git diff)
-            for status, old, new in changes:
-                if status.startswith("R") and new is not None:
-                    self.rename(old, new, _session=session)
-                    processed += 1
-
-            # Phase 2: deletes
+            # Phase 1: deletes
             deleted = self._handle_deletes(changes, repo_watcher, new_hash, _session=session)
             processed += len(deleted)
 
-            # Phase 3: modifications
+            # Phase 2: modifications
             modified = self._handle_modified(changes, repo_watcher, old_hash, new_hash, _session=session)
 
-            # Phase 4: appended
+            # Phase 3: appended
             appended = self._handle_appended(changes)
 
-            # Phase 5: propagate
+            # Phase 4: propagate
             self._propagate_stale(deleted + modified + appended, _session=session)
 
             self._set_hash(new_hash, _session=session)
