@@ -491,38 +491,16 @@ class AgentIndex:
             sess.close()
         return list(collected)
 
+    @staticmethod
     def _handle_appended(
-        self,
         changes: list[tuple[str, str, str | None]],
-        _session: Session | None = None,
-    ) -> list[IndexEntry]:
-        """Handle appended files: create ``IndexEntry`` objects and return
-        their parent entries for propagation.
-        """
-        _close = _session is None
-        sess = _session or self._get_session()
-
-        parent_paths: list[str] = []
-
+    ) -> list[str]:
+        """Collect appended file paths for propagation."""
+        appended: list[str] = []
         for status, old_path, _ in changes:
-            if status != "A":
-                continue
-
-            parent_path, name = self._derive_parent_and_name(old_path)
-            sess.add(IndexEntry(
-                path=old_path,
-                parent_path=parent_path,
-                name=name,
-                type="file",
-            ))
-
-            if parent_path and sess.get(IndexEntry, parent_path) is not None:
-                parent_paths.append(parent_path)
-
-        if _close:
-            sess.commit()
-            sess.close()
-        return parent_paths
+            if status == "A":
+                appended.append(old_path)
+        return appended
 
     def _propagate_stale(
         self,
@@ -597,7 +575,7 @@ class AgentIndex:
             modified = self._handle_modified(changes, repo_watcher, old_hash, new_hash, _session=session)
 
             # Phase 4: appended
-            appended = self._handle_appended(changes, _session=session)
+            appended = self._handle_appended(changes)
 
             # Phase 5: propagate
             self._propagate_stale(deleted + modified + appended, _session=session)

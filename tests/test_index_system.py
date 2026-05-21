@@ -798,7 +798,7 @@ class TestHandleDeletes:
         finally:
             os.unlink(db_path)
 
-    def test_missing_entry_skipped(self):
+    def test_missing_entry_added_and_no_error(self):
         with tempfile.NamedTemporaryFile(suffix=".db", delete=False) as f:
             db_path = f.name
         try:
@@ -808,7 +808,7 @@ class TestHandleDeletes:
             result = idx._handle_deletes(
                 [("D", "nonexistent.py", None)], watcher, "h2",
             )
-            assert result == []
+            assert result == ["nonexistent.py"]  # added, DELETE silently no-ops
         finally:
             os.unlink(db_path)
 
@@ -856,9 +856,14 @@ class TestHandleModified:
             result = idx._handle_modified(
                 [("M", "src/mod.py", None)], watcher, "h1", "h2",
             )
-            assert len(result) == 1
-            assert result[0].path == "src/mod.py"
-            assert result[0].description == ""
+            assert result == ["src/mod.py"]
+
+            session = idx._get_session()
+            try:
+                entry = session.get(IndexEntry, "src/mod.py")
+                assert entry.description == ""
+            finally:
+                session.close()
         finally:
             os.unlink(db_path)
 
@@ -876,12 +881,12 @@ class TestHandleModified:
             result = idx._handle_modified(
                 [("M", "pkg/mod.py", None)], watcher, "h1", "h2",
             )
-            assert len(result) == 1
-            assert result[0].path == "pkg/mod.py:run"
-            assert result[0].description == ""
+            assert result == ["pkg/mod.py:run"]
 
             session = idx._get_session()
             try:
+                sym = session.get(IndexEntry, "pkg/mod.py:run")
+                assert sym.description == ""
                 file_entry = session.get(IndexEntry, "pkg/mod.py")
                 assert file_entry.description == "Mod"
             finally:
@@ -903,9 +908,14 @@ class TestHandleModified:
             result = idx._handle_modified(
                 [("M", "dir/f.py", None)], watcher, "h1", "h2",
             )
-            assert len(result) == 1
-            assert result[0].path == "dir/f.py"
-            assert result[0].description == ""
+            assert result == ["dir/f.py"]
+
+            session = idx._get_session()
+            try:
+                entry = session.get(IndexEntry, "dir/f.py")
+                assert entry.description == ""
+            finally:
+                session.close()
         finally:
             os.unlink(db_path)
 
@@ -935,24 +945,14 @@ class TestHandleAppended:
             db_path = f.name
         try:
             idx = self._make_index(db_path)
-            idx.update(path="src", type="directory", description="Source")
-
             result = idx._handle_appended(
                 [("A", "src/new.py", None)],
             )
-            assert result == ["src"]
-
-            session = idx._get_session()
-            try:
-                entry = session.get(IndexEntry, "src/new.py")
-                assert entry is not None
-                assert entry.type == "file"
-            finally:
-                session.close()
+            assert result == ["src/new.py"]
         finally:
             os.unlink(db_path)
 
-    def test_no_parent_returns_empty(self):
+    def test_top_level_file_collected(self):
         with tempfile.NamedTemporaryFile(suffix=".db", delete=False) as f:
             db_path = f.name
         try:
@@ -960,7 +960,7 @@ class TestHandleAppended:
             result = idx._handle_appended(
                 [("A", "top_level.py", None)],
             )
-            assert result == []
+            assert result == ["top_level.py"]
         finally:
             os.unlink(db_path)
 
