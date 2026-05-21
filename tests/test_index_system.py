@@ -7,7 +7,7 @@ import tempfile
 
 import pytest
 
-from simple_agent.index.indexer import AgentIndex
+from simple_agent.index.indexer import AgentIndex, IndexEntry
 from simple_agent.tool.tool_mgr import ToolMgr
 
 
@@ -742,67 +742,239 @@ class TestGetParent:
         assert AgentIndex._get_parent("README.md") == ""
 
 
-class TestParseDiff:
-    """Tests for AgentIndex.parse_diff()."""
+class TestHandleDeletes:
+    """Tests for AgentIndex._handle_deletes()."""
 
-    def test_file_deleted_parent_still_exists(self):
-        changes = [("D", "src/config.py", None)]
-        result = AgentIndex.parse_diff(changes, dir_exists=lambda p: True)
-        assert result["deleted"] == {"src/config.py"}
-        assert result["renamed"] == {}
-        assert result["appended"] == set()
+    def _make_index(self, db_path: str) -> AgentIndex:
+        return AgentIndex(db_path=db_path)
 
-    def test_last_file_deleted_parent_orphaned(self):
-        changes = [("D", "old/legacy.py", None)]
-        result = AgentIndex.parse_diff(changes, dir_exists=lambda p: False)
-        assert result["deleted"] == {"old/legacy.py", "old"}
+    def _make_watcher(self, dir_exists=True):
+        class _W:
+            def path_exists_in_tree(self, _hash, _path):
+                return dir_exists
+            def get_file_diff(self, _old, _new, _path, context_lines=0):
+                return ""
+        return _W()
 
-    def test_nested_dirs_both_orphaned(self):
-        changes = [("D", "a/b/c.py", None)]
-        result = AgentIndex.parse_diff(changes, dir_exists=lambda p: False)
-        assert result["deleted"] == {"a/b/c.py", "a/b", "a"}
+    def test_deletes_entry_and_returns_for_propagate(self):
+        with tempfile.NamedTemporaryFile(suffix=".db", delete=False) as f:
+            db_path = f.name
+        try:
+            idx = self._make_index(db_path)
+            idx.update(path="src/config.py", type="file", description="Config")
+            idx.update(path="src", type="directory", description="Source")
+            watcher = self._make_watcher(dir_exists=True)
 
-    def test_mixed_changes_all_categories(self):
-        changes = [
-            ("M", "mod.py", None),
-            ("R", "old.py", "new.py"),
-            ("D", "gone.py", None),
-            ("A", "added.py", None),
-        ]
-        result = AgentIndex.parse_diff(changes, dir_exists=lambda p: True)
-        assert result["deleted"] == {"gone.py"}
-        assert result["renamed"] == {"old.py": "new.py"}
-        assert result["appended"] == {"added.py"}
-        assert "mod.py" in result["modified"]
+            result = idx._handle_deletes(
+                [("D", "src/config.py", None)], watcher, "h2",
+            )
+            assert result == ["src/config.py"]
 
-    def test_multiple_deleted_files_shared_parent(self):
-        changes = [
-            ("D", "pkg/a.py", None),
-            ("D", "pkg/b.py", None),
-        ]
-        result = AgentIndex.parse_diff(changes, dir_exists=lambda p: False)
-        assert "pkg/a.py" in result["deleted"]
-        assert "pkg/b.py" in result["deleted"]
-        assert "pkg" in result["deleted"]
+            # Entry removed from index
+            tree = idx.tree()
+            assert "config.py" not in tree
+            assert "Source" in tree  # parent still exists
+        finally:
+            os.unlink(db_path)
 
-    def test_modified_file_with_hunks(self):
-        diff_text = "@@ -10,3 +12,4 @@\n-old\n+new\n@@ -30 +35,2 @@\n-old2\n+new2"
-        changes = [("M", "mod.py", None)]
-        result = AgentIndex.parse_diff(
-            changes,
-            dir_exists=lambda p: True,
-            get_file_diff=lambda p: diff_text,
-        )
-        assert "mod.py" in result["modified"]
-        ranges = result["modified"]["mod.py"]
-        assert len(ranges) == 2
-        assert ranges[0] == (10, 12, 12, 15)
-        assert ranges[1] == (30, 30, 35, 36)
+    def test_deletes_orphan_directory(self):
+        with tempfile.NamedTemporaryFile(suffix=".db", delete=False) as f:
+            db_path = f.name
+        try:
+            idx = self._make_index(db_path)
+            idx.update(path="old", type="directory", description="Old")
+            idx.update(path="old/legacy.py", type="file", description="Legacy")
+            watcher = self._make_watcher(dir_exists=False)
 
-    def test_renamed_with_status_code(self):
-        changes = [("R100", "old/file.py", "new/file.py")]
-        result = AgentIndex.parse_diff(changes, dir_exists=lambda p: True)
-        assert result["renamed"] == {"old/file.py": "new/file.py"}
+            result = idx._handle_deletes(
+                [("D", "old/legacy.py", None)], watcher, "h2",
+            )
+            assert "old/legacy.py" in result
+            assert "old" in result
+
+            tree = idx.tree()
+            assert "legacy.py" not in tree
+            assert "old/" not in tree
+        finally:
+            os.unlink(db_path)
+
+    def test_missing_entry_skipped(self):
+        with tempfile.NamedTemporaryFile(suffix=".db", delete=False) as f:
+            db_path = f.name
+        try:
+            idx = self._make_index(db_path)
+            watcher = self._make_watcher()
+
+            result = idx._handle_deletes(
+                [("D", "nonexistent.py", None)], watcher, "h2",
+            )
+            assert result == []
+        finally:
+            os.unlink(db_path)
+
+    def test_non_delete_status_ignored(self):
+        with tempfile.NamedTemporaryFile(suffix=".db", delete=False) as f:
+            db_path = f.name
+        try:
+            idx = self._make_index(db_path)
+            idx.update(path="mod.py", type="file", description="Mod")
+            watcher = self._make_watcher()
+
+            result = idx._handle_deletes(
+                [("M", "mod.py", None), ("A", "new.py", None), ("R100", "old.py", "new.py")],
+                watcher, "h2",
+            )
+            assert result == []
+        finally:
+            os.unlink(db_path)
+
+
+
+class TestHandleModified:
+    """Tests for AgentIndex._handle_modified()."""
+
+    def _make_index(self, db_path: str) -> AgentIndex:
+        return AgentIndex(db_path=db_path)
+
+    def _make_watcher(self, diff_text=""):
+        class _W:
+            def path_exists_in_tree(self, _hash, _path):
+                return True
+            def get_file_diff(self, _old, _new, _path, context_lines=0):
+                return diff_text
+        return _W()
+
+    def test_clears_file_description(self):
+        with tempfile.NamedTemporaryFile(suffix=".db", delete=False) as f:
+            db_path = f.name
+        try:
+            idx = self._make_index(db_path)
+            idx.update(path="src", type="directory", description="Source")
+            idx.update(path="src/mod.py", type="file", description="Mod")
+            watcher = self._make_watcher(diff_text="")
+
+            result = idx._handle_modified(
+                [("M", "src/mod.py", None)], watcher, "h1", "h2",
+            )
+            assert len(result) == 1
+            assert result[0].path == "src/mod.py"
+            assert result[0].description == ""
+        finally:
+            os.unlink(db_path)
+
+    def test_narrowest_symbol_collected_and_cleared(self):
+        with tempfile.NamedTemporaryFile(suffix=".db", delete=False) as f:
+            db_path = f.name
+        try:
+            idx = self._make_index(db_path)
+            idx.update(path="pkg", type="directory", description="Pkg")
+            idx.update(path="pkg/mod.py", type="file", description="Mod")
+            idx.update(path="pkg/mod.py:run", type="function", description="Run",
+                       line_start=12, line_end=30)
+            watcher = self._make_watcher(diff_text="@@ -13,3 +13,4 @@")
+
+            result = idx._handle_modified(
+                [("M", "pkg/mod.py", None)], watcher, "h1", "h2",
+            )
+            assert len(result) == 1
+            assert result[0].path == "pkg/mod.py:run"
+            assert result[0].description == ""
+
+            session = idx._get_session()
+            try:
+                file_entry = session.get(IndexEntry, "pkg/mod.py")
+                assert file_entry.description == "Mod"
+            finally:
+                session.close()
+        finally:
+            os.unlink(db_path)
+
+    def test_no_symbol_falls_back_to_file(self):
+        with tempfile.NamedTemporaryFile(suffix=".db", delete=False) as f:
+            db_path = f.name
+        try:
+            idx = self._make_index(db_path)
+            idx.update(path="dir", type="directory", description="Dir")
+            idx.update(path="dir/f.py", type="file", description="File")
+            idx.update(path="dir/f.py:setup", type="function", description="Setup",
+                       line_start=1, line_end=5)
+            watcher = self._make_watcher(diff_text="@@ -7 +7 @@")
+
+            result = idx._handle_modified(
+                [("M", "dir/f.py", None)], watcher, "h1", "h2",
+            )
+            assert len(result) == 1
+            assert result[0].path == "dir/f.py"
+            assert result[0].description == ""
+        finally:
+            os.unlink(db_path)
+
+    def test_missing_file_skipped(self):
+        with tempfile.NamedTemporaryFile(suffix=".db", delete=False) as f:
+            db_path = f.name
+        try:
+            idx = self._make_index(db_path)
+            watcher = self._make_watcher()
+
+            result = idx._handle_modified(
+                [("M", "nonexistent.py", None)], watcher, "h1", "h2",
+            )
+            assert result == []
+        finally:
+            os.unlink(db_path)
+
+
+class TestHandleAppended:
+    """Tests for AgentIndex._handle_appended()."""
+
+    def _make_index(self, db_path: str) -> AgentIndex:
+        return AgentIndex(db_path=db_path)
+
+    def test_creates_entry_and_returns_parent(self):
+        with tempfile.NamedTemporaryFile(suffix=".db", delete=False) as f:
+            db_path = f.name
+        try:
+            idx = self._make_index(db_path)
+            idx.update(path="src", type="directory", description="Source")
+
+            result = idx._handle_appended(
+                [("A", "src/new.py", None)],
+            )
+            assert result == ["src"]
+
+            session = idx._get_session()
+            try:
+                entry = session.get(IndexEntry, "src/new.py")
+                assert entry is not None
+                assert entry.type == "file"
+            finally:
+                session.close()
+        finally:
+            os.unlink(db_path)
+
+    def test_no_parent_returns_empty(self):
+        with tempfile.NamedTemporaryFile(suffix=".db", delete=False) as f:
+            db_path = f.name
+        try:
+            idx = self._make_index(db_path)
+            result = idx._handle_appended(
+                [("A", "top_level.py", None)],
+            )
+            assert result == []
+        finally:
+            os.unlink(db_path)
+
+    def test_non_append_status_ignored(self):
+        with tempfile.NamedTemporaryFile(suffix=".db", delete=False) as f:
+            db_path = f.name
+        try:
+            idx = self._make_index(db_path)
+            result = idx._handle_appended(
+                [("M", "mod.py", None), ("D", "gone.py", None)],
+            )
+            assert result == []
+        finally:
+            os.unlink(db_path)
 
 
 class TestSyncOrphanDirectory:
@@ -821,7 +993,6 @@ class TestSyncOrphanDirectory:
             db_path = os.path.join(tmpdir, "index.db")
             idx = self._make_index(db_path)
 
-            # Create file in a subdirectory
             subdir = os.path.join(tmpdir, "mylib")
             os.makedirs(subdir)
             with open(os.path.join(subdir, "util.py"), "w") as fh:
@@ -832,14 +1003,12 @@ class TestSyncOrphanDirectory:
             watcher = RepoWatcher(tmpdir, os.path.join(tmpdir, "shadow"))
             h1 = watcher.take_snapshot()
 
-            # Index has both the file and the directory entry
             idx.update(path="mylib/util.py", type="file", description="Util")
             idx.sync(None, h1, watcher)
 
             tree_before = idx.tree()
             assert "mylib/" in tree_before
 
-            # Delete the file and the directory
             os.unlink(os.path.join(subdir, "util.py"))
             os.rmdir(subdir)
             repo.index.remove(["mylib/util.py"])
@@ -852,3 +1021,118 @@ class TestSyncOrphanDirectory:
             tree_after = idx.tree()
             assert "mylib/" not in tree_after
             assert "util.py" not in tree_after
+
+
+
+class TestPropagateStale:
+    """Tests for AgentIndex._propagate_stale()."""
+
+    def _make_index(self, db_path: str) -> AgentIndex:
+        return AgentIndex(db_path=db_path)
+
+    def test_single_entry_parent_counter_not_zero(self):
+        with tempfile.NamedTemporaryFile(suffix=".db", delete=False) as f:
+            db_path = f.name
+        try:
+            idx = self._make_index(db_path)
+            idx.update(path="src", type="directory", description="Core source")
+
+            idx._propagate_stale(["src/a.py"])
+
+            tree = idx.tree()
+            assert "Core source" in tree  # counter 4→3, not zero
+        finally:
+            os.unlink(db_path)
+
+    def test_four_entries_push_parent_to_zero(self):
+        with tempfile.NamedTemporaryFile(suffix=".db", delete=False) as f:
+            db_path = f.name
+        try:
+            idx = self._make_index(db_path)
+            idx.update(path="lib", type="directory", description="Library")
+            paths = [f"lib/{n}" for n in ["a.py", "b.py", "c.py", "d.py"]]
+
+            idx._propagate_stale(paths)
+
+            tree = idx.tree()
+            assert "Library" not in tree
+        finally:
+            os.unlink(db_path)
+
+    def test_multi_level_propagation(self):
+        with tempfile.NamedTemporaryFile(suffix=".db", delete=False) as f:
+            db_path = f.name
+        try:
+            idx = self._make_index(db_path)
+            idx.update(path="src", type="directory", description="Source")
+            idx.update(path="src/utils", type="directory", description="Utils")
+
+            session = idx._get_session()
+            try:
+                entry = session.get(IndexEntry, "src/utils")
+                entry.propagation_count = 1
+                session.commit()
+            finally:
+                session.close()
+
+            idx._propagate_stale(["src/utils/helper.py"])
+
+            tree = idx.tree()
+            assert "Utils" not in tree
+            assert "Source" in tree
+        finally:
+            os.unlink(db_path)
+
+    def test_counter_reset_after_hit_zero(self):
+        with tempfile.NamedTemporaryFile(suffix=".db", delete=False) as f:
+            db_path = f.name
+        try:
+            idx = self._make_index(db_path)
+            idx.update(path="pkg", type="directory", description="Package")
+
+            session = idx._get_session()
+            try:
+                entry = session.get(IndexEntry, "pkg")
+                entry.propagation_count = 1
+                session.commit()
+            finally:
+                session.close()
+
+            idx._propagate_stale(["pkg/x.py"])
+
+            session = idx._get_session()
+            try:
+                entry = session.get(IndexEntry, "pkg")
+                assert entry.description == ""
+                assert entry.propagation_count == 4
+            finally:
+                session.close()
+        finally:
+            os.unlink(db_path)
+
+    def test_update_description_resets_counter(self):
+        with tempfile.NamedTemporaryFile(suffix=".db", delete=False) as f:
+            db_path = f.name
+        try:
+            idx = self._make_index(db_path)
+            idx.update(path="dir", type="directory", description="Old")
+
+            session = idx._get_session()
+            try:
+                entry = session.get(IndexEntry, "dir")
+                entry.propagation_count = 0
+                session.commit()
+            finally:
+                session.close()
+
+            idx.update(path="dir", description="New description")
+
+            session = idx._get_session()
+            try:
+                entry = session.get(IndexEntry, "dir")
+                assert entry.propagation_count == 4
+                assert entry.description == "New description"
+            finally:
+                session.close()
+        finally:
+            os.unlink(db_path)

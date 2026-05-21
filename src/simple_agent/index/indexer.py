@@ -20,6 +20,7 @@ class IndexEntry(SQLModel, table=True):
     name: str = Field(index=True)
     type: str = Field(default="file")
     description: str = Field(default="")
+    propagation_count: int = Field(default=4)
     line_start: int | None = Field(default=None)
     line_end: int | None = Field(default=None)
     updated_at: int = Field(default_factory=lambda: int(time.time()))
@@ -175,6 +176,7 @@ class AgentIndex:
             update_cols.add("type")
         if description is not None:
             update_cols.add("description")
+            update_cols.add("propagation_count")
         if line_start is not None:
             update_cols.add("line_start")
         if line_end is not None:
@@ -370,49 +372,184 @@ class AgentIndex:
             sess.close()
         return len(params)
 
-    @staticmethod
-    def parse_diff(
+    def _handle_deletes(
+        self,
         changes: list[tuple[str, str, str | None]],
-        dir_exists,
-        get_file_diff=None,
-    ) -> dict:
-        """Parse git diff changes into structured form.
+        repo_watcher: RepoWatcher,
+        new_hash: str,
+        _session: Session | None = None,
+    ) -> list[str]:
+        """Remove deleted entries from the index and return their paths
+        for propagation.
 
-        Returns a dict with:
-        - ``deleted``: set of paths to delete (files + orphan directories)
-        - ``modified``: dict mapping path to list of ``(old_s, old_e, new_s, new_e)`` hunk ranges
-        - ``renamed``: dict mapping old_path → new_path
-        - ``appended``: set of newly added file paths
+        For each deleted file, the entry and any orphan ancestor directories
+        are removed from the database.
         """
-        deleted: set[str] = set()
-        modified: dict[str, list[tuple[int, int, int, int]]] = {}
-        renamed: dict[str, str] = {}
-        appended: set[str] = set()
+        _close = _session is None
+        sess = _session or self._get_session()
 
-        for status, old_path, new_path in changes:
-            if status == "D":
-                deleted.add(old_path)
-                parent = AgentIndex._get_parent(old_path)
-                while parent is not None and parent not in deleted:
-                    if parent and not dir_exists(parent):
-                        deleted.add(parent)
-                    parent = AgentIndex._get_parent(parent)
-            elif status == "M":
-                ranges: list[tuple[int, int, int, int]] = []
-                if get_file_diff:
-                    ranges = AgentIndex._parse_diff_ranges(get_file_diff(old_path))
-                modified[old_path] = ranges
-            elif status.startswith("R") and new_path is not None:
-                renamed[old_path] = new_path
-            elif status == "A":
-                appended.add(old_path)
+        def _dir_exists(path: str) -> bool:
+            return repo_watcher.path_exists_in_tree(new_hash, path)
 
-        return {
-            "deleted": deleted,
-            "modified": modified,
-            "renamed": renamed,
-            "appended": appended,
-        }
+        removed_paths: list[str] = []
+
+        for status, old_path, _ in changes:
+            if status != "D":
+                continue
+
+            entry = sess.get(IndexEntry, old_path)
+            if entry is not None:
+                self.remove(entry.path, _session=sess)
+                removed_paths.append(entry.path)
+
+            parent = self._get_parent(old_path)
+            while parent is not None:
+                if parent and not _dir_exists(parent):
+                    p_entry = sess.get(IndexEntry, parent)
+                    if p_entry is not None:
+                        self.remove(p_entry.path, _session=sess)
+                        removed_paths.append(p_entry.path)
+                parent = self._get_parent(parent)
+
+        if _close:
+            sess.commit()
+            sess.close()
+        return removed_paths
+
+    def _handle_modified(
+        self,
+        changes: list[tuple[str, str, str | None]],
+        repo_watcher: RepoWatcher,
+        old_hash: str,
+        new_hash: str,
+        _session: Session | None = None,
+    ) -> list[IndexEntry]:
+        """Handle modified files: collect the narrowest symbol containing
+        each hunk, then clear all collected descriptions.
+
+        Returns the collected entries for propagation.
+        """
+        _close = _session is None
+        sess = _session or self._get_session()
+        sess.expire_on_commit = False
+
+        def _containing_symbol(file_path: str, old_s: int, old_e: int) -> IndexEntry | None:
+            symbols = sess.exec(
+                select(IndexEntry).where(
+                    IndexEntry.path.startswith(file_path + ":")
+                )
+            ).all()
+            containing = [
+                s for s in symbols
+                if s.line_start is not None and s.line_end is not None
+                and s.line_start <= old_s and old_e <= s.line_end
+            ]
+            if containing:
+                return min(containing, key=lambda s: s.line_end - s.line_start)
+            return None
+
+        # Phase 1: collect
+        collected: list[IndexEntry] = []
+
+        for status, old_path, _ in changes:
+            if status != "M":
+                continue
+
+            file_entry = sess.get(IndexEntry, old_path)
+            if file_entry is None:
+                continue
+
+            diff_text = repo_watcher.get_file_diff(old_hash, new_hash, old_path, context_lines=0)
+            ranges = self._parse_diff_ranges(diff_text)
+
+            if not ranges:
+                collected.append(file_entry)
+            else:
+                for old_s, old_e, _new_s, _new_e in ranges:
+                    sym = _containing_symbol(old_path, old_s, old_e)
+                    collected.append(sym if sym is not None else file_entry)
+
+        # Phase 2: clear
+        for entry in collected:
+            entry.description = ""
+
+        if _close:
+            sess.commit()
+            sess.close()
+        return collected
+
+    def _handle_appended(
+        self,
+        changes: list[tuple[str, str, str | None]],
+        _session: Session | None = None,
+    ) -> list[IndexEntry]:
+        """Handle appended files: create ``IndexEntry`` objects and return
+        their parent entries for propagation.
+        """
+        _close = _session is None
+        sess = _session or self._get_session()
+
+        parent_paths: list[str] = []
+
+        for status, old_path, _ in changes:
+            if status != "A":
+                continue
+
+            parent_path, name = self._derive_parent_and_name(old_path)
+            sess.add(IndexEntry(
+                path=old_path,
+                parent_path=parent_path,
+                name=name,
+                type="file",
+            ))
+
+            if parent_path and sess.get(IndexEntry, parent_path) is not None:
+                parent_paths.append(parent_path)
+
+        if _close:
+            sess.commit()
+            sess.close()
+        return parent_paths
+
+    def _propagate_stale(
+        self,
+        paths: list[str],
+        _session: Session | None = None,
+    ) -> None:
+        """Propagate staleness upward from *paths*.
+
+        Walks up depth-first, decrementing each parent's
+        ``propagation_count``.  When a parent hits zero its description
+        is cleared and propagation continues upward.
+        A cache avoids querying the same entry multiple times.
+        """
+        _close = _session is None
+        sess = _session or self._get_session()
+
+        cache: dict[str, IndexEntry | None] = {}
+        def _get(path: str) -> IndexEntry | None:
+            if path not in cache:
+                cache[path] = sess.get(IndexEntry, path)
+            return cache[path]
+
+        for path in paths:
+            parent = self._get_parent(path)
+            while parent:
+                p_entry = _get(parent)
+                if p_entry is None:
+                    break
+                p_entry.propagation_count -= 1
+                if p_entry.propagation_count == 0:
+                    if p_entry.description:
+                        p_entry.description = ""
+                        p_entry.propagation_count = 4
+                    parent = self._get_parent(parent)
+                else:
+                    break
+
+        if _close:
+            sess.commit()
+            sess.close()
 
     def sync(self, old_hash: str | None, new_hash: str, repo_watcher: RepoWatcher) -> int:
         """Sync the index to *new_hash* by processing all file changes since *old_hash*.
@@ -430,26 +567,28 @@ class AgentIndex:
             self._set_hash(new_hash)
             return 0
 
-        parsed = self.parse_diff(
-            changes,
-            dir_exists=lambda p: repo_watcher.path_exists_in_tree(new_hash, p),
-            get_file_diff=lambda p: repo_watcher.get_file_diff(old_hash, new_hash, p, context_lines=0),
-        )
-
         processed = 0
         session = self._get_session()
         try:
-            for old, new in parsed["renamed"].items():
-                self.rename(old, new, _session=session)
-                processed += 1
+            # Phase 1: renames (handled directly from git diff)
+            for status, old, new in changes:
+                if status.startswith("R") and new is not None:
+                    self.rename(old, new, _session=session)
+                    processed += 1
 
-            for path in parsed["deleted"]:
-                self.remove(path, _session=session)
-                processed += 1
+            # Phase 2: deletes
+            deleted = self._handle_deletes(changes, repo_watcher, new_hash, _session=session)
+            processed += len(deleted)
 
-            for path, ranges in parsed["modified"].items():
-                self.invalidate_ranges(path, ranges, _session=session)
-                processed += 1
+            # Phase 3: modifications
+            modified = self._handle_modified(changes, repo_watcher, old_hash, new_hash, _session=session)
+            modified_paths = [e.path for e in modified]
+
+            # Phase 4: appended
+            appended = self._handle_appended(changes, _session=session)
+
+            # Phase 5: propagate
+            self._propagate_stale(deleted + modified_paths + appended, _session=session)
 
             self._set_hash(new_hash, _session=session)
             session.commit()
