@@ -382,8 +382,8 @@ class AgentIndex:
         """Remove deleted entries from the index and return their paths
         for propagation.
 
-        For each deleted file, the entry and any orphan ancestor directories
-        are removed from the database.
+        Phase 1 collects all paths to remove (files + orphan directories).
+        Phase 2 batch-deletes each path and its children.
         """
         _close = _session is None
         sess = _session or self._get_session()
@@ -391,30 +391,36 @@ class AgentIndex:
         def _dir_exists(path: str) -> bool:
             return repo_watcher.path_exists_in_tree(new_hash, path)
 
-        removed_paths: list[str] = []
+        # Phase 1: collect
+        removed: set[str] = set()
 
         for status, old_path, _ in changes:
             if status != "D":
                 continue
 
-            entry = sess.get(IndexEntry, old_path)
-            if entry is not None:
-                self.remove(entry.path, _session=sess)
-                removed_paths.append(entry.path)
+            removed.add(old_path)
 
             parent = self._get_parent(old_path)
             while parent is not None:
                 if parent and not _dir_exists(parent):
-                    p_entry = sess.get(IndexEntry, parent)
-                    if p_entry is not None:
-                        self.remove(p_entry.path, _session=sess)
-                        removed_paths.append(p_entry.path)
+                    removed.add(parent)
                 parent = self._get_parent(parent)
+
+        # Phase 2: batch delete
+        from sqlalchemy import delete as sql_delete
+        for path in removed:
+            sess.exec(
+                sql_delete(IndexEntry).where(
+                    (IndexEntry.path == path) |
+                    (IndexEntry.path.startswith(path + "/")) |
+                    (IndexEntry.path.startswith(path + ":"))
+                )
+            )
 
         if _close:
             sess.commit()
             sess.close()
-        return removed_paths
+        return list(removed)
 
     def _handle_modified(
         self,
