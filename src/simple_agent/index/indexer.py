@@ -422,6 +422,16 @@ class AgentIndex:
             sess.close()
         return list(removed)
 
+    def _parse_file_tree(
+        self,
+        file_path: str,
+    ) -> list[IndexEntry]:
+        """Parse *file_path* and return symbol ``IndexEntry`` objects.
+
+        TODO: implement language-specific parsing.
+        """
+        return []
+
     def _reset_file_ranges(
         self,
         file_path: str,
@@ -429,49 +439,63 @@ class AgentIndex:
         old_hash: str,
         new_hash: str,
         _session: Session,
-    ) -> tuple[list[str], list[tuple[int, int, int, int]]]:
-        """Reset symbol line ranges for one modified file.
+    ) -> str | None:
+        """Reset symbol entries for one modified file.
 
-        Parses the file diff, deletes symbols overlapping old-ranges,
-        shifts non-overlapping symbols by the cumulative delta.
-        Returns ``(deleted_paths, ranges)``.
+        Deletes old entries overlapping diff hunks, transfers descriptions
+        from old to new by matching path, then replaces all old entries
+        with the regenerated tree.
+
+        Returns *file_path* if the file description should be cleared
+        (overlapping entries exceeded threshold), or ``None``.
         """
-        diff_text = repo_watcher.get_file_diff(old_hash, new_hash, file_path, context_lines=0)
-        ranges = self._parse_diff_ranges(diff_text)
-        if not ranges:
-            return [], []
-
-        symbols = _session.exec(
+        # 1. Get old entries and hunk ranges
+        old_entries = _session.exec(
             select(IndexEntry).where(
                 IndexEntry.path.startswith(file_path + ":")
             )
         ).all()
 
-        deleted_paths: list[str] = []
+        diff_text = repo_watcher.get_file_diff(old_hash, new_hash, file_path, context_lines=0)
+        ranges = self._parse_diff_ranges(diff_text)
 
-        for sym in symbols:
-            if sym.line_start is None or sym.line_end is None:
-                continue
+        # 2. Count overlapping entries
+        overlap_count = 0
+        if ranges:
+            for old in old_entries:
+                if old.line_start is None or old.line_end is None:
+                    continue
+                for old_s, old_e, _new_s, _new_e in ranges:
+                    if self._ranges_overlap(old.line_start, old.line_end, old_s, old_e):
+                        overlap_count += 1
+                        break
 
-            new_start, new_end = sym.line_start, sym.line_end
-            deleted = False
+        # 3. Transfer descriptions from old to new by matching path
+        old_by_path: dict[str, str] = {}
+        for old in old_entries:
+            if old.description:
+                old_by_path[old.path] = old.description
 
-            for old_s, old_e, new_s, new_e in ranges:
-                if self._ranges_overlap(new_start, new_end, old_s, old_e):
-                    _session.delete(sym)
-                    deleted = True
-                    deleted_paths.append(sym.path)
-                    break
-                elif new_start > old_e:
-                    delta = (new_e - new_s + 1) - (old_e - old_s + 1)
-                    new_start += delta
-                    new_end += delta
+        new_entries = self._parse_file_tree(file_path)
+        for new in new_entries:
+            if new.path in old_by_path:
+                new.description = old_by_path[new.path]
 
-            if not deleted and (new_start != sym.line_start or new_end != sym.line_end):
-                sym.line_start = new_start
-                sym.line_end = new_end
+        # 4. Delete all old entries, insert new ones
+        from sqlalchemy import delete as sql_delete
+        _session.exec(
+            sql_delete(IndexEntry).where(
+                IndexEntry.path.startswith(file_path + ":")
+            )
+        )
+        for new in new_entries:
+            _session.add(new)
 
-        return deleted_paths, ranges
+        # Return file path if enough entries changed
+        total = len(old_entries)
+        if total == 0 or (total > 0 and overlap_count / total >= 0.3):
+            return file_path
+        return None
 
     def _handle_modified(
         self,
@@ -481,57 +505,29 @@ class AgentIndex:
         new_hash: str,
         _session: Session | None = None,
     ) -> list[str]:
-        """Handle modified files: reset symbol line ranges from the diff,
-        collect directly-modified entries, then clear descriptions.
+        """Handle modified files: run ``_reset_file_ranges`` for each file
+        and collect paths whose descriptions should be cleared.
 
-        Returns collected paths + deleted-symbol parents for propagation.
+        Returns the collected paths for propagation.
         """
         _close = _session is None
         sess = _session or self._get_session()
 
         from sqlalchemy import update as sql_update
 
-        def _containing_symbol(file_path: str, line_s: int, line_e: int) -> str | None:
-            symbols = sess.exec(
-                select(IndexEntry).where(
-                    IndexEntry.path.startswith(file_path + ":")
-                )
-            ).all()
-            containing = [
-                s for s in symbols
-                if s.line_start is not None and s.line_end is not None
-                and s.line_start <= line_s and line_e <= s.line_end
-            ]
-            if containing:
-                return min(containing, key=lambda s: s.line_end - s.line_start).path
-            return None
-
-        collected: set[str] = set()
-        propagate: set[str] = set()
+        collected: list[str] = []
 
         for status, old_path, _ in changes:
             if status != "M":
                 continue
 
-            file_entry = sess.get(IndexEntry, old_path)
-            if file_entry is None:
+            if sess.get(IndexEntry, old_path) is None:
                 continue
 
-            deleted, ranges = self._reset_file_ranges(old_path, repo_watcher, old_hash, new_hash, _session=sess)
-            if not deleted and not ranges:
-                collected.add(old_path)
-                continue
+            result = self._reset_file_ranges(old_path, repo_watcher, old_hash, new_hash, _session=sess)
+            if result is not None:
+                collected.append(result)
 
-            for sym_path in deleted:
-                parent, _ = self._derive_parent_and_name(sym_path)
-                if parent:
-                    propagate.add(parent)
-
-            for old_s, old_e, new_s, new_e in ranges:
-                sym_path = _containing_symbol(old_path, new_s, new_e)
-                collected.add(sym_path if sym_path is not None else old_path)
-
-        # Phase 3: clear descriptions
         for path in collected:
             sess.exec(
                 sql_update(IndexEntry)
@@ -542,7 +538,7 @@ class AgentIndex:
         if _close:
             sess.commit()
             sess.close()
-        return list(collected | propagate)
+        return collected
 
     @staticmethod
     def _handle_appended(

@@ -722,7 +722,9 @@ class TestSync:
             assert processed >= 0
 
             output = idx.tree(path="mod.py")
-            assert "teardown" in output
+            # All symbols deleted, file description cleared
+            assert "Setup" not in output
+            assert "Teardown" not in output
             assert idx._get_hash() == h2
 
 
@@ -867,7 +869,7 @@ class TestHandleModified:
         finally:
             os.unlink(db_path)
 
-    def test_narrowest_symbol_collected_and_cleared(self):
+    def test_overlapping_symbol_deleted_file_collected(self):
         with tempfile.NamedTemporaryFile(suffix=".db", delete=False) as f:
             db_path = f.name
         try:
@@ -881,20 +883,50 @@ class TestHandleModified:
             result = idx._handle_modified(
                 [("M", "pkg/mod.py", None)], watcher, "h1", "h2",
             )
-            assert result == ["pkg/mod.py:run"]
+            # run overlaps → deleted; mod.py collected as direct hit
+            assert "pkg/mod.py" in result
 
             session = idx._get_session()
             try:
                 sym = session.get(IndexEntry, "pkg/mod.py:run")
-                assert sym.description == ""
+                assert sym is None  # deleted
                 file_entry = session.get(IndexEntry, "pkg/mod.py")
-                assert file_entry.description == "Mod"
+                assert file_entry.description == ""  # cleared
             finally:
                 session.close()
         finally:
             os.unlink(db_path)
 
-    def test_no_symbol_falls_back_to_file(self):
+    def test_all_old_entries_deleted_file_cleared(self):
+        with tempfile.NamedTemporaryFile(suffix=".db", delete=False) as f:
+            db_path = f.name
+        try:
+            idx = self._make_index(db_path)
+            idx.update(path="lib", type="directory", description="Lib")
+            idx.update(path="lib/f.py", type="file", description="File")
+            idx.update(path="lib/f.py:setup", type="function", description="Setup",
+                       line_start=1, line_end=5)
+            idx.update(path="lib/f.py:teardown", type="function", description="Teardown",
+                       line_start=10, line_end=15)
+            watcher = self._make_watcher(diff_text="@@ -2,2 +2,5 @@")
+
+            idx._handle_modified(
+                [("M", "lib/f.py", None)], watcher, "h1", "h2",
+            )
+            session = idx._get_session()
+            try:
+                # All old entries deleted (stub regenerates empty)
+                assert session.get(IndexEntry, "lib/f.py:setup") is None
+                assert session.get(IndexEntry, "lib/f.py:teardown") is None
+                # File entry description cleared
+                f_entry = session.get(IndexEntry, "lib/f.py")
+                assert f_entry.description == ""
+            finally:
+                session.close()
+        finally:
+            os.unlink(db_path)
+
+    def test_no_overlap_file_description_preserved(self):
         with tempfile.NamedTemporaryFile(suffix=".db", delete=False) as f:
             db_path = f.name
         try:
@@ -908,12 +940,13 @@ class TestHandleModified:
             result = idx._handle_modified(
                 [("M", "dir/f.py", None)], watcher, "h1", "h2",
             )
-            assert result == ["dir/f.py"]
+            # No overlap with setup (1-5) → threshold not met → file stays
+            assert result == []
 
             session = idx._get_session()
             try:
                 entry = session.get(IndexEntry, "dir/f.py")
-                assert entry.description == ""
+                assert entry.description == "File"  # preserved
             finally:
                 session.close()
         finally:
