@@ -423,17 +423,16 @@ class AgentIndex:
         old_hash: str,
         new_hash: str,
         _session: Session | None = None,
-    ) -> list[IndexEntry]:
-        """Handle modified files: collect the narrowest symbol containing
-        each hunk, then clear all collected descriptions.
+    ) -> list[str]:
+        """Handle modified files: collect the narrowest symbol path for
+        each hunk, then clear descriptions on those paths and their children.
 
-        Returns the collected entries for propagation.
+        Returns the collected paths for propagation.
         """
         _close = _session is None
         sess = _session or self._get_session()
-        sess.expire_on_commit = False
 
-        def _containing_symbol(file_path: str, old_s: int, old_e: int) -> IndexEntry | None:
+        def _containing_symbol(file_path: str, old_s: int, old_e: int) -> str | None:
             symbols = sess.exec(
                 select(IndexEntry).where(
                     IndexEntry.path.startswith(file_path + ":")
@@ -445,11 +444,11 @@ class AgentIndex:
                 and s.line_start <= old_s and old_e <= s.line_end
             ]
             if containing:
-                return min(containing, key=lambda s: s.line_end - s.line_start)
+                return min(containing, key=lambda s: s.line_end - s.line_start).path
             return None
 
-        # Phase 1: collect
-        collected: list[IndexEntry] = []
+        # Phase 1: collect paths
+        collected: set[str] = set()
 
         for status, old_path, _ in changes:
             if status != "M":
@@ -463,20 +462,28 @@ class AgentIndex:
             ranges = self._parse_diff_ranges(diff_text)
 
             if not ranges:
-                collected.append(file_entry)
+                collected.add(old_path)
             else:
                 for old_s, old_e, _new_s, _new_e in ranges:
-                    sym = _containing_symbol(old_path, old_s, old_e)
-                    collected.append(sym if sym is not None else file_entry)
+                    sym_path = _containing_symbol(old_path, old_s, old_e)
+                    collected.add(sym_path if sym_path is not None else old_path)
 
-        # Phase 2: clear
-        for entry in collected:
-            entry.description = ""
+        # Phase 2: clear descriptions on each path and its children
+        from sqlalchemy import update as sql_update
+        for path in collected:
+            sess.exec(
+                sql_update(IndexEntry)
+                .where(
+                    (IndexEntry.path == path) |
+                    (IndexEntry.path.startswith(path + ":"))
+                )
+                .values(description="")
+            )
 
         if _close:
             sess.commit()
             sess.close()
-        return collected
+        return list(collected)
 
     def _handle_appended(
         self,
@@ -582,13 +589,12 @@ class AgentIndex:
 
             # Phase 3: modifications
             modified = self._handle_modified(changes, repo_watcher, old_hash, new_hash, _session=session)
-            modified_paths = [e.path for e in modified]
 
             # Phase 4: appended
             appended = self._handle_appended(changes, _session=session)
 
             # Phase 5: propagate
-            self._propagate_stale(deleted + modified_paths + appended, _session=session)
+            self._propagate_stale(deleted + modified + appended, _session=session)
 
             self._set_hash(new_hash, _session=session)
             session.commit()
