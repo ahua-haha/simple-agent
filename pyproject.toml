@@ -9,6 +9,7 @@ dependencies = [
     "fastapi>=0.115.0",
     "gitpython",
     "jinja2>=3.0.0",
+    "pathspec>=1.1.1",
     "pi-agent",
     "pi-ai",
     "pi-coding-agent",

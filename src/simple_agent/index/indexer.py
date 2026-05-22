@@ -9,6 +9,7 @@ from typing import Any
 from sqlmodel import SQLModel, Field, Session, create_engine, select
 
 from simple_agent.snapshot.ghost_indexer import RepoWatcher
+import pathspec
 
 
 class IndexEntry(SQLModel, table=True):
@@ -39,6 +40,141 @@ class TreeNode:
         self.is_dir = is_dir
         self.description = description
         self.children = children or []
+
+
+class TreeRenderer:
+    """Walks the filesystem, attaches descriptions from an AgentIndex,
+    and renders the result as an ASCII tree.
+
+    .gitignore files are respected via the ``pathspec`` library."""
+
+    def __init__(self, index: "AgentIndex"):
+        self._index = index
+        with open('.gitignore', 'r') as f:
+            self.spec = pathspec.PathSpec.from_lines('gitwildmatch', f)
+
+    def _walk_dir(self, dir_path: str, base: str, descs: dict[str, str],
+                   depth: int | None, current_depth: int) -> TreeNode | None:
+        """Walk a directory and return a TreeNode with its children."""
+        rel = os.path.relpath(dir_path, base)
+        if self.spec.match_file(rel):
+            return None
+
+        name = os.path.basename(dir_path)
+        node = TreeNode(name=name, is_dir=True, description=descs.get(rel, ""))
+
+        if depth is not None and current_depth >= depth:
+            return node
+
+        try:
+            names = sorted(os.listdir(dir_path))
+        except OSError:
+            return node
+
+        for n in names:
+            if n.startswith(".") or n == "__pycache__":
+                continue
+            full = os.path.join(dir_path, n)
+
+            if os.path.isdir(full):
+                child = self._walk_dir(full, base, descs, depth, current_depth + 1)
+                if child is not None:
+                    node.children.append(child)
+            elif os.path.isfile(full):
+                child = self._walk_file(full, base, descs)
+                if child is not None:
+                    node.children.append(child)
+
+        return node
+
+    def _walk_file(self, file_path: str, base: str, descs: dict[str, str]) -> TreeNode:
+        """Walk a file and return a TreeNode with symbol children."""
+        rel = os.path.relpath(file_path, base)
+        if self.spec.match_file(rel):
+            return None
+
+        name = os.path.basename(file_path)
+        node = TreeNode(name=name, is_dir=False, description=descs.get(rel, ""))
+
+        for sym in self._index._parse_file_tree(rel):
+            sym_rel = rel + ":" + sym.name
+            sym_node = TreeNode(name=sym.name, is_dir=False,
+                                description=descs.get(sym_rel, sym.description))
+            node.children.append(sym_node)
+
+        return node
+
+    def _build_tree(self, base_path: str, depth: int | None = None) -> TreeNode | None:
+        """Walk the filesystem under *base_path*, attach descriptions from DB,
+        and return a ``TreeNode`` for rendering."""
+        base = base_path.rstrip("/") if base_path else "."
+        if not os.path.isdir(base):
+            return None
+
+        # Collect all DB descriptions in one query
+        sess = self._index._get_session()
+        descs: dict[str, str] = {}
+        try:
+            entries = sess.exec(select(IndexEntry)).all()
+            for e in entries:
+                if e.description:
+                    descs[e.path] = e.description
+        finally:
+            sess.close()
+
+        root = self._walk_dir(base, base, descs, depth, 0)
+        if root is None:
+            return None
+        # Root description uses the full path argument, not the relative path
+        root.description = descs.get(base_path.rstrip("/"), root.description)
+        return root
+
+    def render(self, path: str = "", depth: int | None = None) -> str:
+        """Render the index as a tree with # descriptions."""
+        root = self._build_tree(path, depth=depth)
+        if root is None:
+            return "(empty)"
+        return self._render_node(root)
+
+    def _render_node(self, node: TreeNode, prefix: str = "", is_last: bool = True,
+                      is_root: bool = True) -> str:
+        """Recursively renders a TreeNode structure using terminal-style graphics."""
+        output = ""
+
+        if is_root:
+            pointer = ""
+            current_prefix = ""
+        else:
+            pointer = "└── " if is_last else "├── "
+            current_prefix = prefix + pointer
+
+        suffix = "/" if node.is_dir else ""
+        comment = f"  # {node.description}" if node.description else ""
+
+        if is_root:
+            output += f"{node.name}{suffix}{comment}\n"
+        else:
+            output += f"{current_prefix}{node.name}{suffix}{comment}\n"
+
+        if node.children:
+            sorted_children = sorted(
+                node.children,
+                key=lambda c: (0 if c.is_dir else 1, c.name.lower())
+            )
+
+            next_prefix = prefix if is_root else prefix + ("    " if is_last else "│   ")
+
+            num_children = len(sorted_children)
+            for index, child in enumerate(sorted_children):
+                is_child_last = (index == num_children - 1)
+                output += self._render_node(
+                    child,
+                    prefix=next_prefix,
+                    is_last=is_child_last,
+                    is_root=False
+                )
+
+        return output
 
 
 class AgentIndex:
@@ -161,69 +297,6 @@ class AgentIndex:
         if _close:
             sess.commit()
             sess.close()
-
-    def _walk_dir(self, dir_path: str, base: str, descs: dict[str, str],
-                   depth: int | None, current_depth: int) -> TreeNode:
-        """Walk a directory and return a TreeNode with its children."""
-        rel = os.path.relpath(dir_path, base)
-        name = os.path.basename(dir_path)
-        node = TreeNode(name=name, is_dir=True, description=descs.get(rel, ""))
-
-        if depth is not None and current_depth >= depth:
-            return node
-
-        try:
-            names = sorted(os.listdir(dir_path))
-        except OSError:
-            return node
-
-        for n in names:
-            if n.startswith(".") or n == "__pycache__":
-                continue
-            full = os.path.join(dir_path, n)
-            if os.path.isdir(full):
-                node.children.append(self._walk_dir(full, base, descs, depth, current_depth + 1))
-            elif os.path.isfile(full):
-                node.children.append(self._walk_file(full, base, descs))
-
-        return node
-
-    def _walk_file(self, file_path: str, base: str, descs: dict[str, str]) -> TreeNode:
-        """Walk a file and return a TreeNode with symbol children."""
-        rel = os.path.relpath(file_path, base)
-        name = os.path.basename(file_path)
-        node = TreeNode(name=name, is_dir=False, description=descs.get(rel, ""))
-
-        for sym in self._parse_file_tree(rel):
-            sym_rel = rel + ":" + sym.name
-            sym_node = TreeNode(name=sym.name, is_dir=False,
-                                description=descs.get(sym_rel, sym.description))
-            node.children.append(sym_node)
-
-        return node
-
-    def _build_tree(self, base_path: str, depth: int | None = None) -> TreeNode | None:
-        """Walk the filesystem under *base_path*, attach descriptions from DB,
-        and return a ``TreeNode`` for rendering."""
-        base = base_path.rstrip("/") if base_path else "."
-        if not os.path.isdir(base):
-            return None
-
-        # Collect all DB descriptions in one query
-        sess = self._get_session()
-        descs: dict[str, str] = {}
-        try:
-            entries = sess.exec(select(IndexEntry)).all()
-            for e in entries:
-                if e.description:
-                    descs[e.path] = e.description
-        finally:
-            sess.close()
-
-        root = self._walk_dir(base, base, descs, depth, 0)
-        # Root description uses the full path argument, not the relative path
-        root.description = descs.get(base_path.rstrip("/"), root.description)
-        return root
 
     @staticmethod
     def _parse_diff_ranges(diff_text: str) -> list[tuple[int, int, int, int]]:
@@ -514,48 +587,4 @@ class AgentIndex:
 
         Structure comes from the filesystem; descriptions from the database.
         """
-        root = self._build_tree(path, depth=depth)
-
-        if root is None:
-            return "(empty)"
-
-        return self.render_tree(root)
-
-    def render_tree(self, node: TreeNode, prefix: str = "", is_last: bool = True, is_root: bool = True) -> str:
-        """Recursively renders a TreeNode structure using terminal-style graphics."""
-        output = ""
-
-        if is_root:
-            pointer = ""
-            current_prefix = ""
-        else:
-            pointer = "└── " if is_last else "├── "
-            current_prefix = prefix + pointer
-
-        suffix = "/" if node.is_dir else ""
-        comment = f"  # {node.description}" if node.description else ""
-
-        if is_root:
-            output += f"{node.name}{suffix}{comment}\n"
-        else:
-            output += f"{current_prefix}{node.name}{suffix}{comment}\n"
-
-        if node.children:
-            sorted_children = sorted(
-                node.children,
-                key=lambda c: (0 if c.is_dir else 1, c.name.lower())
-            )
-
-            next_prefix = prefix if is_root else prefix + ("    " if is_last else "│   ")
-
-            num_children = len(sorted_children)
-            for index, child in enumerate(sorted_children):
-                is_child_last = (index == num_children - 1)
-                output += self.render_tree(
-                    child,
-                    prefix=next_prefix,
-                    is_last=is_child_last,
-                    is_root=False
-                )
-
-        return output
+        return TreeRenderer(self).render(path, depth)
