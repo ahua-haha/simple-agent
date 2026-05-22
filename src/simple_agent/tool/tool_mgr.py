@@ -125,7 +125,6 @@ class ToolMgr:
                 "properties": {
                     "path": {"type": "string", "description": "Subtree path to render (default: root)"},
                     "depth": {"type": "integer", "description": "Max depth to render (default: unlimited)"},
-                    "filter": {"type": "string", "description": "Show only entries whose name contains this text"},
                 },
                 "required": [],
             },
@@ -140,7 +139,6 @@ class ToolMgr:
             output = agent_index.tree(
                 path=params.get("path", ""),
                 depth=params.get("depth"),
-                filter=params.get("filter"),
             )
             return AgentToolResult(content=[TextContent(text=output)])
 

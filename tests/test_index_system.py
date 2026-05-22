@@ -14,143 +14,142 @@ from simple_agent.tool.tool_mgr import ToolMgr
 class TestAgentIndexCRUD:
     """Tests for AgentIndex update, remove, and tree operations."""
 
-    def _make_index(self, db_path: str) -> AgentIndex:
+    @staticmethod
+    def _make_index(db_path: str) -> AgentIndex:
         return AgentIndex(db_path=db_path)
 
-    def test_update_creates_entry(self):
-        """update() should create an entry and persist it."""
-        with tempfile.NamedTemporaryFile(suffix=".db", delete=False) as f:
-            db_path = f.name
-        try:
-            idx = self._make_index(db_path)
-            idx.update(path="src/main.py", type="file", description="App entry point")
+    @staticmethod
+    def _make_workspace(base: str, files: dict[str, str]) -> None:
+        """Create files under *base*. *files* maps relpath → content."""
+        for rel, content in files.items():
+            full = os.path.join(base, rel)
+            os.makedirs(os.path.dirname(full), exist_ok=True)
+            with open(full, "w") as fh:
+                fh.write(content or "")
 
-            output = idx.tree()
-            assert "main.py" in output
-            assert "App entry point" in output
-        finally:
-            os.unlink(db_path)
+    def test_update_creates_entry(self, tmp_path):
+        """update() should store a description that appears in tree()."""
+        db_path = str(tmp_path / "index.db")
+        ws = str(tmp_path / "ws")
+        self._make_workspace(ws, {"main.py": "print('hello')"})
 
-    def test_update_upserts_existing_entry(self):
+        idx = self._make_index(db_path)
+        idx.update(path="main.py", type="file", description="App entry point")
+
+        output = idx.tree(path=ws)
+        assert "main.py" in output
+        assert "App entry point" in output
+
+    def test_update_upserts_existing_entry(self, tmp_path):
         """update() on existing path should overwrite the description."""
-        with tempfile.NamedTemporaryFile(suffix=".db", delete=False) as f:
-            db_path = f.name
-        try:
-            idx = self._make_index(db_path)
-            idx.update(path="src/main.py", type="file", description="Old description")
-            idx.update(path="src/main.py", type="file", description="New description")
+        db_path = str(tmp_path / "index.db")
+        ws = str(tmp_path / "ws")
+        self._make_workspace(ws, {"main.py": "x"})
 
-            output = idx.tree()
-            assert "New description" in output
-            assert "Old description" not in output
-        finally:
-            os.unlink(db_path)
+        idx = self._make_index(db_path)
+        idx.update(path="main.py", type="file", description="Old description")
+        idx.update(path="main.py", type="file", description="New description")
 
-    def test_remove_deletes_entry_and_children(self):
-        """remove() should delete the entry and all descendants."""
-        with tempfile.NamedTemporaryFile(suffix=".db", delete=False) as f:
-            db_path = f.name
-        try:
-            idx = self._make_index(db_path)
-            idx.update(path="src/old/", type="folder", description="Old module")
-            idx.update(path="src/old/module.py", type="file", description="Old file")
-            idx.update(path="src/old/module.py:old_func", type="function", description="Old function")
-            idx.update(path="src/other.py", type="file", description="Other file")
+        output = idx.tree(path=ws)
+        assert "New description" in output
+        assert "Old description" not in output
 
-            idx.remove("src/old/")
+    def test_remove_clears_descriptions(self, tmp_path):
+        """remove() should delete DB entries so files appear without descriptions."""
+        db_path = str(tmp_path / "index.db")
+        ws = str(tmp_path / "ws")
+        self._make_workspace(ws, {
+            "old/module.py": "x",
+            "other.py": "x",
+        })
 
-            output = idx.tree()
-            assert "Old module" not in output
-            assert "Old file" not in output
-            assert "Old function" not in output
-            assert "Other file" in output
-        finally:
-            os.unlink(db_path)
+        idx = self._make_index(db_path)
+        idx.update(path="old", type="directory", description="Old dir")
+        idx.update(path="old/module.py", type="file", description="Old file")
+        idx.update(path="other.py", type="file", description="Other file")
 
-    def test_tree_shows_hierarchy(self):
-        """tree() should render nested parent-child structure."""
-        with tempfile.NamedTemporaryFile(suffix=".db", delete=False) as f:
-            db_path = f.name
-        try:
-            idx = self._make_index(db_path)
-            idx.update(path="src/__init__.py", type="file", description="Package init")
-            idx.update(path="src/process/", type="folder", description="Process modules")
-            idx.update(path="src/process/agent_process.py", type="file", description="Agent process")
+        idx.remove("old")
 
-            output = idx.tree()
-            assert "src/" in output
-            assert "process/" in output
-            assert "agent_process.py" in output
-            assert "Package init" in output
-            assert "Process modules" in output
-            assert "Agent process" in output
-        finally:
-            os.unlink(db_path)
+        output = idx.tree(path=ws)
+        # Descriptions cleared
+        assert "Old dir" not in output
+        assert "Old file" not in output
+        # Other file description preserved
+        assert "Other file" in output
 
-    def test_tree_depth_limit(self):
+    def test_tree_shows_hierarchy(self, tmp_path):
+        """tree() should render nested parent-child structure from filesystem."""
+        db_path = str(tmp_path / "index.db")
+        ws = str(tmp_path / "ws")
+        self._make_workspace(ws, {
+            "src/__init__.py": "",
+            "src/process/agent_process.py": "",
+        })
+
+        idx = self._make_index(db_path)
+        idx.update(path="src/__init__.py", type="file", description="Package init")
+        idx.update(path="src/process", type="directory", description="Process modules")
+        idx.update(path="src/process/agent_process.py", type="file", description="Agent process")
+
+        output = idx.tree(path=ws)
+        assert "src/" in output
+        assert "process/" in output
+        assert "agent_process.py" in output
+        assert "Package init" in output
+        assert "Process modules" in output
+        assert "Agent process" in output
+
+    def test_tree_depth_limit(self, tmp_path):
         """tree() with depth param should limit recursion."""
-        with tempfile.NamedTemporaryFile(suffix=".db", delete=False) as f:
-            db_path = f.name
-        try:
-            idx = self._make_index(db_path)
-            idx.update(path="src/", type="folder", description="Source")
-            idx.update(path="src/process/", type="folder", description="Processes")
-            idx.update(path="src/process/file.py", type="file", description="File")
+        db_path = str(tmp_path / "index.db")
+        ws = str(tmp_path / "ws")
+        self._make_workspace(ws, {
+            "src/process/file.py": "",
+        })
 
-            output = idx.tree(depth=1)
-            assert "src/" in output
-            assert "process/" not in output
-            assert "file.py" not in output
-        finally:
-            os.unlink(db_path)
+        idx = self._make_index(db_path)
+        idx.update(path="src", type="directory", description="Source")
+        idx.update(path="src/process", type="directory", description="Processes")
+        idx.update(path="src/process/file.py", type="file", description="File")
 
-    def test_tree_filter_matches_name(self):
-        """tree() with filter should show only matching names."""
-        with tempfile.NamedTemporaryFile(suffix=".db", delete=False) as f:
-            db_path = f.name
-        try:
-            idx = self._make_index(db_path)
-            idx.update(path="src/explore.py", type="file", description="Explore module")
-            idx.update(path="src/process.py", type="file", description="Process module")
-            idx.update(path="src/other.py", type="file", description="Other module")
+        output = idx.tree(path=ws, depth=1)
+        # depth=1: root + direct children (src/); grandchildren hidden
+        assert "src/" in output
+        assert "process/" not in output
+        assert "file.py" not in output
 
-            output = idx.tree(filter="explore")
-            assert "explore.py" in output
-            assert "process.py" not in output
-            assert "other.py" not in output
-        finally:
-            os.unlink(db_path)
-
-    def test_tree_scoped_subtree(self):
+    def test_tree_scoped_subtree(self, tmp_path):
         """tree() with path should render only a subtree."""
-        with tempfile.NamedTemporaryFile(suffix=".db", delete=False) as f:
-            db_path = f.name
+        db_path = str(tmp_path / "index.db")
+        ws = str(tmp_path / "ws")
+        self._make_workspace(ws, {
+            "src/state/models.py": "",
+            "tests/conftest.py": "",
+        })
+
+        idx = self._make_index(db_path)
+        idx.update(path="src/state", type="directory", description="State module")
+        idx.update(path="src/state/models.py", type="file", description="Data models")
+        idx.update(path="tests", type="directory", description="Test suite")
+
+        output = idx.tree(path=os.path.join(ws, "src/state"))
+        assert "models.py" in output
+        assert "Test suite" not in output
+
+    def test_symbol_entry_stored_in_db(self, tmp_path):
+        """Symbol entries with colon-separated paths are stored in the DB."""
+        db_path = str(tmp_path / "index.db")
+        idx = self._make_index(db_path)
+        idx.update(path="main.py", type="file", description="Entry point")
+        idx.update(path="main.py:main", type="function", description="Main function")
+
+        session = idx._get_session()
         try:
-            idx = self._make_index(db_path)
-            idx.update(path="src/state/", type="folder", description="State module")
-            idx.update(path="src/state/models.py", type="file", description="Data models")
-            idx.update(path="tests/", type="folder", description="Test suite")
-
-            output = idx.tree(path="src/state/")
-            assert "models.py" in output
-            assert "Test suite" not in output
+            sym = session.get(IndexEntry, "main.py:main")
+            assert sym is not None
+            assert sym.description == "Main function"
         finally:
-            os.unlink(db_path)
-
-    def test_symbol_entry_colon_separator(self):
-        """update() with colon-separated path should create symbol entry under file parent."""
-        with tempfile.NamedTemporaryFile(suffix=".db", delete=False) as f:
-            db_path = f.name
-        try:
-            idx = self._make_index(db_path)
-            idx.update(path="src/main.py", type="file", description="Entry point")
-            idx.update(path="src/main.py:main", type="function", description="Main function")
-
-            output = idx.tree(path="src/main.py")
-            assert "main" in output
-            assert "Main function" in output
-        finally:
-            os.unlink(db_path)
+            session.close()
 
 
 class TestAgentIndexRealSrc:
@@ -197,8 +196,7 @@ class TestAgentIndexRealSrc:
             idx = self._make_index(db_path)
             self._add_src_entries(idx, "src", max_depth=4)
 
-            output = idx.tree(path="simple_agent", depth=4)
-            # output = idx.tree(depth=3)
+            output = idx.tree(path="src/simple_agent", depth=4)
 
             print()
             print(output)
@@ -231,33 +229,8 @@ class TestAgentIndexRealSrc:
             # Depth 3 directories (grandchildren of root)
             assert "templates/" in output
 
-            # Templates files appear via parent directory entries from _ensure_parents
-            assert "templates" in output
-
             # Render result for inspection
             print("\n===== tree output (max depth 3) =====")
-
-        finally:
-            os.unlink(db_path)
-
-    def test_src_tree_pattern_filter(self):
-        """Only show *.py files with pattern filter."""
-        with tempfile.NamedTemporaryFile(suffix=".db", delete=False) as f:
-            db_path = f.name
-        try:
-            idx = self._make_index(db_path)
-            self._add_src_entries(idx, "src", max_depth=3)
-
-            output = idx.tree(pattern="*.py", depth=3)
-
-            assert "indexer.py" in output
-            assert "tool_mgr.py" in output
-            # HTML files excluded both by depth=3 (at depth 4) and by pattern
-            assert "task_detail.html" not in output
-            assert "base.html" not in output
-
-            print("\n===== tree output (pattern *.py) =====")
-            print(output)
 
         finally:
             os.unlink(db_path)
@@ -375,10 +348,15 @@ class TestHandleDeletes:
             )
             assert result == ["src/config.py"]
 
-            # Entry removed from index
-            tree = idx.tree()
-            assert "config.py" not in tree
-            assert "Source" in tree  # parent still exists
+            # Entry removed from DB
+            session = idx._get_session()
+            try:
+                assert session.get(IndexEntry, "src/config.py") is None
+                src_entry = session.get(IndexEntry, "src")
+                assert src_entry is not None
+                assert src_entry.description == "Source"
+            finally:
+                session.close()
         finally:
             os.unlink(db_path)
 
@@ -397,9 +375,13 @@ class TestHandleDeletes:
             assert "old/legacy.py" in result
             assert "old" in result
 
-            tree = idx.tree()
-            assert "legacy.py" not in tree
-            assert "old/" not in tree
+            # Entries removed from DB
+            session = idx._get_session()
+            try:
+                assert session.get(IndexEntry, "old/legacy.py") is None
+                assert session.get(IndexEntry, "old") is None
+            finally:
+                session.close()
         finally:
             os.unlink(db_path)
 
@@ -642,7 +624,7 @@ class TestSyncOrphanDirectory:
             idx.update(path="mylib/util.py", type="file", description="Util")
             idx.sync(None, h1, watcher)
 
-            tree_before = idx.tree()
+            tree_before = idx.tree(path=tmpdir)
             assert "mylib/" in tree_before
 
             os.unlink(os.path.join(subdir, "util.py"))
@@ -654,7 +636,7 @@ class TestSyncOrphanDirectory:
             processed = idx.sync(h1, h2, watcher)
             assert processed >= 1
 
-            tree_after = idx.tree()
+            tree_after = idx.tree(path=tmpdir)
             assert "mylib/" not in tree_after
             assert "util.py" not in tree_after
 
