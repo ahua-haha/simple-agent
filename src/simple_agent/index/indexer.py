@@ -383,13 +383,14 @@ class AgentIndex:
         _session: Session | None = None,
     ) -> list[str]:
         """Handle modified files: use ``parse_file_diff`` to identify deleted
-        entries, delete them, clear the file description, and collect paths
-        for propagation."""
+        symbol entries, decrement the file's ``propagation_count``, and
+        remove the file entry when the counter reaches 0.
+
+        Returns the collected paths for propagation to parent directories."""
         _close = _session is None
         sess = _session or self._get_session()
 
         from sqlalchemy import delete as sql_delete
-        from sqlalchemy import update as sql_update
 
         collected: list[str] = []
 
@@ -397,20 +398,19 @@ class AgentIndex:
             if status != "M":
                 continue
 
-            if sess.get(IndexEntry, old_path) is None:
-                continue
-
+            # Delete symbol entries identified by parse_file_diff
             deleted = self.parse_file_diff(old_path, repo_watcher, old_hash, new_hash)
-            for entry in deleted:
+            for d in deleted:
                 sess.exec(
-                    sql_delete(IndexEntry).where(IndexEntry.path == entry.path)
+                    sql_delete(IndexEntry).where(IndexEntry.path == d.path)
                 )
 
-            sess.exec(
-                sql_update(IndexEntry)
-                .where(IndexEntry.path == old_path)
-                .values(description="")
-            )
+            # Decrement file counter; remove when exhausted
+            entry = sess.get(IndexEntry, old_path)
+            if entry is not None:
+                entry.propagation_count -= 1
+                if entry.propagation_count <= 0:
+                    sess.delete(entry)
             collected.append(old_path)
 
         if _close:
@@ -433,35 +433,41 @@ class AgentIndex:
         self,
         paths: list[str],
         _session: Session | None = None,
+        factor: float = 0.7,
+        threshold: float = 3.0,
     ) -> None:
-        """Group changes by ancestor directory and decrement counters.
+        """Apply distance-decay scoring to ancestor directories.
 
-        Each directory's ``propagation_count`` is reduced by the number
-        of changes under it.  When a counter hits zero or below, the
-        description is cleared, the counter reset, and the overflow
-        cascades to the grandparent.
+        Each changed path contributes ``factor^(d-1)`` to its ancestor
+        at distance *d* (direct child = 1).  When an ancestor's
+        accumulated score meets *threshold*, its ``propagation_count``
+        is decremented by 1.  When the counter reaches 0, the entry is
+        removed from the database.
         """
         _close = _session is None
         sess = _session or self._get_session()
 
-        # Count changes per ancestor directory
-        dir_counts: dict[str, int] = {}
+        # Accumulate decay-weighted scores per ancestor
+        scores: dict[str, float] = {}
         for path in paths:
+            d = 1
             parent = self._get_parent(path)
             while parent is not None:
-                dir_counts[parent] = dir_counts.get(parent, 0) + 1
+                scores[parent] = scores.get(parent, 0.0) + factor ** (d - 1)
+                d += 1
                 parent = self._get_parent(parent)
 
-        # Decrement each directory's counter
-        for dir_path, count in dir_counts.items():
+        # Decrement counters for ancestors that pass threshold
+        from sqlalchemy import delete as sql_delete
+        for dir_path, score in scores.items():
+            if score < threshold:
+                continue
             entry = sess.get(IndexEntry, dir_path)
             if entry is None:
                 continue
-            entry.propagation_count -= count
+            entry.propagation_count -= 1
             if entry.propagation_count <= 0:
-                if entry.description:
-                    entry.description = ""
-                entry.propagation_count = 4
+                sess.delete(entry)
 
         if _close:
             sess.commit()

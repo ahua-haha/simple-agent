@@ -384,8 +384,8 @@ class TestHandleModified:
                 return diff_text
         return _W()
 
-    def test_clears_file_description(self):
-        """Modified file should have its description cleared."""
+    def test_decrements_counter_on_modify(self):
+        """Modified file decrements propagation_count and preserves description."""
         with tempfile.NamedTemporaryFile(suffix=".db", delete=False) as f:
             db_path = f.name
         try:
@@ -402,13 +402,44 @@ class TestHandleModified:
             session = idx._get_session()
             try:
                 entry = session.get(IndexEntry, "src/mod.py")
-                assert entry.description == ""
+                assert entry.propagation_count == 3  # 4→3
+                assert entry.description == "Mod"     # preserved
             finally:
                 session.close()
         finally:
             os.unlink(db_path)
 
-    def test_modified_file_is_collected_for_propagation(self):
+    def test_counter_zero_removes_file_entry(self):
+        """When counter reaches 0, the file entry is deleted."""
+        with tempfile.NamedTemporaryFile(suffix=".db", delete=False) as f:
+            db_path = f.name
+        try:
+            idx = self._make_index(db_path)
+            idx.update(path="old.py", type="file", description="Old")
+
+            session = idx._get_session()
+            try:
+                entry = session.get(IndexEntry, "old.py")
+                entry.propagation_count = 1
+                session.commit()
+            finally:
+                session.close()
+
+            watcher = self._make_watcher()
+            result = idx._handle_modified(
+                [("M", "old.py", None)], watcher, "h1", "h2",
+            )
+            assert result == ["old.py"]
+
+            session = idx._get_session()
+            try:
+                assert session.get(IndexEntry, "old.py") is None
+            finally:
+                session.close()
+        finally:
+            os.unlink(db_path)
+
+    def test_multiple_files_collected_for_propagation(self):
         """Every modified file in the index is collected for propagation."""
         with tempfile.NamedTemporaryFile(suffix=".db", delete=False) as f:
             db_path = f.name
@@ -426,8 +457,8 @@ class TestHandleModified:
 
             session = idx._get_session()
             try:
-                assert session.get(IndexEntry, "a.py").description == ""
-                assert session.get(IndexEntry, "b.py").description == ""
+                assert session.get(IndexEntry, "a.py").propagation_count == 3
+                assert session.get(IndexEntry, "b.py").propagation_count == 3
             finally:
                 session.close()
         finally:
@@ -450,7 +481,9 @@ class TestHandleModified:
 
             session = idx._get_session()
             try:
-                assert session.get(IndexEntry, "keep.py").description == "Keep"
+                entry = session.get(IndexEntry, "keep.py")
+                assert entry.propagation_count == 4  # unchanged
+                assert entry.description == "Keep"
             finally:
                 session.close()
         finally:
@@ -568,7 +601,8 @@ class TestPropagateStale:
     def _make_index(self, db_path: str) -> AgentIndex:
         return AgentIndex(db_path=db_path)
 
-    def test_single_entry_parent_counter_not_zero(self):
+    def test_single_change_below_threshold(self):
+        """One file change (score=1.0) does not decrement counter."""
         with tempfile.NamedTemporaryFile(suffix=".db", delete=False) as f:
             db_path = f.name
         try:
@@ -577,51 +611,64 @@ class TestPropagateStale:
 
             idx._propagate_stale(["src/a.py"])
 
-            tree = idx.tree()
-            assert "Core source" in tree  # counter 4→3, not zero
+            session = idx._get_session()
+            try:
+                entry = session.get(IndexEntry, "src")
+                assert entry.propagation_count == 4  # unchanged (1.0 < 3.0)
+                assert entry.description == "Core source"
+            finally:
+                session.close()
         finally:
             os.unlink(db_path)
 
-    def test_four_entries_push_parent_to_zero(self):
+    def test_three_direct_children_trigger_decrement(self):
+        """Three direct children (score=3.0) decrement counter by 1."""
         with tempfile.NamedTemporaryFile(suffix=".db", delete=False) as f:
             db_path = f.name
         try:
             idx = self._make_index(db_path)
             idx.update(path="lib", type="directory", description="Library")
-            paths = [f"lib/{n}" for n in ["a.py", "b.py", "c.py", "d.py"]]
+            paths = [f"lib/{n}" for n in ["a.py", "b.py", "c.py"]]
 
             idx._propagate_stale(paths)
 
-            tree = idx.tree()
-            assert "Library" not in tree
+            session = idx._get_session()
+            try:
+                entry = session.get(IndexEntry, "lib")
+                assert entry.propagation_count == 3  # 4→3
+                assert entry.description == "Library"  # not cleared
+            finally:
+                session.close()
         finally:
             os.unlink(db_path)
 
-    def test_multi_level_propagation(self):
+    def test_deep_changes_decay(self):
+        """Files at depth 2 contribute factor^1 = 0.7 each."""
         with tempfile.NamedTemporaryFile(suffix=".db", delete=False) as f:
             db_path = f.name
         try:
             idx = self._make_index(db_path)
             idx.update(path="src", type="directory", description="Source")
-            idx.update(path="src/utils", type="directory", description="Utils")
+            idx.update(path="src/sub", type="directory", description="Sub")
+
+            # 5 files at depth 2 → 5 × 0.7 = 3.5 ≥ 3 → decrement
+            paths = [f"src/sub/{n}" for n in ["a.py", "b.py", "c.py", "d.py", "e.py"]]
+            idx._propagate_stale(paths)
 
             session = idx._get_session()
             try:
-                entry = session.get(IndexEntry, "src/utils")
-                entry.propagation_count = 1
-                session.commit()
+                sub = session.get(IndexEntry, "src/sub")
+                assert sub.propagation_count == 3  # 5.0 ≥ 3 → 4→3
+
+                src = session.get(IndexEntry, "src")
+                assert src.propagation_count == 3  # 3.5 ≥ 3 → 4→3
             finally:
                 session.close()
-
-            idx._propagate_stale(["src/utils/helper.py"])
-
-            tree = idx.tree()
-            assert "Utils" not in tree
-            assert "Source" in tree
         finally:
             os.unlink(db_path)
 
-    def test_counter_reset_after_hit_zero(self):
+    def test_counter_zero_removes_entry(self):
+        """When counter reaches 0, the entry is deleted from the DB."""
         with tempfile.NamedTemporaryFile(suffix=".db", delete=False) as f:
             db_path = f.name
         try:
@@ -636,13 +683,12 @@ class TestPropagateStale:
             finally:
                 session.close()
 
-            idx._propagate_stale(["pkg/x.py"])
+            # 3 files → score 3.0 ≥ 3 → counter 1→0 → entry removed
+            idx._propagate_stale(["pkg/a.py", "pkg/b.py", "pkg/c.py"])
 
             session = idx._get_session()
             try:
-                entry = session.get(IndexEntry, "pkg")
-                assert entry.description == ""
-                assert entry.propagation_count == 4
+                assert session.get(IndexEntry, "pkg") is None
             finally:
                 session.close()
         finally:
