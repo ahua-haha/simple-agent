@@ -236,53 +236,6 @@ class TestAgentIndexRealSrc:
             os.unlink(db_path)
 
 
-class TestDiffRangeParsing:
-    """Tests for _parse_diff_ranges and _ranges_overlap."""
-
-    def _make_index(self, db_path: str) -> AgentIndex:
-        return AgentIndex(db_path=db_path)
-
-    def test_parse_single_hunk(self):
-        """Single hunk should yield (old_s, old_e, new_s, new_e)."""
-        diff = "@@ -10,5 +10,6 @@\n-old\n+new\n"
-        ranges = AgentIndex._parse_diff_ranges(diff)
-        assert ranges == [(10, 14, 10, 15)]
-
-    def test_parse_multiple_hunks(self):
-        """Multiple hunks should yield all ranges."""
-        diff = "@@ -3,4 +3,5 @@\n...\n@@ -15,3 +18,3 @@\n..."
-        ranges = AgentIndex._parse_diff_ranges(diff)
-        assert ranges == [(3, 6, 3, 7), (15, 17, 18, 20)]
-
-    def test_skip_pure_add_hunk(self):
-        """Hunk with old-count of 0 should be skipped."""
-        diff = "@@ -5,0 +5,4 @@\n+new line\n+another\n"
-        ranges = AgentIndex._parse_diff_ranges(diff)
-        assert ranges == []
-
-    def test_empty_diff(self):
-        """Empty or malformed diff should return empty list."""
-        assert AgentIndex._parse_diff_ranges("") == []
-        assert AgentIndex._parse_diff_ranges("no hunks here") == []
-
-    def test_ranges_overlap_full(self):
-        """Full containment should overlap."""
-        assert AgentIndex._ranges_overlap(10, 20, 12, 16) is True
-
-    def test_ranges_overlap_boundary(self):
-        """Shared boundary line should overlap."""
-        assert AgentIndex._ranges_overlap(10, 15, 15, 18) is True
-
-    def test_ranges_overlap_no_overlap(self):
-        """Disjoint ranges should not overlap."""
-        assert AgentIndex._ranges_overlap(10, 15, 16, 20) is False
-
-    def test_ranges_overlap_adjacent(self):
-        """Adjacent ranges (no shared line) should not overlap."""
-        assert AgentIndex._ranges_overlap(10, 15, 16, 20) is False
-
-
-
 class TestIndexMeta:
     """Tests for IndexMeta hash storage."""
 
@@ -432,13 +385,14 @@ class TestHandleModified:
         return _W()
 
     def test_clears_file_description(self):
+        """Modified file should have its description cleared."""
         with tempfile.NamedTemporaryFile(suffix=".db", delete=False) as f:
             db_path = f.name
         try:
             idx = self._make_index(db_path)
             idx.update(path="src", type="directory", description="Source")
             idx.update(path="src/mod.py", type="file", description="Mod")
-            watcher = self._make_watcher(diff_text="")
+            watcher = self._make_watcher()
 
             result = idx._handle_modified(
                 [("M", "src/mod.py", None)], watcher, "h1", "h2",
@@ -454,90 +408,56 @@ class TestHandleModified:
         finally:
             os.unlink(db_path)
 
-    def test_overlapping_symbol_deleted_file_collected(self):
+    def test_modified_file_is_collected_for_propagation(self):
+        """Every modified file in the index is collected for propagation."""
         with tempfile.NamedTemporaryFile(suffix=".db", delete=False) as f:
             db_path = f.name
         try:
             idx = self._make_index(db_path)
-            idx.update(path="pkg", type="directory", description="Pkg")
-            idx.update(path="pkg/mod.py", type="file", description="Mod")
-            idx.update(path="pkg/mod.py:run", type="function", description="Run",
-                       line_start=12, line_end=30)
-            watcher = self._make_watcher(diff_text="@@ -13,3 +13,4 @@")
+            idx.update(path="a.py", type="file", description="A")
+            idx.update(path="b.py", type="file", description="B")
+            watcher = self._make_watcher()
 
             result = idx._handle_modified(
-                [("M", "pkg/mod.py", None)], watcher, "h1", "h2",
+                [("M", "a.py", None), ("M", "b.py", None)],
+                watcher, "h1", "h2",
             )
-            # run overlaps → deleted; mod.py collected as direct hit
-            assert "pkg/mod.py" in result
+            assert result == ["a.py", "b.py"]
 
             session = idx._get_session()
             try:
-                sym = session.get(IndexEntry, "pkg/mod.py:run")
-                assert sym is None  # deleted
-                file_entry = session.get(IndexEntry, "pkg/mod.py")
-                assert file_entry.description == ""  # cleared
+                assert session.get(IndexEntry, "a.py").description == ""
+                assert session.get(IndexEntry, "b.py").description == ""
             finally:
                 session.close()
         finally:
             os.unlink(db_path)
 
-    def test_all_old_entries_deleted_file_cleared(self):
+    def test_non_modified_status_ignored(self):
+        """Only M status is processed; D and A are ignored."""
         with tempfile.NamedTemporaryFile(suffix=".db", delete=False) as f:
             db_path = f.name
         try:
             idx = self._make_index(db_path)
-            idx.update(path="lib", type="directory", description="Lib")
-            idx.update(path="lib/f.py", type="file", description="File")
-            idx.update(path="lib/f.py:setup", type="function", description="Setup",
-                       line_start=1, line_end=5)
-            idx.update(path="lib/f.py:teardown", type="function", description="Teardown",
-                       line_start=10, line_end=15)
-            watcher = self._make_watcher(diff_text="@@ -2,2 +2,5 @@")
-
-            idx._handle_modified(
-                [("M", "lib/f.py", None)], watcher, "h1", "h2",
-            )
-            session = idx._get_session()
-            try:
-                # All old entries deleted (stub regenerates empty)
-                assert session.get(IndexEntry, "lib/f.py:setup") is None
-                assert session.get(IndexEntry, "lib/f.py:teardown") is None
-                # File entry description cleared
-                f_entry = session.get(IndexEntry, "lib/f.py")
-                assert f_entry.description == ""
-            finally:
-                session.close()
-        finally:
-            os.unlink(db_path)
-
-    def test_no_overlap_file_description_preserved(self):
-        with tempfile.NamedTemporaryFile(suffix=".db", delete=False) as f:
-            db_path = f.name
-        try:
-            idx = self._make_index(db_path)
-            idx.update(path="dir", type="directory", description="Dir")
-            idx.update(path="dir/f.py", type="file", description="File")
-            idx.update(path="dir/f.py:setup", type="function", description="Setup",
-                       line_start=1, line_end=5)
-            watcher = self._make_watcher(diff_text="@@ -7 +7 @@")
+            idx.update(path="keep.py", type="file", description="Keep")
+            watcher = self._make_watcher()
 
             result = idx._handle_modified(
-                [("M", "dir/f.py", None)], watcher, "h1", "h2",
+                [("D", "keep.py", None), ("A", "new.py", None)],
+                watcher, "h1", "h2",
             )
-            # No overlap with setup (1-5) → threshold not met → file stays
             assert result == []
 
             session = idx._get_session()
             try:
-                entry = session.get(IndexEntry, "dir/f.py")
-                assert entry.description == "File"  # preserved
+                assert session.get(IndexEntry, "keep.py").description == "Keep"
             finally:
                 session.close()
         finally:
             os.unlink(db_path)
 
     def test_missing_file_skipped(self):
+        """Files not present in the index are silently skipped."""
         with tempfile.NamedTemporaryFile(suffix=".db", delete=False) as f:
             db_path = f.name
         try:

@@ -5,7 +5,6 @@ from __future__ import annotations
 import os
 import time
 
-from typing import Any
 from pathlib import Path
 from sqlmodel import SQLModel, Field, Session, create_engine, select
 
@@ -20,8 +19,6 @@ class IndexEntry(SQLModel, table=True):
     type: str = Field(default="file")
     description: str = Field(default="")
     propagation_count: int = Field(default=4)
-    line_start: int | None = Field(default=None)
-    line_end: int | None = Field(default=None)
     updated_at: int = Field(default_factory=lambda: int(time.time()))
 
 
@@ -246,8 +243,6 @@ class AgentIndex:
         *,
         type: str | None = None,
         description: str | None = None,
-        line_start: int | None = None,
-        line_end: int | None = None,
         _session: Session | None = None,
     ) -> None:
         """Upsert a single entry by path. Only non-None fields are updated."""
@@ -263,8 +258,6 @@ class AgentIndex:
             path=p,
             type=type or "file",
             description=description or "",
-            line_start=line_start,
-            line_end=line_end,
             updated_at=now,
         )
 
@@ -274,10 +267,6 @@ class AgentIndex:
         if description is not None:
             update_cols.add("description")
             update_cols.add("propagation_count")
-        if line_start is not None:
-            update_cols.add("line_start")
-        if line_end is not None:
-            update_cols.add("line_end")
 
         set_vals = {c: getattr(stmt.excluded, c) for c in update_cols}
 
@@ -306,31 +295,6 @@ class AgentIndex:
         if _close:
             sess.commit()
             sess.close()
-
-    @staticmethod
-    def _parse_diff_ranges(diff_text: str) -> list[tuple[int, int, int, int]]:
-        """Extract changed blocks from unified diff hunk headers.
-
-        Each ``@@ -old_s,old_n +new_s,new_n @@`` header yields
-        ``(old_start, old_end, new_start, new_end)``.
-        When the count is omitted (e.g. ``@@ -89 +91,8 @@``) it defaults to 1.
-        Hunks with old-count of 0 (pure additions) are skipped.
-        """
-        import re
-        ranges: list[tuple[int, int, int, int]] = []
-        for m in re.finditer(r'@@ -(\d+)(?:,(\d+))? \+(\d+)(?:,(\d+))? @@', diff_text):
-            old_s = int(m.group(1))
-            old_n = int(m.group(2)) if m.group(2) else 1
-            new_s = int(m.group(3))
-            new_n = int(m.group(4)) if m.group(4) else 1
-            if old_n > 0:
-                ranges.append((old_s, old_s + old_n - 1, new_s, new_s + new_n - 1))
-        return ranges
-
-    @staticmethod
-    def _ranges_overlap(a_start: int, a_end: int, b_start: int, b_end: int) -> bool:
-        """Check whether two line intervals intersect."""
-        return a_start <= b_end and b_start <= a_end
 
     def _handle_deletes(
         self,
@@ -392,70 +356,23 @@ class AgentIndex:
         """
         return []
 
-    def _reset_file_ranges(
+    def parse_file_diff(
         self,
         file_path: str,
         repo_watcher: RepoWatcher,
         old_hash: str,
         new_hash: str,
-        _session: Session,
-    ) -> str | None:
-        """Reset symbol entries for one modified file.
+    ) -> list[IndexEntry]:
+        """Parse the diff for *file_path* and return entries to delete.
 
-        Deletes old entries overlapping diff hunks, transfers descriptions
-        from old to new by matching path, then replaces all old entries
-        with the regenerated tree.
+        Fetches the file diff internally from *repo_watcher*, parses it
+        to identify which indexed symbol entries were deleted or modified,
+        and returns them for deletion.
 
-        Returns *file_path* if the file description should be cleared
-        (overlapping entries exceeded threshold), or ``None``.
+        TODO: implement diff-based symbol detection.
         """
-        # 1. Get old entries and hunk ranges
-        old_entries = _session.exec(
-            select(IndexEntry).where(
-                IndexEntry.path.startswith(file_path + ":")
-            )
-        ).all()
-
-        diff_text = repo_watcher.get_file_diff(old_hash, new_hash, file_path, context_lines=0)
-        ranges = self._parse_diff_ranges(diff_text)
-
-        # 2. Count overlapping entries
-        overlap_count = 0
-        if ranges:
-            for old in old_entries:
-                if old.line_start is None or old.line_end is None:
-                    continue
-                for old_s, old_e, _new_s, _new_e in ranges:
-                    if self._ranges_overlap(old.line_start, old.line_end, old_s, old_e):
-                        overlap_count += 1
-                        break
-
-        # 3. Transfer descriptions from old to new by matching path
-        old_by_path: dict[str, str] = {}
-        for old in old_entries:
-            if old.description:
-                old_by_path[old.path] = old.description
-
-        new_entries = self._parse_file_tree(file_path)
-        for new in new_entries:
-            if new.path in old_by_path:
-                new.description = old_by_path[new.path]
-
-        # 4. Delete all old entries, insert new ones
-        from sqlalchemy import delete as sql_delete
-        _session.exec(
-            sql_delete(IndexEntry).where(
-                IndexEntry.path.startswith(file_path + ":")
-            )
-        )
-        for new in new_entries:
-            _session.add(new)
-
-        # Return file path if enough entries changed
-        total = len(old_entries)
-        if total == 0 or (total > 0 and overlap_count / total >= 0.3):
-            return file_path
-        return None
+        _diff = repo_watcher.get_file_diff(old_hash, new_hash, file_path, context_lines=0)
+        return []
 
     def _handle_modified(
         self,
@@ -465,14 +382,13 @@ class AgentIndex:
         new_hash: str,
         _session: Session | None = None,
     ) -> list[str]:
-        """Handle modified files: run ``_reset_file_ranges`` for each file
-        and collect paths whose descriptions should be cleared.
-
-        Returns the collected paths for propagation.
-        """
+        """Handle modified files: use ``parse_file_diff`` to identify deleted
+        entries, delete them, clear the file description, and collect paths
+        for propagation."""
         _close = _session is None
         sess = _session or self._get_session()
 
+        from sqlalchemy import delete as sql_delete
         from sqlalchemy import update as sql_update
 
         collected: list[str] = []
@@ -484,16 +400,18 @@ class AgentIndex:
             if sess.get(IndexEntry, old_path) is None:
                 continue
 
-            result = self._reset_file_ranges(old_path, repo_watcher, old_hash, new_hash, _session=sess)
-            if result is not None:
-                collected.append(result)
+            deleted = self.parse_file_diff(old_path, repo_watcher, old_hash, new_hash)
+            for entry in deleted:
+                sess.exec(
+                    sql_delete(IndexEntry).where(IndexEntry.path == entry.path)
+                )
 
-        for path in collected:
             sess.exec(
                 sql_update(IndexEntry)
-                .where(IndexEntry.path == path)
+                .where(IndexEntry.path == old_path)
                 .values(description="")
             )
+            collected.append(old_path)
 
         if _close:
             sess.commit()
