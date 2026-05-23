@@ -15,8 +15,8 @@ class TestAgentIndexCRUD:
     """Tests for AgentIndex update, remove, and tree operations."""
 
     @staticmethod
-    def _make_index(db_path: str) -> AgentIndex:
-        return AgentIndex(db_path=db_path)
+    def _make_index(db_path: str, base_dir: str = ".") -> AgentIndex:
+        return AgentIndex(db_path, base_dir=base_dir)
 
     @staticmethod
     def _make_workspace(base: str, files: dict[str, str]) -> None:
@@ -33,10 +33,10 @@ class TestAgentIndexCRUD:
         ws = str(tmp_path / "ws")
         self._make_workspace(ws, {"main.py": "print('hello')"})
 
-        idx = self._make_index(db_path)
+        idx = self._make_index(db_path, base_dir=ws)
         idx.update(path="main.py", type="file", description="App entry point")
 
-        output = idx.tree(path=ws)
+        output = idx.tree()
         assert "main.py" in output
         assert "App entry point" in output
 
@@ -46,11 +46,11 @@ class TestAgentIndexCRUD:
         ws = str(tmp_path / "ws")
         self._make_workspace(ws, {"main.py": "x"})
 
-        idx = self._make_index(db_path)
+        idx = self._make_index(db_path, base_dir=ws)
         idx.update(path="main.py", type="file", description="Old description")
         idx.update(path="main.py", type="file", description="New description")
 
-        output = idx.tree(path=ws)
+        output = idx.tree()
         assert "New description" in output
         assert "Old description" not in output
 
@@ -63,14 +63,14 @@ class TestAgentIndexCRUD:
             "other.py": "x",
         })
 
-        idx = self._make_index(db_path)
+        idx = self._make_index(db_path, base_dir=ws)
         idx.update(path="old", type="directory", description="Old dir")
         idx.update(path="old/module.py", type="file", description="Old file")
         idx.update(path="other.py", type="file", description="Other file")
 
         idx.remove("old")
 
-        output = idx.tree(path=ws)
+        output = idx.tree()
         # Descriptions cleared
         assert "Old dir" not in output
         assert "Old file" not in output
@@ -86,12 +86,12 @@ class TestAgentIndexCRUD:
             "src/process/agent_process.py": "",
         })
 
-        idx = self._make_index(db_path)
+        idx = self._make_index(db_path, base_dir=ws)
         idx.update(path="src/__init__.py", type="file", description="Package init")
         idx.update(path="src/process", type="directory", description="Process modules")
         idx.update(path="src/process/agent_process.py", type="file", description="Agent process")
 
-        output = idx.tree(path=ws)
+        output = idx.tree()
         assert "src/" in output
         assert "process/" in output
         assert "agent_process.py" in output
@@ -107,12 +107,12 @@ class TestAgentIndexCRUD:
             "src/process/file.py": "",
         })
 
-        idx = self._make_index(db_path)
+        idx = self._make_index(db_path, base_dir=ws)
         idx.update(path="src", type="directory", description="Source")
         idx.update(path="src/process", type="directory", description="Processes")
         idx.update(path="src/process/file.py", type="file", description="File")
 
-        output = idx.tree(path=ws, depth=1)
+        output = idx.tree(depth=1)
         # depth=1: root + direct children (src/); grandchildren hidden
         assert "src/" in output
         assert "process/" not in output
@@ -127,12 +127,12 @@ class TestAgentIndexCRUD:
             "tests/conftest.py": "",
         })
 
-        idx = self._make_index(db_path)
+        idx = self._make_index(db_path, base_dir=ws)
         idx.update(path="src/state", type="directory", description="State module")
         idx.update(path="src/state/models.py", type="file", description="Data models")
         idx.update(path="tests", type="directory", description="Test suite")
 
-        output = idx.tree(path=os.path.join(ws, "src/state"))
+        output = idx.tree(path="src/state")
         assert "models.py" in output
         assert "Test suite" not in output
 
@@ -718,5 +718,27 @@ class TestPropagateStale:
                 assert entry.description == "New description"
             finally:
                 session.close()
+        finally:
+            os.unlink(db_path)
+
+
+class TestTreeSmoke:
+    """Smoketest: render the real repo tree for visual inspection."""
+
+    def test_render_real_repo_tree(self):
+        import tempfile
+        with tempfile.NamedTemporaryFile(suffix=".db", delete=False) as f:
+            db_path = f.name
+        try:
+            idx = AgentIndex(db_path)
+            idx.update(path="src/simple_agent/index", type="directory",
+                       description="Project index")
+            idx.update(path="src/simple_agent/index/indexer.py", type="file",
+                       description="AgentIndex and tree renderer")
+            idx.update(path="main.py", type="file",
+                       description="Application entry point")
+
+            print()
+            print(idx.tree("src", depth=3))
         finally:
             os.unlink(db_path)

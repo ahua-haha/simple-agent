@@ -531,7 +531,7 @@ class AgentIndex:
         gitignore = self._base_dir / ".gitignore"
         try:
             with gitignore.open() as f:
-                return pathspec.PathSpec.from_lines("gitwildmatch", f)
+                return pathspec.PathSpec.from_lines("gitignore", f)
         except FileNotFoundError:
             return None
 
