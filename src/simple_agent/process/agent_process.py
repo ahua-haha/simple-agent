@@ -1,4 +1,4 @@
-"""AgentProcess — composable agent execution with owned state and injectable stop logic."""
+"""AgentProcess — pure agent executor.  Caller owns AgentState and tools."""
 
 from __future__ import annotations
 
@@ -12,30 +12,79 @@ from pi.agent.types import AgentContext, AgentEndEvent, AgentLoopConfig, AgentMe
 from pi.ai.types import UserMessage, TextContent
 
 from simple_agent.models import register_custom_models, get_api_key
-from simple_agent.state.agent_run_state import AgentRunState
 
 HookFn = Callable[["AgentProcess"], None]
 
 
-class _AgentCompat:
-    """Backward-compat shim so subclasses can call proc.agent.subscribe() / proc.agent.reset()."""
+class AgentState(asyncio.Event):
+    """Per-run state owned by the caller.
 
-    def __init__(self, process: "AgentProcess"):
-        self._process = process
-        self.state = None
+    The caller creates this, binds tools to write into ``tool_results``
+    and to set ``finish_reason``, configures ``stop_condition``, then
+    passes it to ``AgentProcess.run()`` as the ``cancel_event``.
 
-    def subscribe(self, callback: Callable) -> None:
-        self._process.subscribe(callback)
+    While the agent runs, ``agent_loop`` checks ``is_set()`` to decide
+    whether to stop.  After the run the caller reads results from the
+    same object.
+    """
 
-    def reset(self) -> None:
-        self._process.reset()
+    def __init__(self):
+        super().__init__()
+        self.new_messages: list[AgentMessage] = []
+        self.tool_results: dict[str, list] = {}
+        self.finish_reason: str | None = None
+        self.tool_calls: dict[str, list[dict]] = {}
+        self.turn_count: int = 0
+        self.error: str | None = None
+        self.stop_condition: Callable[["AgentState"], bool] | None = None
 
-    def set_model(self, _model) -> None:
-        pass  # handled by AgentProcess.__init__
+    def is_set(self) -> bool:
+        if self.stop_condition is not None and self.stop_condition(self):
+            return True
+        if self.finish_reason is not None:
+            return True
+        return super().is_set()
+
+    def bind_tool(self, tool: AgentTool, *, stop: bool = False) -> AgentTool:
+        """Wrap *tool* so its result is recorded into ``tool_results``.
+
+        After each execution, if ``tool.result`` is set (e.g. by a
+        ``ToolMgr.create_record_tool`` tool), it is appended to
+        ``state.tool_results[tool.name]``.
+
+        If *stop* is True, the tool also sets ``finish_reason`` and
+        triggers ``set()`` to stop the agent loop.
+        """
+        _state = self
+        _original = tool.execute
+
+        async def _wrapped(
+            tool_call_id: str,
+            params: dict[str, Any],
+            cancel_event: asyncio.Event | None = None,
+            on_update: AgentToolUpdateCallback | None = None,
+        ) -> AgentToolResult:
+            res = await _original(tool_call_id, params, cancel_event, on_update)
+            if tool.result is not None:
+                _state.tool_results.setdefault(tool.name, []).append(tool.result)
+                tool.result = None
+            if stop:
+                _state.finish_reason = tool.name
+                _state.set()
+            return res
+
+        tool.execute = _wrapped
+        return tool
 
 
 class AgentProcess:
-    """Owns state and tools. Reuses agent_loop as a stateless engine."""
+    """Pure agent executor.
+
+    ``__init__`` sets the model.  ``run()`` takes a caller-owned
+    ``AgentState`` and pre-configured tools, executes the agent loop,
+    returns the (now populated) state.  AgentProcess does **not** store
+    the state — the caller owns it end-to-end.
+    """
 
     _results: dict[str, list]
 
@@ -46,9 +95,128 @@ class AgentProcess:
         self._tools: list[AgentTool] = []
         self._results: dict[str, list] = {}
         self._listeners: list[Callable] = []
-        self.state = AgentRunState()
+        self.state: AgentState = AgentState()
 
-        self.agent = _AgentCompat(self)
+    # ------------------------------------------------------------------
+    # public entry point
+    # ------------------------------------------------------------------
+
+    async def run(
+        self,
+        system_prompt: str,
+        messages: list[AgentMessage],
+        tools: list[AgentTool],
+        state: AgentState,
+        user_prompt: str = "",
+    ) -> AgentState:
+        """Execute a single agent run.
+
+        The caller creates and owns *state* and *tools*:
+        - Tools are pre-wrapped to write results into *state* and set
+          ``finish_reason`` / ``set()`` for stop behaviour.
+        - *state* is the ``cancel_event`` — ``agent_loop`` checks
+          ``state.is_set()`` each iteration.
+
+        AgentProcess does **not** store *state* internally.
+        """
+        now_ms = int(time.time() * 1000)
+        user_msg = UserMessage(content=[TextContent(text=user_prompt)], timestamp=now_ms)
+
+        context = AgentContext(
+            system_prompt=system_prompt,
+            messages=list(messages),
+            tools=tools,
+        )
+        loop_config = AgentLoopConfig(
+            model=self._model,
+            convert_to_llm=lambda msgs: [m for m in msgs if m.role in ("user", "assistant", "tool_result")],
+            get_api_key=self._api_key,
+        )
+
+        stream = agent_loop(
+            [user_msg],
+            context,
+            loop_config,
+            cancel_event=state,
+        )
+
+        async for event in stream:
+            if isinstance(event, AgentEndEvent):
+                state.new_messages = event.messages
+            if isinstance(event, ToolExecutionEndEvent):
+                state.tool_calls.setdefault(event.tool_name, []).append(
+                    {"tool_call_id": event.tool_call_id, "args": event.args}
+                )
+            if isinstance(event, TurnEndEvent):
+                state.turn_count += 1
+            self._emit(event)
+
+        return state
+
+    # ------------------------------------------------------------------
+    # backward-compat entry point (used by existing process classes)
+    # ------------------------------------------------------------------
+
+    async def step(
+        self,
+        system_prompt: str,
+        messages: list[AgentMessage],
+        user_prompt: str,
+        stop_condition: Callable[[AgentState], bool] | None = None,
+    ) -> tuple[list[AgentMessage], str | None, dict[str, list]]:
+        """Backward-compatible wrapper.
+
+        Existing process classes call this with tools pre-registered via
+        ``add_tool()``.  Creates its own AgentState internally.
+        """
+        self._results.clear()
+
+        state = AgentState()
+        if stop_condition is not None:
+            state.stop_condition = stop_condition
+        self.state = state
+
+        now_ms = int(time.time() * 1000)
+        user_msg = UserMessage(content=[TextContent(text=user_prompt)], timestamp=now_ms)
+
+        context = AgentContext(
+            system_prompt=system_prompt,
+            messages=list(messages),
+            tools=self._tools,
+        )
+        config = AgentLoopConfig(
+            model=self._model,
+            convert_to_llm=lambda msgs: [m for m in msgs if m.role in ("user", "assistant", "tool_result")],
+            get_api_key=self._api_key,
+        )
+
+        stream = agent_loop(
+            [user_msg],
+            context,
+            config,
+            cancel_event=state,
+        )
+
+        appended: list[AgentMessage] = []
+
+        async for event in stream:
+            if isinstance(event, AgentEndEvent):
+                appended = event.messages
+            if isinstance(event, ToolExecutionEndEvent):
+                state.tool_calls.setdefault(event.tool_name, []).append(
+                    {"tool_call_id": event.tool_call_id, "args": event.args}
+                )
+            if isinstance(event, TurnEndEvent):
+                state.turn_count += 1
+            self._emit(event)
+
+        state.new_messages = appended
+        self.state = AgentState()  # clear for next run
+        return appended, state.finish_reason, self._results
+
+    # ------------------------------------------------------------------
+    # tools & listeners
+    # ------------------------------------------------------------------
 
     def subscribe(self, callback: Callable) -> None:
         self._listeners.append(callback)
@@ -85,56 +253,8 @@ class AgentProcess:
         return self
 
     def reset(self):
-        self.state = AgentRunState()
+        self.state = AgentState()
         self._results.clear()
-
-    async def step(
-        self,
-        system_prompt: str,
-        messages: list[AgentMessage],
-        user_prompt: str,
-        stop_condition: Callable[[AgentRunState], bool] | None = None,
-    ) -> tuple[list[AgentMessage], str | None, dict[str, list]]:
-        self.reset()
-
-        if stop_condition is not None:
-            self.state.stop_condition = stop_condition
-
-        now_ms = int(time.time() * 1000)
-        user_msg = UserMessage(content=[TextContent(text=user_prompt)], timestamp=now_ms)
-
-        context = AgentContext(
-            system_prompt=system_prompt,
-            messages=list(messages),
-            tools=self._tools,
-        )
-        config = AgentLoopConfig(
-            model=self._model,
-            convert_to_llm=lambda msgs: [m for m in msgs if m.role in ("user", "assistant", "tool_result")],
-            get_api_key=self._api_key,
-        )
-
-        stream = agent_loop(
-            [user_msg],
-            context,
-            config,
-            cancel_event=self.state,
-        )
-
-        appended: list[AgentMessage] = []
-
-        async for event in stream:
-            if isinstance(event, AgentEndEvent):
-                appended = event.messages
-            if isinstance(event, ToolExecutionEndEvent):
-                self.state.tool_calls.setdefault(event.tool_name, []).append(
-                    {"tool_call_id": event.tool_call_id, "args": event.args}
-                )
-            if isinstance(event, TurnEndEvent):
-                self.state.turn_count += 1
-            self._emit(event)
-
-        return appended, self.state.finish_reason, self._results
 
     @staticmethod
     def prune_messages(messages: list[AgentMessage], tool_name: str) -> list[AgentMessage]:
