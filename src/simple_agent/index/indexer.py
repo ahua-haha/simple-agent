@@ -198,10 +198,13 @@ def _render_tree(node: TreeNode) -> str:
 class AgentIndex:
     """Tree-structured index of project files, folders, and symbols.
 
-    One index per repo, stored at ./data/agent_index.db.
+    Bound to a repo at *base_dir*. One index per repo, stored at
+    *db_path*.
     """
 
-    def __init__(self, db_path: str = "./data/agent_index.db"):
+    def __init__(self, db_path: str = "./data/agent_index.db", *,
+                 base_dir: str = "."):
+        self._base_dir = Path(base_dir).resolve()
         os.makedirs(os.path.dirname(db_path) or ".", exist_ok=True)
         self._engine = create_engine(
             f"sqlite:///{db_path}",
@@ -525,7 +528,7 @@ class AgentIndex:
         return processed
 
     def _load_gitignore_spec(self) -> pathspec.PathSpec | None:
-        gitignore = Path(".gitignore")
+        gitignore = self._base_dir / ".gitignore"
         try:
             with gitignore.open() as f:
                 return pathspec.PathSpec.from_lines("gitwildmatch", f)
@@ -534,15 +537,12 @@ class AgentIndex:
 
     def _make_tree_filter(self) -> Callable[[Path], bool]:
         spec = self._load_gitignore_spec()
-        cwd = Path.cwd()
+        base = self._base_dir
 
         def filter_fn(abs_path: Path) -> bool:
-            name = abs_path.name
-            if name.startswith(".") or name == "__pycache__":
-                return True
             if spec is not None:
                 try:
-                    rel = str(abs_path.relative_to(cwd))
+                    rel = str(abs_path.relative_to(base))
                 except ValueError:
                     return False
                 if spec.match_file(rel):
@@ -588,14 +588,15 @@ class AgentIndex:
     ) -> str:
         """Render the index as a tree with # descriptions.
 
-        Structure comes from the filesystem; descriptions from the database.
+        *path* is relative to *base_dir*. Structure comes from the
+        filesystem; descriptions from the database.
         """
         filter_fn = self._make_tree_filter()
-        root = build_tree(path, depth=depth, filter_fn=filter_fn)
+        full_path = str(self._base_dir / path) if path else str(self._base_dir)
+        root = build_tree(full_path, depth=depth, filter_fn=filter_fn)
         if root is None:
             return "(empty)"
 
         descs = self._load_descriptions()
-        full = Path(path).resolve() if path else Path(".").resolve()
-        self._format_comments(root, descs, full)
+        self._format_comments(root, descs, self._base_dir)
         return _render_tree(root)
