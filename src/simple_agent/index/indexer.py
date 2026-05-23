@@ -168,7 +168,8 @@ def _render_tree(node: TreeNode) -> str:
         comment = f"  # {n.comment}" if n.comment else ""
 
         if is_root:
-            output += f"{n.name}{suffix}{comment}\n"
+            label = n.metadata.get("abs_path", n.name)
+            output += f"{label}{suffix}{comment}\n"
         else:
             output += f"{current_prefix}{n.name}{suffix}{comment}\n"
 
@@ -535,6 +536,14 @@ class AgentIndex:
         except FileNotFoundError:
             return None
 
+    @staticmethod
+    def _format_path(path: Path) -> str:
+        """Normalize *path* to a string with ``/`` suffix for directories."""
+        s = str(path)
+        if path.is_dir():
+            s += "/"
+        return s
+
     def _make_tree_filter(self) -> Callable[[Path], bool]:
         spec = self._load_gitignore_spec()
         base = self._base_dir
@@ -542,10 +551,10 @@ class AgentIndex:
         def filter_fn(abs_path: Path) -> bool:
             if spec is not None:
                 try:
-                    rel = str(abs_path.relative_to(base))
+                    rel = abs_path.relative_to(base)
                 except ValueError:
                     return False
-                if spec.match_file(rel):
+                if spec.match_file(self._format_path(rel)):
                     return True
             return False
 
