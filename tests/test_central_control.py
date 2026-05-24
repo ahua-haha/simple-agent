@@ -14,6 +14,22 @@ from simple_agent.process.runners import (
 )
 from simple_agent.process.central_control import CentralControl
 from simple_agent.state.state import Task, TextResult
+from simple_agent.db.db import Database
+
+
+class FakeDB:
+    """A fake DB that returns rows from a preloaded dict."""
+
+    def __init__(self, tasks: dict[int, dict] | None = None):
+        self._tasks = tasks or {}
+
+    def get_task(self, task_id: int) -> dict | None:
+        return self._tasks.get(task_id)
+
+    def upsert_task(self, task) -> int:
+        if task.id is None:
+            task.id = len(self._tasks) + 1
+        return task.id
 
 
 class TestRunnerResult:
@@ -112,121 +128,92 @@ class _SubTaskRunner(BaseRunner):
 
 
 class TestCentralControl:
-    """Tests for CentralControl signal handling."""
+    """Tests for CentralControl single-transition."""
 
-    def _make_cc(self, root, runner, checkpoints=None, tasks=None):
-        if checkpoints is None:
-            checkpoints = []
-        if tasks is None:
-            tasks = {root.id: root} if root.id else {}
-        return CentralControl(
-            root,
-            tasks_by_id=tasks,
-            runners={"test": runner},
-            checkpoint_fn=lambda: checkpoints.append(True),
-        )
+    def _make_cc(self, db=None):
+        if db is None:
+            db = FakeDB()
+        return CentralControl(db, runners={"test": _ContinueRunner()})
 
     @pytest.mark.asyncio
-    async def test_continue_checkpoints_and_loops(self):
-        """continue signal should checkpoint and re-dispatch."""
-        checkpoints = []
-        root = Task(input="root", type="test", state="RUNNING")
-        cc = self._make_cc(root, _ContinueRunner(), checkpoints)
+    async def test_continue_returns_same_cursor(self):
+        """continue signal → (cursor, [cursor], [])."""
+        cc = self._make_cc()
+        cc._runners = {"test": _ContinueRunner()}
 
-        cc._checkpoint()
-        assert len(checkpoints) == 1
-        assert cc.cursor is root
+        cursor = Task(id=1, input="root", type="test", state="RUNNING")
+        new, updates, inserts = await cc.run(cursor)
+
+        assert new is cursor
+        assert updates == [cursor]
+        assert inserts == []
 
     @pytest.mark.asyncio
     async def test_finished_absorbs_into_parent(self):
-        """finished signal: child → parent.finished_task_ids, cursor ↑."""
-        root = Task(id=1, input="root", type="test", state="WAITING")
-        child = Task(id=2, input="child", type="test", state="RUNNING", parent_id=1,
-                     result=[TextResult(desc="done", toolCallLogID=[])])
-        root.running_task = child
-        root.running_task_id = child.id
-        tasks = {1: root, 2: child}
+        """finished signal → child added to parent.finished_task_ids."""
+        parent_data = {
+            "id": 1, "parent_id": None, "running_task_id": 2,
+            "finished_task_ids": [], "type": "plan", "state": "WAITING",
+            "input": "parent", "messages": [], "result": [],
+            "start_snapshot": None, "end_snapshot": None,
+        }
+        db = FakeDB({1: parent_data})
+        cc = CentralControl(db, runners={"test": _FinishedRunner()})
 
-        cc = self._make_cc(root, _FinishedRunner(), tasks=tasks)
-        cc.cursor = child
+        cursor = Task(id=2, input="child", type="test", state="RUNNING",
+                      parent_id=1, result=[TextResult(desc="done", toolCallLogID=[])])
+        new, updates, inserts = await cc.run(cursor)
 
-        cc._handle_finished()
-        cc._checkpoint()
-
-        assert cc.cursor is root
-        assert root.finished_task_ids == [2]
-        assert root.running_task is None
-        assert root.running_task_id is None
-        assert len(root.messages) == 1
+        assert new is not None
+        assert new.id == 1
+        assert 2 in new.finished_task_ids
+        assert new.running_task_id is None
+        assert len(updates) == 2
+        assert cursor in updates
+        assert new in updates
+        assert inserts == []
 
     @pytest.mark.asyncio
-    async def test_finished_root_terminates(self):
-        """finished on root sets cursor to None."""
-        root = Task(id=1, input="root", type="test", state="RUNNING")
-        tasks = {1: root}
+    async def test_finished_root_returns_none(self):
+        """finished on root → (None, [cursor], [])."""
+        cc = CentralControl(FakeDB(), runners={"test": _FinishedRunner()})
 
-        cc = self._make_cc(root, _FinishedRunner(), tasks=tasks)
-        cc._handle_finished()
+        cursor = Task(id=1, input="root", type="test", state="RUNNING")
+        new, updates, inserts = await cc.run(cursor)
 
-        assert cc.cursor is None
+        assert new is None
+        assert cursor.state == "FINISHED"
+        assert updates == [cursor]
+        assert inserts == []
 
     @pytest.mark.asyncio
     async def test_sub_task_wires_child(self):
-        """sub_task signal: child wired into tree, cursor ↓."""
+        """sub_task → child.parent_id = cursor.id, cursor = child."""
+        db = FakeDB()
+        cc = CentralControl(db, runners={"test": _SubTaskRunner()})
+
         parent = Task(id=1, input="parent", type="test", state="RUNNING")
-        child = Task(id=2, input="child", type="test", state="PENDING")
-        tasks = {1: parent}
+        new, updates, inserts = await cc.run(parent)
 
-        cc = self._make_cc(parent, _SubTaskRunner(), tasks=tasks)
-        result = RunnerResult(kind="sub_task", child=child)
-
-        cc._handle_sub_task(result)
-        cc._checkpoint()
-
-        assert cc.cursor is child
-        assert child.parent_id == 1
-        assert parent.running_task is child
-        assert parent.running_task_id == 2
+        assert new is not None
+        assert new.parent_id == 1
+        assert parent.running_task is new
+        assert parent.running_task_id == new.id
         assert parent.state == "WAITING"
+        assert updates == [parent]
+        assert inserts == [new]
 
     @pytest.mark.asyncio
-    async def test_sub_task_no_child(self):
-        """sub_task with no child is a no-op."""
+    async def test_sub_task_no_child_no_op(self):
+        """sub_task with None child is no-op."""
+        class _NullChildRunner(BaseRunner):
+            type = "test"
+            async def run(self, task):
+                return RunnerResult(kind="sub_task", child=None)
+
+        cc = CentralControl(FakeDB(), runners={"test": _NullChildRunner()})
         parent = Task(id=1, input="parent", type="test", state="RUNNING")
-        tasks = {1: parent}
-        cc = self._make_cc(parent, _SubTaskRunner(), tasks=tasks)
-        result = RunnerResult(kind="sub_task", child=None)
+        new, updates, inserts = await cc.run(parent)
 
-        cc._handle_sub_task(result)
-        assert cc.cursor is parent
+        assert new is parent
         assert parent.running_task is None
-
-    @pytest.mark.asyncio
-    async def test_full_workflow(self):
-        """Simulate a complete plan → explore → finish workflow."""
-        checkpoints = []
-        root = Task(id=1, input="build tests", type="test", state="RUNNING")
-        tasks = {1: root}
-
-        cc = self._make_cc(root, _SubTaskRunner(), checkpoints, tasks=tasks)
-
-        # Step 1: sub_task — cursor ↓ to child
-        child = Task(id=2, input="explore", type="test", state="PENDING")
-        cc._handle_sub_task(RunnerResult(kind="sub_task", child=child))
-        cc._checkpoint()
-        assert cc.cursor is child
-        assert child.parent_id == 1
-        assert root.state == "WAITING"
-        assert root.running_task_id == 2
-
-        # Step 2: finished on child — cursor ↑ to parent
-        cc._handle_finished()
-        cc._checkpoint()
-        assert cc.cursor is root
-        assert root.finished_task_ids == [2]
-
-        # Step 3: finished on root
-        cc._handle_finished()
-        cc._checkpoint()
-        assert cc.cursor is None
-        assert len(checkpoints) == 3

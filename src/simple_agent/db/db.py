@@ -157,6 +157,29 @@ class Database:
             session.refresh(record)
             return record.id
 
+    def get_task(self, task_id: int) -> dict | None:
+        """Return a single task row as dict, or None."""
+        import json as _json
+        message_adapter = TypeAdapter(list[AgentMessage])
+        result_adapter = TypeAdapter(list[TextResult])
+        with self._get_session() as session:
+            record = session.get(TaskRecord, task_id)
+            if record is None:
+                return None
+            return {
+                "id": record.id,
+                "parent_id": record.parent_id,
+                "running_task_id": record.running_task_id,
+                "finished_task_ids": _json.loads(record.finished_task_ids or "[]"),
+                "type": record.type,
+                "state": record.state,
+                "input": record.input,
+                "messages": message_adapter.validate_json(record.messages or "[]"),
+                "result": result_adapter.validate_json(record.result or "[]"),
+                "start_snapshot": record.start_snapshot,
+                "end_snapshot": record.end_snapshot,
+            }
+
     def load_all_tasks(self) -> list[dict]:
         """Return all task rows as dicts, ordered by id."""
         import json as _json

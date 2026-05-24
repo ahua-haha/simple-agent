@@ -1,4 +1,4 @@
-"""CentralControl — cursor-based state machine for task tree execution."""
+"""CentralControl — single-transition state machine for task tree execution."""
 
 from __future__ import annotations
 
@@ -8,6 +8,7 @@ from pi.ai.types import UserMessage, TextContent
 
 from simple_agent.process.runners import BaseRunner, RunnerResult
 from simple_agent.state.state import Task
+from simple_agent.db.db import Database
 
 if TYPE_CHECKING:
     from collections.abc import Callable
@@ -27,77 +28,83 @@ def _format_child_result(child: Task) -> list:
 
 
 class CentralControl:
-    """Cursor-based state machine for the task tree.
+    """Single-transition state machine.
 
-    Uses *tasks_by_id* for tree navigation (parent and child lookup by
-    ID) and ``running_task`` object ref for fast cursor movement.
+    ``run(cursor)`` executes one agent cycle and one state transition.
+    Returns ``(new_cursor, updates, inserts)`` — the exact tasks to
+    persist.  Session owns the loop and cursor.
 
     Usage::
 
-        cc = CentralControl(root, tasks_by_id, runners, checkpoint_fn)
-        await cc.run()
+        cursor = db.load_active()
+        while cursor is not None:
+            new_cursor, updates, inserts = await cc.run(cursor)
+            for t in updates: db.upsert_task(t)
+            for t in inserts: db.upsert_task(t)
+            cursor = new_cursor
     """
 
-    def __init__(
-        self,
-        root: Task,
-        tasks_by_id: dict[int, Task],
-        runners: dict[str, BaseRunner],
-        checkpoint_fn: Callable[[], None],
-    ):
-        self.cursor = root
-        self._tasks = tasks_by_id
+    def __init__(self, db: Database, runners: dict[str, BaseRunner]):
+        self._db = db
         self._runners = runners
-        self._checkpoint = checkpoint_fn
 
-    async def run(self) -> None:
-        """Run the state machine to completion."""
-        while True:
-            runner = self._runners[self.cursor.type]
-            result = await runner.run(self.cursor)
-            self._checkpoint()
+    async def run(self, cursor: Task) -> tuple[Task | None, list[Task], list[Task]]:
+        """Execute one transition.
 
-            if result.kind == "continue":
-                continue
+        Returns:
+            (new_cursor, updates, inserts)
+            new_cursor: the task to focus next, or None if root finished
+            updates: tasks modified in this transition
+            inserts: tasks newly created in this transition
+        """
+        runner = self._runners[cursor.type]
+        result = await runner.run(cursor)
 
-            elif result.kind == "finished":
-                self._handle_finished()
-                if self.cursor is None:
-                    break
+        if result.kind == "continue":
+            return cursor, [cursor], []
 
-            elif result.kind == "sub_task":
-                self._handle_sub_task(result)
+        if result.kind == "finished":
+            return self._handle_finished(cursor)
+
+        if result.kind == "sub_task":
+            return self._handle_sub_task(cursor, result.child)
+
+        return cursor, [cursor], []
 
     # ------------------------------------------------------------------
     # move handlers
     # ------------------------------------------------------------------
 
-    def _handle_finished(self) -> None:
-        """Absorb cursor into parent and move cursor up."""
-        if self.cursor.parent_id is None:
-            self.cursor = None
-            return
+    def _handle_finished(self, cursor: Task) -> tuple[Task | None, list[Task], list[Task]]:
+        """Absorb finished cursor into parent, return parent as new cursor."""
+        cursor.state = "FINISHED"
 
-        parent = self._tasks.get(self.cursor.parent_id)
-        if parent is None:
-            self.cursor = None
-            return
+        if cursor.parent_id is None:
+            return None, [cursor], []
 
-        parent.messages.extend(_format_child_result(self.cursor))
-        parent.finished_task_ids.append(self.cursor.id)
+        row = self._db.get_task(cursor.parent_id)
+        if row is None:
+            return None, [cursor], []
+
+        parent = Task.from_db_rows([row])[cursor.parent_id]
+
+        parent.messages.extend(_format_child_result(cursor))
+        parent.finished_task_ids.append(cursor.id)
         parent.running_task_id = None
         parent.running_task = None
-        self.cursor = parent
 
-    def _handle_sub_task(self, result: RunnerResult) -> None:
-        """Wire child into tree and move cursor down."""
-        child = result.child
+        return parent, [cursor, parent], []
+
+    def _handle_sub_task(self, cursor: Task, child: Task | None
+                         ) -> tuple[Task | None, list[Task], list[Task]]:
+        """Wire child into tree, return child as new cursor."""
         if child is None:
-            return
+            return cursor, [cursor], []
 
-        child.parent_id = self.cursor.id
-        self.cursor.running_task = child
-        self.cursor.running_task_id = child.id
-        self.cursor.state = "WAITING"
-        self._tasks[child.id] = child
-        self.cursor = child
+        child.parent_id = cursor.id
+        child.state = child.state or "PENDING"
+        cursor.running_task = child
+        cursor.running_task_id = child.id
+        cursor.state = "WAITING"
+
+        return child, [cursor], [child]
