@@ -71,6 +71,7 @@ class ExploreRunner(BaseRunner):
             messages=context_msgs,
             tools=tools,
             state=state,
+            user_prompt=task.input,
         )
         task.messages.extend(state.new_messages)
 

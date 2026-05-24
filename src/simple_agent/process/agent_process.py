@@ -145,7 +145,7 @@ class AgentProcess:
                 state.new_messages = event.messages
             if isinstance(event, ToolExecutionEndEvent):
                 state.tool_calls.setdefault(event.tool_name, []).append(
-                    {"tool_call_id": event.tool_call_id, "args": event.args}
+                    {"tool_call_id": event.tool_call_id}
                 )
             if isinstance(event, TurnEndEvent):
                 state.turn_count += 1
