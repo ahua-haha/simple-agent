@@ -41,12 +41,22 @@ class Session:
         self._db = Database(self._db_path)
         self._cc = CentralControl(self._db, RUNNERS)
 
-        # Load cursor from session file, or default to None
-        self._cursor_id: int | None = None
         if os.path.exists(self._session_path):
-            with open(self._session_path) as f:
-                data = json.load(f)
-                self._cursor_id = data.get("cursor_id")
+            self._load_session()
+        else:
+            import time
+            self._cursor_id: int | None = None
+            self._created_at = time.time()
+            self._updated_at = self._created_at
+
+    def _load_session(self) -> None:
+        """Load session metadata from file."""
+        import time
+        with open(self._session_path) as f:
+            data = json.load(f)
+        self._cursor_id = data.get("cursor_id")
+        self._created_at = data.get("created_at", time.time())
+        self._updated_at = data.get("updated_at", time.time())
 
     @property
     def root(self) -> Task | None:
@@ -75,7 +85,7 @@ class Session:
             cursor = Task(input=user_input, state="PENDING")
             self._cursor_id = self._db.upsert_task(cursor)
             cursor.id = self._cursor_id
-            self._save_session()
+            self._checkpoint()
 
         register_custom_models()
 
@@ -89,15 +99,28 @@ class Session:
 
             cursor = new_cursor
             self._cursor_id = cursor.id if cursor else None
-            self._save_session()
+            self._checkpoint()
 
         return self.root
 
-    def _save_session(self) -> None:
-        """Persist session state (cursor_id) as JSON."""
+    def save(self) -> str:
+        """Persist session metadata to file.  Returns filepath."""
+        import time
+        self._updated_at = time.time()
         os.makedirs(os.path.dirname(self._session_path) or ".", exist_ok=True)
+        data = {
+            "name": self._name,
+            "cursor_id": self._cursor_id,
+            "created_at": self._created_at,
+            "updated_at": self._updated_at,
+        }
         with open(self._session_path, "w") as f:
-            json.dump({"cursor_id": self._cursor_id}, f)
+            json.dump(data, f, indent=2)
+        return self._session_path
+
+    def _checkpoint(self) -> None:
+        """Alias for save, used internally after each transition."""
+        self.save()
 
     @staticmethod
     def list_sessions(base_dir: str = "./sessions") -> list[str]:
