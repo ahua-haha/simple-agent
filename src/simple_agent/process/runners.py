@@ -1,10 +1,14 @@
-"""Task runners — one per task type. Each runs a single agent cycle and returns a signal."""
+"""Task runners — base classes and stub runners."""
 
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
 from typing import Literal, TYPE_CHECKING
+
+from simple_agent.process.agent_process import AgentProcess
+from simple_agent.tool.tool_mgr import ToolMgr
+from simple_agent.db.db import Database
 
 if TYPE_CHECKING:
     from simple_agent.state.state import Task
@@ -24,10 +28,7 @@ class RunnerResult:
 
 
 class BaseRunner(ABC):
-    """Abstract runner for a single task type.
-
-    Subclasses set ``self.type`` and implement ``run()``.
-    """
+    """Abstract runner for a single task type."""
 
     type: str
 
@@ -42,27 +43,13 @@ class PlanRunner(BaseRunner):
 
     type = "plan"
 
+    def __init__(self, db: Database, tools_mgr: ToolMgr, agent_process: AgentProcess):
+        self._db = db
+        self._tools_mgr = tools_mgr
+        self._agent_process = agent_process
+
     async def run(self, task: "Task") -> RunnerResult:
         # TODO: implement plan runner
-        # - build AgentState, wrap define_task (stop) + determine_state (stop)
-        # - run agent via AgentProcess.run(system_prompt, task.context(), tools, state)
-        # - on define_task: return RunnerResult("sub_task", child=child_task)
-        # - on determine_state: return RunnerResult("finished")
-        # - otherwise: return RunnerResult("continue")
-        return RunnerResult(kind="continue")
-
-
-class ExploreRunner(BaseRunner):
-    """Runner for explore tasks — uses determine_state and coding tools."""
-
-    type = "explore"
-
-    async def run(self, task: "Task") -> RunnerResult:
-        # TODO: implement explore runner
-        # - build AgentState, wrap determine_state (stop) + coding tools
-        # - run agent via AgentProcess.run(...)
-        # - on determine_state: return RunnerResult("finished")
-        # - otherwise: return RunnerResult("continue")
         return RunnerResult(kind="continue")
 
 
@@ -71,11 +58,13 @@ class CollectRunner(BaseRunner):
 
     type = "collect"
 
+    def __init__(self, db: Database, tools_mgr: ToolMgr, agent_process: AgentProcess):
+        self._db = db
+        self._tools_mgr = tools_mgr
+        self._agent_process = agent_process
+
     async def run(self, task: "Task") -> RunnerResult:
         # TODO: implement collect runner
-        # - build AgentState, wrap record_textresult + coding tools
-        # - run agent via AgentProcess.run(...)
-        # - on finish or no stop tool: return RunnerResult("finished")
         return RunnerResult(kind="continue")
 
 
@@ -84,7 +73,11 @@ class SingleRunRunner(BaseRunner):
 
     type = "single_run"
 
+    def __init__(self, db: Database, tools_mgr: ToolMgr, agent_process: AgentProcess):
+        self._db = db
+        self._tools_mgr = tools_mgr
+        self._agent_process = agent_process
+
     async def run(self, task: "Task") -> RunnerResult:
         # TODO: implement single_run runner
-        # - like ExploreRunner but for single_run task type
         return RunnerResult(kind="continue")

@@ -8,10 +8,10 @@ from simple_agent.process.runners import (
     RunnerResult,
     BaseRunner,
     PlanRunner,
-    ExploreRunner,
     CollectRunner,
     SingleRunRunner,
 )
+from simple_agent.process.explore_runner import ExploreRunner
 from simple_agent.process.central_control import CentralControl
 from simple_agent.state.state import Task, TextResult
 from simple_agent.db.db import Database
@@ -70,39 +70,35 @@ class TestBaseRunner:
 class TestRunnerSubclasses:
     """Tests for stub runner subclasses."""
 
+    def _make_deps(self):
+        return FakeDB(), None, None
+
     def test_plan_runner_type(self):
-        r = PlanRunner()
+        r = PlanRunner(*self._make_deps())
         assert r.type == "plan"
 
     def test_explore_runner_type(self):
-        r = ExploreRunner()
+        r = ExploreRunner(*self._make_deps())
         assert r.type == "explore"
 
     def test_collect_runner_type(self):
-        r = CollectRunner()
+        r = CollectRunner(*self._make_deps())
         assert r.type == "collect"
 
     def test_single_run_runner_type(self):
-        r = SingleRunRunner()
+        r = SingleRunRunner(*self._make_deps())
         assert r.type == "single_run"
 
     @pytest.mark.asyncio
     async def test_plan_runner_returns_continue(self):
-        r = PlanRunner()
+        r = PlanRunner(*self._make_deps())
         task = Task(input="test", type="plan", state="RUNNING")
         result = await r.run(task)
         assert result.kind == "continue"
 
     @pytest.mark.asyncio
-    async def test_explore_runner_returns_continue(self):
-        r = ExploreRunner()
-        task = Task(input="test", type="explore", state="RUNNING")
-        result = await r.run(task)
-        assert result.kind == "continue"
-
-    @pytest.mark.asyncio
     async def test_collect_runner_returns_continue(self):
-        r = CollectRunner()
+        r = CollectRunner(*self._make_deps())
         task = Task(input="test", type="collect", state="RUNNING")
         result = await r.run(task)
         assert result.kind == "continue"

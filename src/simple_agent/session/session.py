@@ -8,17 +8,13 @@ import os
 from pi.ai import get_model
 
 from simple_agent.process.central_control import CentralControl
-from simple_agent.process.runners import PlanRunner, ExploreRunner, CollectRunner, SingleRunRunner
+from simple_agent.process.agent_process import AgentProcess
+from simple_agent.process.runners import PlanRunner, CollectRunner, SingleRunRunner
+from simple_agent.process.explore_runner import ExploreRunner
 from simple_agent.state.state import Task
+from simple_agent.tool.tool_mgr import ToolMgr
 from simple_agent.db.db import Database
 from simple_agent.models import register_custom_models
-
-RUNNERS = {
-    "plan": PlanRunner(),
-    "explore": ExploreRunner(),
-    "collect": CollectRunner(),
-    "single_run": SingleRunRunner(),
-}
 
 
 class Session:
@@ -39,7 +35,16 @@ class Session:
         self._db_path = os.path.join(base_dir, f"{name}.db")
         self._session_path = os.path.join(base_dir, f"{name}.json")
         self._db = Database(self._db_path)
-        self._cc = CentralControl(self._db, RUNNERS)
+        self._tools_mgr = ToolMgr(self._db)
+        self._agent_process = AgentProcess(get_model("deepseek", "deepseek-v4-pro"))
+
+        runners = {
+            "plan": PlanRunner(self._db, self._tools_mgr, self._agent_process),
+            "explore": ExploreRunner(self._db, self._tools_mgr, self._agent_process),
+            "collect": CollectRunner(self._db, self._tools_mgr, self._agent_process),
+            "single_run": SingleRunRunner(self._db, self._tools_mgr, self._agent_process),
+        }
+        self._cc = CentralControl(self._db, runners)
 
         if os.path.exists(self._session_path):
             self._load_session()
