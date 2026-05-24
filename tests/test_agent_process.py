@@ -9,41 +9,29 @@ import pytest
 from pi.agent import AgentTool, AgentToolResult
 from pi.ai.types import TextContent
 
-from simple_agent.process.agent_process import AgentProcess
-from simple_agent.state.agent_run_state import AgentRunState
+from simple_agent.process.agent_process import AgentProcess, AgentState
 
 
 class TestAgentProcessInit:
-    def test_init_creates_agent_compat(self):
+    def test_init_creates_state(self):
         model = MagicMock()
         proc = AgentProcess(model)
-        assert proc.agent is not None
-        assert isinstance(proc.state, AgentRunState)
+        assert isinstance(proc.state, AgentState)
 
-    def test_agent_compat_subscribe_delegates(self):
+    def test_subscribe_delegates(self):
         model = MagicMock()
         proc = AgentProcess(model)
         received = []
-        proc.agent.subscribe(lambda e: received.append(e))
+        proc.subscribe(lambda e: received.append(e))
         proc._emit("test_event")
         assert received == ["test_event"]
 
-    def test_agent_compat_reset_delegates(self):
+    def test_reset_clears_state_and_results(self):
         model = MagicMock()
         proc = AgentProcess(model)
         proc.state.turn_count = 5
-        proc.agent.reset()
+        proc.reset()
         assert proc.state.turn_count == 0
-
-    def test_agent_compat_set_model_is_noop(self):
-        model = MagicMock()
-        proc = AgentProcess(model)
-        proc.agent.set_model("other")  # should not raise
-
-    def test_agent_compat_state_is_none(self):
-        model = MagicMock()
-        proc = AgentProcess(model)
-        assert proc.agent.state is None
 
 
 class TestAgentProcessReset:
@@ -174,7 +162,8 @@ class TestStopAgent:
         model = MagicMock()
         proc = AgentProcess(model)
 
-        proc.state = AgentRunState(stop_condition=lambda s: False)
+        proc.state = AgentState()
+        proc.state.stop_condition = lambda s: False
         assert proc.state.is_set() is False
 
         proc.stop_agent("determine_state")

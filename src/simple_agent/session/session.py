@@ -1,80 +1,76 @@
-"""Session - orchestrates multiple processes with shared SessionState."""
+"""Session — stores a task tree, saves/loads checkpoints, runs via CentralControl."""
 
 from __future__ import annotations
 
 import os
-import time
 
-from simple_agent.process.single_run_process import SingleRunProcess
-from simple_agent.process.commit_collect_result_process import CommitCollectResultProcess
-from simple_agent.state.state import SessionState, Task
-from simple_agent.tool.tool_mgr import ToolMgr
-from simple_agent.db.db import Database
+from pi.ai import get_model
+
+from simple_agent.process.agent_process import AgentProcess
+from simple_agent.process.central_control import CentralControl
+from simple_agent.process.runners import PlanRunner, ExploreRunner, CollectRunner, SingleRunRunner
+from simple_agent.state.state import Task
+from simple_agent.models import register_custom_models
+
+RUNNERS = {
+    "plan": PlanRunner(),
+    "explore": ExploreRunner(),
+    "collect": CollectRunner(),
+    "single_run": SingleRunRunner(),
+}
 
 
 class Session:
-    """Orchestrates runs with a single shared SessionState instance.
+    """A simple session that stores a task tree and runs it via CentralControl.
 
-    Infrastructure (tools_mgr, db) lives on Session. State lives on SessionState.
+    Usage::
+
+        session = Session("my-task")
+        task = await session.run("build a test suite")
+        # task tree is checkpointed after every agent cycle
     """
 
-    _tools_mgr: ToolMgr
-    _db: Database
-
-    def __init__(self, name: str, base_dir: str = "./sessions", tools_mgr: ToolMgr | None = None, db: Database | None = None):
+    def __init__(self, name: str, base_dir: str = "./sessions"):
         self._name = name
         self._base_dir = base_dir
-        self._tools_mgr = tools_mgr or ToolMgr()
-        self._db = db or Database()
+        self._filepath = os.path.join(base_dir, f"{name}.json")
 
-        filepath = self._session_filepath()
-        if os.path.exists(filepath):
-            self.state = SessionState.load(filepath)
+        if os.path.exists(self._filepath):
+            with open(self._filepath) as f:
+                self._root = Task.from_checkpoint(f.read())
         else:
-            self.state = SessionState(name=name)
+            self._root = None
 
-    def _session_filepath(self) -> str:
-        return os.path.join(self._base_dir, f"{self._name}.json")
-
-    def _commit_filepath(self, index: int) -> str:
-        return os.path.join(self._base_dir, self._name, f"commit_{index:04d}.json")
+    @property
+    def root(self) -> Task | None:
+        return self._root
 
     async def run(self, user_input: str) -> Task:
-        task = Task(input=user_input, messages=[])
-        self.state.current_task = task
+        if self._root is not None and self._root.state != "FINISHED":
+            root = self._root
+        else:
+            root = Task(input=user_input, state="PENDING")
+        self._root = root
 
-        proc = SingleRunProcess(tools_mgr=self._tools_mgr, db=self._db)
-        await proc.process(task, self.state)
+        register_custom_models()
+        model = get_model("deepseek", "deepseek-v4-pro")
+        agent_process = AgentProcess(model)
 
-        self.state.current_task = None
-        self.state.uncommitted_task.append(task)
-        self.state.checkpoint(self._session_filepath())
-        return task
+        cc = CentralControl(
+            root,
+            RUNNERS,
+            checkpoint_fn=self.checkpoint,
+        )
+        await cc.run()
+        return root
 
     def checkpoint(self) -> str:
-        filepath = self._session_filepath()
-        self.state.checkpoint(filepath)
-        return filepath
-
-    async def commit(self) -> str:
-        task = Task(input="")
-
-        proc = CommitCollectResultProcess(tools_mgr=self._tools_mgr, db=self._db)
-        await proc.process(task, self.state)
-
-        task.subTasks = list(self.state.uncommitted_task)
-
-        self.state.commit_index += 1
-        task_path = self._commit_filepath(self.state.commit_index)
-        os.makedirs(os.path.dirname(task_path), exist_ok=True)
-
-        with open(task_path, "w") as f:
-            f.write(task.model_dump_json(indent=2))
-
-        self.state.uncommitted_task.clear()
-        self.state.checkpoint(self._session_filepath())
-
-        return task_path
+        os.makedirs(os.path.dirname(self._filepath) or ".", exist_ok=True)
+        if self._root is not None:
+            self._root.to_checkpoint()
+            with open(self._filepath, "w") as f:
+                f.write(self._root.to_checkpoint())
+        return self._filepath
 
     @staticmethod
     def list_sessions(base_dir: str = "./sessions") -> list[str]:

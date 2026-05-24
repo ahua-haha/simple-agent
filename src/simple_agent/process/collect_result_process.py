@@ -47,7 +47,8 @@ class CollectResultProcess:
 
     proc: AgentProcess
 
-    def __init__(self, tools_mgr: ToolMgr | None = None, db: Database | None = None):
+    def __init__(self, tools_mgr: ToolMgr | None = None, db: Database | None = None,
+                 agent_process: AgentProcess | None = None):
         self.tools_mgr = tools_mgr or ToolMgr()
         self._db = db or Database()
 
@@ -58,8 +59,8 @@ class CollectResultProcess:
             parameters=TEXT_RESULT_JSON_SCHEMA,
         )
 
-        proc = AgentProcess(get_model("deepseek", "deepseek-v4-pro"))
-        proc.agent.subscribe(stream_event)
+        proc = agent_process or AgentProcess(get_model("deepseek", "deepseek-v4-pro"))
+        proc.subscribe(stream_event)
         proc.add_tool(record_tool, store=True)
         proc.add_tool(self.tools_mgr.create_all_tools("."))
         self.proc = proc

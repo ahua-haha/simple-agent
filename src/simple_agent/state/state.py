@@ -37,15 +37,100 @@ TEXT_RESULT_JSON_SCHEMA: dict = {
 
 
 class Task(BaseModel):
+    """A node in the task tree with persisted execution state.
+
+    Each task has a type (determines tools/prompts), a state (drives the
+    state machine), its own message queue, and tree links to parent and
+    children.  The ``running_task`` chain encodes the single active
+    execution path — exactly one leaf is non-FINISHED at any checkpoint.
+    """
+
+    type: str = "single_run"
+    state: str = "PENDING"
     input: str
     result: list[TextResult] = None
     messages: list[AgentMessage] = None
-    subTasks: list[Task] = None
+    parent: "Task | None" = None
+    running_task: "Task | None" = None
+    finished_tasks: list["Task"] = None
+    subTasks: list["Task"] = None  # backward compat — alias for finished_tasks
     start_snapshot: str | None = None
     end_snapshot: str | None = None
     repo_watcher: RepoWatcher | None = None
 
     model_config = {"arbitrary_types_allowed": True}
+
+    def __init__(self, **data):
+        super().__init__(**data)
+        if self.finished_tasks is None:
+            self.finished_tasks = []
+        if self.subTasks is None:
+            self.subTasks = []
+        if self.result is None:
+            self.result = []
+        if self.messages is None:
+            self.messages = []
+
+    def context(self) -> list[AgentMessage]:
+        """Return the ancestor message chain: root.messages + ... + self.messages.
+
+        Each task type can override or wrap this to customize context
+        construction (filter, prefix, truncate).
+        """
+        msgs: list[AgentMessage] = []
+        if self.parent is not None:
+            msgs.extend(self.parent.context())
+        msgs.extend(self.messages)
+        return msgs
+
+    def find_active(self) -> "Task":
+        """Walk ``running_task`` chain to find the single active node."""
+        if self.state != "FINISHED" and self.running_task is None:
+            return self
+        if self.running_task is not None:
+            return self.running_task.find_active()
+        return self
+
+    def to_checkpoint(self) -> str:
+        """Serialize tree to JSON, stripping parent refs to avoid cycles.
+
+        Use ``Task.from_checkpoint(json_str)`` to restore parent refs.
+        """
+        import json
+
+        def _to_dict(node: "Task") -> dict:
+            return {
+                "type": node.type,
+                "state": node.state,
+                "input": node.input,
+                "result": [r.model_dump(mode="json") for r in (node.result or [])],
+                "messages": [m.model_dump(mode="json") for m in (node.messages or [])],
+                "running_task": _to_dict(node.running_task) if node.running_task else None,
+                "finished_tasks": [_to_dict(c) for c in (node.finished_tasks or [])],
+                "subTasks": [_to_dict(c) for c in (node.subTasks or [])],
+                "start_snapshot": node.start_snapshot,
+                "end_snapshot": node.end_snapshot,
+            }
+
+        return json.dumps(_to_dict(self), indent=2, default=str)
+
+    @classmethod
+    def from_checkpoint(cls, json_str: str) -> "Task":
+        """Deserialize tree and rebuild parent references."""
+
+        def _fix_parents(node: "Task") -> None:
+            if node.running_task is not None:
+                node.running_task.parent = node
+                _fix_parents(node.running_task)
+            for child in node.finished_tasks or []:
+                child.parent = node
+                _fix_parents(child)
+
+        import json
+        data = json.loads(json_str)
+        task = cls.model_validate(data)
+        _fix_parents(task)
+        return task
 
 class RunRecord(BaseModel):
     input: str

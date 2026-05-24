@@ -25,7 +25,7 @@ class TestSingleRunProcess:
         """SingleRunProcess should initialize without errors."""
         proc = SingleRunProcess()
         assert proc.proc is not None
-        assert proc.proc.agent is not None
+        assert proc.proc is not None
 
     def test_single_run_process_has_determine_state_tool(self):
         """Process should have determine_state tool registered."""

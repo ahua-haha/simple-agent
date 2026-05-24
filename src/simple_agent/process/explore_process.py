@@ -43,9 +43,11 @@ class ExploreProcess:
 
     proc: AgentProcess
 
-    def __init__(self, tools_mgr: ToolMgr | None = None, db: Database | None = None):
+    def __init__(self, tools_mgr: ToolMgr | None = None, db: Database | None = None,
+                 agent_process: AgentProcess | None = None):
         self.tools_mgr = tools_mgr or ToolMgr()
         self._db = db or Database()
+        self._agent_process = agent_process
 
         determine_state_tool = self.tools_mgr.create_record_tool(
             model_class=StateClarification,
@@ -65,8 +67,8 @@ class ExploreProcess:
             },
         )
 
-        proc = AgentProcess(get_model("deepseek", "deepseek-v4-pro"))
-        proc.agent.subscribe(stream_event)
+        proc = agent_process or AgentProcess(get_model("deepseek", "deepseek-v4-pro"))
+        proc.subscribe(stream_event)
         proc.add_tool(determine_state_tool, on_call=lambda self: self.stop_agent("determine_state"), store=True)
         proc.add_tool(self.tools_mgr.create_all_tools("."))
         self.proc = proc
@@ -86,7 +88,7 @@ class ExploreProcess:
         return None
 
     async def process(self, task: Task, state: SessionState) -> None:
-        self.proc.agent.reset()
+        self.proc.reset()
 
         index = len(state.messages)
 
@@ -98,7 +100,7 @@ class ExploreProcess:
 
         task.end_snapshot = task.repo_watcher.take_snapshot()
 
-        collectProc = CollectResultProcess(tools_mgr=self.tools_mgr, db=self._db)
+        collectProc = CollectResultProcess(tools_mgr=self.tools_mgr, db=self._db, agent_process=self._agent_process)
         await collectProc.process(task, state)
 
         status = "finished"

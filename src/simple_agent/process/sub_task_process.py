@@ -42,9 +42,11 @@ class SubTaskProcess:
 
     proc: AgentProcess
 
-    def __init__(self, tools_mgr: ToolMgr | None = None, db: Database | None = None):
+    def __init__(self, tools_mgr: ToolMgr | None = None, db: Database | None = None,
+                 agent_process: AgentProcess | None = None):
         self.tools_mgr = tools_mgr or ToolMgr()
         self._db = db or Database()
+        self._agent_process = agent_process
 
         define_task_tool = self.tools_mgr.create_record_tool(
             model_class=Task,
@@ -72,10 +74,10 @@ class SubTaskProcess:
             },
         )
 
-        proc = AgentProcess(get_model("deepseek", "deepseek-v4-pro"))
+        proc = agent_process or AgentProcess(get_model("deepseek", "deepseek-v4-pro"))
         proc.add_tool(define_task_tool, on_call=lambda self: self.stop_agent("define_task"), store=True)
         proc.add_tool(determine_state_tool, on_call=lambda self: self.stop_agent("determine_state"), store=True)
-        proc.agent.subscribe(stream_event)
+        proc.subscribe(stream_event)
         self.proc = proc
 
     def _append_format_results(self, task: Task, state: SessionState, status: str = "finished") -> None:
@@ -120,12 +122,12 @@ class SubTaskProcess:
                 res.result = []
                 res.messages = []
                 task.subTasks.append(res)
-                explore_proc = ExploreProcess(tools_mgr=self.tools_mgr, db=self._db)
+                explore_proc = ExploreProcess(tools_mgr=self.tools_mgr, db=self._db, agent_process=self._agent_process)
                 await explore_proc.process(res, state)
                 continue
 
             if isinstance(res, StateClarification):
-                collectProc = CollectResultProcess(tools_mgr=self.tools_mgr, db=self._db)
+                collectProc = CollectResultProcess(tools_mgr=self.tools_mgr, db=self._db, agent_process=self._agent_process)
                 await collectProc.process(task, state)
                 break
 
