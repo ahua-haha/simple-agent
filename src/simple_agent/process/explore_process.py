@@ -49,23 +49,7 @@ class ExploreProcess:
         self._db = db or Database()
         self._agent_process = agent_process
 
-        determine_state_tool = self.tools_mgr.create_record_tool(
-            model_class=StateClarification,
-            name="determine_state",
-            description="Determine the current state based on context. States: finished (task complete), error (task failed)",
-            parameters={
-                "type": "object",
-                "properties": {
-                    "state": {
-                        "type": "string",
-                        "description": "Available states:\n- finished: task complete\n- error: task failed",
-                        "enum": ["finished", "error"],
-                    },
-                    "reason": {"type": "string", "description": "Reason for choosing this state"},
-                },
-                "required": ["state", "reason"],
-            },
-        )
+        determine_state_tool = self.tools_mgr.create_determine_state_tool()
 
         proc = agent_process or AgentProcess(get_model("deepseek", "deepseek-v4-pro"))
         proc.subscribe(stream_event)

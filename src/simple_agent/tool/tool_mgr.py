@@ -84,6 +84,49 @@ class ToolMgr:
         wrapped_tool = self.wrap_tools(tool)
         return wrapped_tool
 
+    def create_determine_state_tool(self) -> AgentTool:
+        """Create a tool for the agent to signal task completion."""
+        from simple_agent.state.state import StateClarification
+        return self.create_record_tool(
+            model_class=StateClarification,
+            name="determine_state",
+            description="Determine the current state based on context.",
+            parameters={
+                "type": "object",
+                "properties": {
+                    "state": {"type": "string", "enum": ["finished", "error"]},
+                    "reason": {"type": "string", "description": "Reason for choosing this state"},
+                },
+                "required": ["state", "reason"],
+            },
+        )
+
+    def create_define_task_tool(self) -> AgentTool:
+        """Create a tool for the planner agent to define sub-tasks."""
+        from simple_agent.state.state import Task
+        return self.create_record_tool(
+            model_class=Task,
+            name="define_task",
+            description="Define a sub-task to be executed. Include all necessary context.",
+            parameters={
+                "type": "object",
+                "properties": {
+                    "input": {"type": "string", "description": "The full input for this sub-task"},
+                },
+                "required": ["input"],
+            },
+        )
+
+    def create_record_textresult_tool(self) -> AgentTool:
+        """Create a tool to record a final outcome as a TextResult."""
+        from simple_agent.state.state import TextResult, TEXT_RESULT_JSON_SCHEMA
+        return self.create_record_tool(
+            model_class=TextResult,
+            name="record_textresult",
+            description="Record a TextResult instance capturing a final outcome.",
+            parameters=TEXT_RESULT_JSON_SCHEMA,
+        )
+
     def create_diff_tool(self, repo_watcher: RepoWatcher, start_hash: str, end_hash: str) -> AgentTool:
         tool = AgentTool(
             name="diff",

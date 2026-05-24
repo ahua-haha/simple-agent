@@ -52,12 +52,7 @@ class CollectResultProcess:
         self.tools_mgr = tools_mgr or ToolMgr()
         self._db = db or Database()
 
-        record_tool = self.tools_mgr.create_record_tool(
-            model_class=TextResult,
-            name="record_textresult",
-            description="Record a TextResult instance with the tool call log ID referencing related tool executions",
-            parameters=TEXT_RESULT_JSON_SCHEMA,
-        )
+        record_tool = self.tools_mgr.create_record_textresult_tool()
 
         proc = agent_process or AgentProcess(get_model("deepseek", "deepseek-v4-pro"))
         proc.subscribe(stream_event)
