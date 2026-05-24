@@ -29,14 +29,23 @@ class ToolCallRecord(SQLModel, table=True):
 
 
 class TaskRecord(SQLModel, table=True):
-    """SQLite model for task history storage."""
+    """SQLite model for task tree persistence.
+
+    Each task is a flat row.  ``parent_id`` and ``running_task_id`` are
+    plain ints (no FK) resolved to object refs in memory on load.
+    """
+
     id: int | None = Field(default=None, primary_key=True)
-    type: str = Field(index=True)
-    input: str | None = None
-    messages: str | None = None  # JSON serialized list of AgentMessage
-    results: str | None = None   # JSON serialized list of TextResult
-    status: str | None = None
-    created_at: int = Field(default_factory=lambda: int(time.time()))
+    parent_id: int | None = Field(default=None, index=True)
+    running_task_id: int | None = Field(default=None)
+    finished_task_ids: str | None = None  # JSON: list[int]
+    type: str = Field(default="single_run")
+    state: str = Field(default="PENDING")
+    input: str = ""
+    messages: str | None = None  # JSON: list[AgentMessage]
+    result: str | None = None    # JSON: list[TextResult]
+    start_snapshot: str | None = None
+    end_snapshot: str | None = None
 
 
 class Database:
@@ -115,76 +124,68 @@ class Database:
 
     # --- Task operations ---
 
-    def save_task(self, task_type: str, task_input: str, messages: list, results: list, status: str):
-        """Save a completed task to SQLite.
-
-        Args:
-            task_type: Type of task ('explore' or 'single_run')
-            task_input: The task input description
-            messages: List of AgentMessage objects (serialized to JSON)
-            results: List of TextResult objects (serialized to JSON)
-            status: Task status ('finished', 'error', etc.)
-        """
+    def upsert_task(self, task) -> int:
+        """INSERT or UPDATE a task row.  Returns the task ``id``."""
         message_adapter = TypeAdapter(list[AgentMessage])
         result_adapter = TypeAdapter(list[TextResult])
+
+        import json as _json
+
+        row_id = task.id
         with self._get_session() as session:
-            record = TaskRecord(
-                type=task_type,
-                input=task_input,
-                messages=message_adapter.dump_json(messages or []).decode("utf-8"),
-                results=result_adapter.dump_json(results or []).decode("utf-8"),
-                status=status,
-            )
-            session.add(record)
+            if row_id is not None:
+                record = session.get(TaskRecord, row_id)
+            else:
+                record = None
+
+            if record is None:
+                record = TaskRecord()
+                session.add(record)
+
+            record.parent_id = task.parent_id
+            record.running_task_id = task.running_task_id
+            record.finished_task_ids = _json.dumps(task.finished_task_ids or [])
+            record.type = task.type
+            record.state = task.state
+            record.input = task.input
+            record.messages = message_adapter.dump_json(task.messages or []).decode("utf-8")
+            record.result = result_adapter.dump_json(task.result or []).decode("utf-8")
+            record.start_snapshot = task.start_snapshot
+            record.end_snapshot = task.end_snapshot
+
             session.commit()
+            session.refresh(record)
+            return record.id
 
-    def get_task(self, task_id: int) -> dict | None:
-        """Retrieve a task by ID from SQLite.
+    def load_all_tasks(self) -> list[dict]:
+        """Return all task rows as dicts, ordered by id."""
+        import json as _json
 
-        Args:
-            task_id: The task ID to retrieve
-
-        Returns:
-            Dict with task data or None if not found
-        """
         message_adapter = TypeAdapter(list[AgentMessage])
         result_adapter = TypeAdapter(list[TextResult])
         with self._get_session() as session:
-            record = session.exec(select(TaskRecord).where(TaskRecord.id == task_id)).first()
-            if not record:
-                return None
-            return {
-                "id": record.id,
-                "type": record.type,
-                "input": record.input,
-                "messages": message_adapter.validate_json(record.messages or "[]"),
-                "results": result_adapter.validate_json(record.results or "[]"),
-                "status": record.status,
-                "created_at": record.created_at,
-            }
-
-    def list_tasks(self, limit: int = 10, type_filter: str | None = None) -> list[dict]:
-        """List recent tasks from SQLite.
-
-        Args:
-            limit: Maximum number of tasks to return
-            type_filter: Optional filter by task type ('explore' or 'single_run')
-
-        Returns:
-            List of dicts with task data
-        """
-        with self._get_session() as session:
-            query = select(TaskRecord).order_by(TaskRecord.id.desc()).limit(limit)
-            if type_filter:
-                query = query.where(TaskRecord.type == type_filter)
-            records = session.exec(query).all()
+            records = session.exec(select(TaskRecord).order_by(TaskRecord.id)).all()
             return [
                 {
                     "id": r.id,
+                    "parent_id": r.parent_id,
+                    "running_task_id": r.running_task_id,
+                    "finished_task_ids": _json.loads(r.finished_task_ids or "[]"),
                     "type": r.type,
+                    "state": r.state,
                     "input": r.input,
-                    "status": r.status,
-                    "created_at": r.created_at,
+                    "messages": message_adapter.validate_json(r.messages or "[]"),
+                    "result": result_adapter.validate_json(r.result or "[]"),
+                    "start_snapshot": r.start_snapshot,
+                    "end_snapshot": r.end_snapshot,
                 }
                 for r in records
             ]
+
+    def delete_task(self, task_id: int) -> None:
+        """Delete a task row by id."""
+        with self._get_session() as session:
+            record = session.get(TaskRecord, task_id)
+            if record is not None:
+                session.delete(record)
+                session.commit()

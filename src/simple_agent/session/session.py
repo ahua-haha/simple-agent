@@ -1,4 +1,4 @@
-"""Session — stores a task tree, saves/loads checkpoints, runs via CentralControl."""
+"""Session — stores a task tree in SQLite, runs via CentralControl."""
 
 from __future__ import annotations
 
@@ -10,6 +10,7 @@ from simple_agent.process.agent_process import AgentProcess
 from simple_agent.process.central_control import CentralControl
 from simple_agent.process.runners import PlanRunner, ExploreRunner, CollectRunner, SingleRunRunner
 from simple_agent.state.state import Task
+from simple_agent.db.db import Database
 from simple_agent.models import register_custom_models
 
 RUNNERS = {
@@ -21,23 +22,31 @@ RUNNERS = {
 
 
 class Session:
-    """A simple session that stores a task tree and runs it via CentralControl.
+    """A session that stores a task tree in SQLite and runs via CentralControl.
 
     Usage::
 
         session = Session("my-task")
         task = await session.run("build a test suite")
-        # task tree is checkpointed after every agent cycle
     """
 
     def __init__(self, name: str, base_dir: str = "./sessions"):
         self._name = name
         self._base_dir = base_dir
-        self._filepath = os.path.join(base_dir, f"{name}.json")
+        self._db_path = os.path.join(base_dir, f"{name}.db")
+        self._db = Database(self._db_path)
+        self._tasks: dict[int, Task] = {}
 
-        if os.path.exists(self._filepath):
-            with open(self._filepath) as f:
-                self._root = Task.from_checkpoint(f.read())
+        rows = self._db.load_all_tasks()
+        if rows:
+            self._tasks = Task.from_db_rows(rows)
+            # Root is the task with no parent
+            for task in self._tasks.values():
+                if task.parent_id is None:
+                    self._root = task
+                    break
+            else:
+                self._root = None
         else:
             self._root = None
 
@@ -50,32 +59,48 @@ class Session:
             root = self._root
         else:
             root = Task(input=user_input, state="PENDING")
+            self._tasks = {}
         self._root = root
+        self._tasks[root.id] = root
 
         register_custom_models()
         model = get_model("deepseek", "deepseek-v4-pro")
         agent_process = AgentProcess(model)
 
-        cc = CentralControl(
-            root,
-            RUNNERS,
-            checkpoint_fn=self.checkpoint,
-        )
+        cc = CentralControl(root, self._tasks, RUNNERS, checkpoint_fn=self.checkpoint)
         await cc.run()
         return root
 
-    def checkpoint(self) -> str:
-        os.makedirs(os.path.dirname(self._filepath) or ".", exist_ok=True)
-        if self._root is not None:
-            self._root.to_checkpoint()
-            with open(self._filepath, "w") as f:
-                f.write(self._root.to_checkpoint())
-        return self._filepath
+    def checkpoint(self) -> None:
+        """Upsert cursor and its ancestor chain into the DB."""
+        cursor = self._root
+        if cursor is None:
+            return
+
+        # Walk running_task chain to find the cursor
+        while cursor.running_task is not None:
+            cursor = cursor.running_task
+
+        # Upsert cursor (gets ID if new) and register in tasks dict
+        cursor_id = self._db.upsert_task(cursor)
+        if cursor.id is None:
+            cursor.id = cursor_id
+            self._tasks[cursor_id] = cursor
+
+        # Upsert ancestors up the tree via parent_id
+        ancestor_id = cursor.parent_id
+        while ancestor_id is not None:
+            ancestor = self._tasks.get(ancestor_id)
+            if ancestor is not None:
+                self._db.upsert_task(ancestor)
+                ancestor_id = ancestor.parent_id
+            else:
+                break
 
     @staticmethod
     def list_sessions(base_dir: str = "./sessions") -> list[str]:
         if not os.path.isdir(base_dir):
             return []
         return sorted(
-            f[:-5] for f in os.listdir(base_dir) if f.endswith(".json")
+            f[:-3] for f in os.listdir(base_dir) if f.endswith(".db")
         )

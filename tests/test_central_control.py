@@ -114,11 +114,14 @@ class _SubTaskRunner(BaseRunner):
 class TestCentralControl:
     """Tests for CentralControl signal handling."""
 
-    def _make_cc(self, root, runner, checkpoints=None):
+    def _make_cc(self, root, runner, checkpoints=None, tasks=None):
         if checkpoints is None:
             checkpoints = []
+        if tasks is None:
+            tasks = {root.id: root} if root.id else {}
         return CentralControl(
             root,
+            tasks_by_id=tasks,
             runners={"test": runner},
             checkpoint_fn=lambda: checkpoints.append(True),
         )
@@ -130,41 +133,39 @@ class TestCentralControl:
         root = Task(input="root", type="test", state="RUNNING")
         cc = self._make_cc(root, _ContinueRunner(), checkpoints)
 
-        # Will loop forever since runner always returns continue.
-        # Verify the signal handling logic directly.
-        result = RunnerResult(kind="continue")
         cc._checkpoint()
         assert len(checkpoints) == 1
-        # continue doesn't change cursor
         assert cc.cursor is root
 
     @pytest.mark.asyncio
     async def test_finished_absorbs_into_parent(self):
-        """finished signal: child → parent.finished_tasks, cursor ↑."""
-        parent = Task(input="parent", type="test", state="WAITING")
-        child = Task(input="child", type="test", state="RUNNING", parent=parent,
+        """finished signal: child → parent.finished_task_ids, cursor ↑."""
+        root = Task(id=1, input="root", type="test", state="WAITING")
+        child = Task(id=2, input="child", type="test", state="RUNNING", parent_id=1,
                      result=[TextResult(desc="done", toolCallLogID=[])])
-        parent.running_task = child
+        root.running_task = child
+        root.running_task_id = child.id
+        tasks = {1: root, 2: child}
 
-        checkpoints = []
-        cc = self._make_cc(parent, _FinishedRunner(), checkpoints)
+        cc = self._make_cc(root, _FinishedRunner(), tasks=tasks)
         cc.cursor = child
 
         cc._handle_finished()
         cc._checkpoint()
 
-        assert cc.cursor is parent
-        assert len(parent.finished_tasks) == 1
-        assert parent.finished_tasks[0] is child
-        assert parent.running_task is None
-        assert len(parent.messages) == 1
+        assert cc.cursor is root
+        assert root.finished_task_ids == [2]
+        assert root.running_task is None
+        assert root.running_task_id is None
+        assert len(root.messages) == 1
 
     @pytest.mark.asyncio
     async def test_finished_root_terminates(self):
         """finished on root sets cursor to None."""
-        root = Task(input="root", type="test", state="RUNNING")
+        root = Task(id=1, input="root", type="test", state="RUNNING")
+        tasks = {1: root}
 
-        cc = self._make_cc(root, _FinishedRunner())
+        cc = self._make_cc(root, _FinishedRunner(), tasks=tasks)
         cc._handle_finished()
 
         assert cc.cursor is None
@@ -172,25 +173,28 @@ class TestCentralControl:
     @pytest.mark.asyncio
     async def test_sub_task_wires_child(self):
         """sub_task signal: child wired into tree, cursor ↓."""
-        parent = Task(input="parent", type="test", state="RUNNING")
-        child = Task(input="child", type="test", state="PENDING")
+        parent = Task(id=1, input="parent", type="test", state="RUNNING")
+        child = Task(id=2, input="child", type="test", state="PENDING")
+        tasks = {1: parent}
 
-        cc = self._make_cc(parent, _SubTaskRunner())
+        cc = self._make_cc(parent, _SubTaskRunner(), tasks=tasks)
         result = RunnerResult(kind="sub_task", child=child)
 
         cc._handle_sub_task(result)
         cc._checkpoint()
 
         assert cc.cursor is child
-        assert child.parent is parent
+        assert child.parent_id == 1
         assert parent.running_task is child
+        assert parent.running_task_id == 2
         assert parent.state == "WAITING"
 
     @pytest.mark.asyncio
     async def test_sub_task_no_child(self):
         """sub_task with no child is a no-op."""
-        parent = Task(input="parent", type="test", state="RUNNING")
-        cc = self._make_cc(parent, _SubTaskRunner())
+        parent = Task(id=1, input="parent", type="test", state="RUNNING")
+        tasks = {1: parent}
+        cc = self._make_cc(parent, _SubTaskRunner(), tasks=tasks)
         result = RunnerResult(kind="sub_task", child=None)
 
         cc._handle_sub_task(result)
@@ -201,23 +205,25 @@ class TestCentralControl:
     async def test_full_workflow(self):
         """Simulate a complete plan → explore → finish workflow."""
         checkpoints = []
-        root = Task(input="build tests", type="test", state="RUNNING")
+        root = Task(id=1, input="build tests", type="test", state="RUNNING")
+        tasks = {1: root}
 
-        cc = self._make_cc(root, _SubTaskRunner(), checkpoints)
+        cc = self._make_cc(root, _SubTaskRunner(), checkpoints, tasks=tasks)
 
         # Step 1: sub_task — cursor ↓ to child
-        child = Task(input="explore", type="test", state="PENDING")
+        child = Task(id=2, input="explore", type="test", state="PENDING")
         cc._handle_sub_task(RunnerResult(kind="sub_task", child=child))
         cc._checkpoint()
         assert cc.cursor is child
-        assert cc.cursor.parent is root
+        assert child.parent_id == 1
         assert root.state == "WAITING"
+        assert root.running_task_id == 2
 
         # Step 2: finished on child — cursor ↑ to parent
         cc._handle_finished()
         cc._checkpoint()
         assert cc.cursor is root
-        assert len(root.finished_tasks) == 1
+        assert root.finished_task_ids == [2]
 
         # Step 3: finished on root
         cc._handle_finished()
