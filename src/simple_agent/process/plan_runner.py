@@ -41,8 +41,7 @@ class PlanRunner(BaseRunner):
         self._agent_process = agent_process
 
     async def run(self, task: "Task") -> RunnerResult:
-        tasks_by_id = self._load_ancestors(task)
-        context_msgs = task.context(tasks_by_id) if tasks_by_id else task.messages
+        self._ensure_metadata(task)
 
         state = AgentState()
         tools: list = [
@@ -52,11 +51,12 @@ class PlanRunner(BaseRunner):
 
         await self._agent_process.run(
             system_prompt=SYSTEM_PROMPT,
-            messages=context_msgs,
+            messages=task.metadata["context_msgs"],
             tools=tools,
             state=state,
             user_prompt=task.input,
         )
+        task.metadata["context_msgs"].extend(state.new_messages)
         task.messages.extend(state.new_messages)
 
         if "define_task" in state.tool_results:
@@ -73,24 +73,22 @@ class PlanRunner(BaseRunner):
             from simple_agent.state.state import StateClarification
             sc = state.tool_results["determine_state"][-1]
             if isinstance(sc, StateClarification) and sc.state == "finished":
+                task.result_msg = list(task.messages)
                 return RunnerResult(kind="finished")
 
         return RunnerResult(kind="continue")
 
-    def _load_ancestors(self, task: "Task") -> dict[int, "Task"]:
-        from simple_agent.state.state import Task as TaskModel
-
-        current_id = task.parent_id
-        ancestor_rows = []
-        while current_id is not None:
-            row = self._db.get_task(current_id)
-            if row is None:
-                break
-            ancestor_rows.append(row)
-            current_id = row.get("parent_id")
-
-        if not ancestor_rows:
-            return {}
-
-        ancestor_rows.reverse()
-        return TaskModel.from_db_rows(ancestor_rows)
+    def _ensure_metadata(self, task: "Task") -> None:
+        if "context_msgs" not in task.metadata:
+            from simple_agent.state.state import Task as TaskModel
+            current_id = task.parent_id
+            ancestor_rows = []
+            while current_id is not None:
+                row = self._db.get_task(current_id)
+                if row is None:
+                    break
+                ancestor_rows.append(row)
+                current_id = row.get("parent_id")
+            ancestor_rows.reverse()
+            tasks_by_id = TaskModel.from_db_rows(ancestor_rows) if ancestor_rows else {}
+            task.metadata["context_msgs"] = task.context(tasks_by_id) if tasks_by_id else list(task.messages)

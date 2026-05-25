@@ -4,7 +4,6 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
-from pi.ai.types import UserMessage, TextContent
 
 from simple_agent.process.runners import BaseRunner, RunnerResult
 from simple_agent.state.state import Task
@@ -12,19 +11,6 @@ from simple_agent.db.db import Database
 
 if TYPE_CHECKING:
     from collections.abc import Callable
-
-
-def _format_child_result(child: Task) -> list:
-    """Format a finished child's results as messages for the parent."""
-    msgs: list = []
-    for r in child.result or []:
-        msgs.append(
-            UserMessage(
-                content=[TextContent(text=f"[sub-task result] {r.desc}")],
-                timestamp=0,
-            )
-        )
-    return msgs
 
 
 class CentralControl:
@@ -78,6 +64,7 @@ class CentralControl:
     def _handle_finished(self, cursor: Task) -> tuple[Task | None, list[Task], list[Task]]:
         """Absorb finished cursor into parent, return parent as new cursor."""
         cursor.state = "FINISHED"
+        cursor.metadata.clear()
 
         if cursor.parent_id is None:
             return None, [cursor], []
@@ -88,7 +75,7 @@ class CentralControl:
 
         parent = Task.from_db_rows([row])[cursor.parent_id]
 
-        parent.messages.extend(_format_child_result(cursor))
+        parent.messages.extend(cursor.result_msg or [])
         parent.finished_task_ids.append(cursor.id)
         parent.running_task_id = None
         parent.running_task = None

@@ -43,8 +43,8 @@ class Task(BaseModel):
     object refs) — ``parent_id``, ``running_task_id``, and
     ``finished_task_ids`` encode the tree structure.
 
-    Use ``Task.from_db_rows(rows)`` to rebuild the in-memory tree with
-    ``running_task`` object ref for fast navigation.
+    ``metadata`` is a runtime-only dict for objects like RepoWatcher
+    and pre-built context messages.  It is NOT persisted.
     """
 
     type: str = "single_run"
@@ -52,6 +52,8 @@ class Task(BaseModel):
     input: str
     result: list[TextResult] = None
     messages: list[AgentMessage] = None
+    result_msg: list[AgentMessage] = []
+    repo_path: str = "."
     start_snapshot: str | None = None
     end_snapshot: str | None = None
     repo_watcher: RepoWatcher | None = None  # backward compat for old process classes
@@ -71,6 +73,10 @@ class Task(BaseModel):
             self.result = []
         if self.messages is None:
             self.messages = []
+        if self.result_msg is None:
+            self.result_msg = []
+        # runtime cache, not persisted
+        object.__setattr__(self, "metadata", {})
 
     def context(self, tasks_by_id: dict[int, "Task"] | None = None) -> list[AgentMessage]:
         """Return the ancestor message chain.
@@ -114,6 +120,8 @@ class Task(BaseModel):
                 input=r["input"],
                 messages=r.get("messages", []),
                 result=r.get("result", []),
+                result_msg=r.get("result_msg", []),
+                repo_path=r.get("repo_path", "."),
                 start_snapshot=r.get("start_snapshot"),
                 end_snapshot=r.get("end_snapshot"),
             )

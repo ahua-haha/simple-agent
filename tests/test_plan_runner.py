@@ -85,8 +85,7 @@ async def test_plan_runner_integration():
             print(f"Sub-task results: {[x.desc for x in (child.result or [])]}")
 
             # Absorb child into parent (simulating CentralControl._handle_finished)
-            from simple_agent.process.central_control import _format_child_result
-            plan_task.messages.extend(_format_child_result(child))
+            plan_task.messages.extend(child.result_msg or [])
             plan_task.finished_task_ids.append(child.id)
             plan_task.running_task = None
             plan_task.running_task_id = None

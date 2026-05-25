@@ -44,6 +44,8 @@ class TaskRecord(SQLModel, table=True):
     input: str = ""
     messages: str | None = None  # JSON: list[AgentMessage]
     result: str | None = None    # JSON: list[TextResult]
+    result_msg: str | None = None  # JSON: list[AgentMessage]
+    repo_path: str = "."
     start_snapshot: str | None = None
     end_snapshot: str | None = None
 
@@ -150,6 +152,8 @@ class Database:
             record.input = task.input
             record.messages = message_adapter.dump_json(task.messages or []).decode("utf-8")
             record.result = result_adapter.dump_json(task.result or []).decode("utf-8")
+            record.result_msg = message_adapter.dump_json(task.result_msg or []).decode("utf-8")
+            record.repo_path = task.repo_path
             record.start_snapshot = task.start_snapshot
             record.end_snapshot = task.end_snapshot
 
@@ -176,6 +180,8 @@ class Database:
                 "input": record.input,
                 "messages": message_adapter.validate_json(record.messages or "[]"),
                 "result": result_adapter.validate_json(record.result or "[]"),
+                "result_msg": message_adapter.validate_json(record.result_msg or "[]"),
+                "repo_path": record.repo_path or ".",
                 "start_snapshot": record.start_snapshot,
                 "end_snapshot": record.end_snapshot,
             }
@@ -199,6 +205,8 @@ class Database:
                     "input": r.input,
                     "messages": message_adapter.validate_json(r.messages or "[]"),
                     "result": result_adapter.validate_json(r.result or "[]"),
+                    "result_msg": message_adapter.validate_json(r.result_msg or "[]"),
+                    "repo_path": r.repo_path or ".",
                     "start_snapshot": r.start_snapshot,
                     "end_snapshot": r.end_snapshot,
                 }

@@ -55,20 +55,19 @@ class ExploreRunner(BaseRunner):
         return await self._execute(task)
 
     async def _execute(self, task: "Task") -> RunnerResult:
-        tasks_by_id = self._load_ancestors(task)
-        context_msgs = task.context(tasks_by_id) if tasks_by_id else task.messages
+        self._ensure_metadata(task)
 
-        watcher = RepoWatcher(".", "./data/snapshots")
+        watcher = task.metadata["repo_watcher"]
         task.start_snapshot = task.start_snapshot or watcher.take_snapshot()
 
         state = AgentState()
         tools: list = [
             state.bind_tool(self._tools_mgr.create_determine_state_tool(), stop=True),
-            *self._tools_mgr.create_all_tools("."),
+            *self._tools_mgr.create_all_tools(task.repo_path),
         ]
         await self._agent_process.run(
             system_prompt=EXECUTE_SYSTEM_PROMPT,
-            messages=context_msgs,
+            messages=task.metadata["context_msgs"],
             tools=tools,
             state=state,
             user_prompt=task.input,
@@ -87,26 +86,26 @@ class ExploreRunner(BaseRunner):
         return RunnerResult(kind="continue")
 
     async def _collect(self, task: "Task") -> RunnerResult:
-        tasks_by_id = self._load_ancestors(task)
-        context_msgs = task.context(tasks_by_id) if tasks_by_id else task.messages
+        self._ensure_metadata(task)
 
-        watcher = RepoWatcher(".", "./data/snapshots")
         collect_state = AgentState()
         collect_tools: list = [
             collect_state.bind_tool(self._tools_mgr.create_record_textresult_tool()),
         ]
         if task.start_snapshot and task.end_snapshot:
+            watcher = task.metadata["repo_watcher"]
             collect_tools.append(
                 self._tools_mgr.create_diff_tool(watcher, task.start_snapshot, task.end_snapshot)
             )
-        collect_tools.extend(self._tools_mgr.create_all_tools("."))
+        collect_tools.extend(self._tools_mgr.create_all_tools(task.repo_path))
 
         await self._agent_process.run(
             system_prompt=COLLECT_SYSTEM_PROMPT,
-            messages=context_msgs,
+            messages=task.metadata["context_msgs"],
             tools=collect_tools,
             state=collect_state,
         )
+        task.metadata["context_msgs"].extend(collect_state.new_messages)
         task.messages.extend(collect_state.new_messages)
 
         for tr in collect_state.tool_results.get("record_textresult", []):
@@ -114,24 +113,24 @@ class ExploreRunner(BaseRunner):
             if isinstance(tr, TextResult):
                 task.result.append(tr)
 
+        task.result_msg = list(task.messages)
         task.state = "FINISHED"
         return RunnerResult(kind="finished")
 
-    def _load_ancestors(self, task: "Task") -> dict[int, "Task"]:
-        """Load ancestor tasks from DB and return id→Task dict for context()."""
-        from simple_agent.state.state import Task as TaskModel
-
-        current_id = task.parent_id
-        ancestor_rows = []
-        while current_id is not None:
-            row = self._db.get_task(current_id)
-            if row is None:
-                break
-            ancestor_rows.append(row)
-            current_id = row.get("parent_id")
-
-        if not ancestor_rows:
-            return {}
-
-        ancestor_rows.reverse()
-        return TaskModel.from_db_rows(ancestor_rows)
+    def _ensure_metadata(self, task: "Task") -> None:
+        """Init metadata if not already set (cached across transitions)."""
+        if "repo_watcher" not in task.metadata:
+            task.metadata["repo_watcher"] = RepoWatcher(task.repo_path, "./data/snapshots")
+        if "context_msgs" not in task.metadata:
+            from simple_agent.state.state import Task as TaskModel
+            current_id = task.parent_id
+            ancestor_rows = []
+            while current_id is not None:
+                row = self._db.get_task(current_id)
+                if row is None:
+                    break
+                ancestor_rows.append(row)
+                current_id = row.get("parent_id")
+            ancestor_rows.reverse()
+            tasks_by_id = TaskModel.from_db_rows(ancestor_rows) if ancestor_rows else {}
+            task.metadata["context_msgs"] = task.context(tasks_by_id) if tasks_by_id else list(task.messages)
