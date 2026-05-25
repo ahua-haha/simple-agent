@@ -739,6 +739,22 @@ class TestTreeSmoke:
                        description="Application entry point")
 
             print()
-            print(idx.tree("src", depth=3))
+            print(idx.tree("src/simple", depth=3))
         finally:
             os.unlink(db_path)
+
+
+class TestTreeRenderPython:
+    """Render Python files with tree-sitter symbol extraction."""
+
+    def test_render_python_file_tree(self):
+        from pathlib import Path
+        from simple_agent.index.tree import walk_file, render_tree
+
+        node = walk_file(Path("src/simple_agent/process/agent_process.py"))
+        assert node is not None
+        out = render_tree(node)
+        print()
+        print(out)
+        assert "AgentState" in out
+        assert "AgentProcess" in out
