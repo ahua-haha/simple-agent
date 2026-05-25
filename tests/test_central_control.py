@@ -7,11 +7,11 @@ import pytest
 from simple_agent.process.runners import (
     RunnerResult,
     BaseRunner,
-    PlanRunner,
     CollectRunner,
     SingleRunRunner,
 )
 from simple_agent.process.explore_runner import ExploreRunner
+from simple_agent.process.plan_runner import PlanRunner
 from simple_agent.process.central_control import CentralControl
 from simple_agent.state.state import Task, TextResult
 from simple_agent.db.db import Database
@@ -88,13 +88,6 @@ class TestRunnerSubclasses:
     def test_single_run_runner_type(self):
         r = SingleRunRunner(*self._make_deps())
         assert r.type == "single_run"
-
-    @pytest.mark.asyncio
-    async def test_plan_runner_returns_continue(self):
-        r = PlanRunner(*self._make_deps())
-        task = Task(input="test", type="plan", state="RUNNING")
-        result = await r.run(task)
-        assert result.kind == "continue"
 
     @pytest.mark.asyncio
     async def test_collect_runner_returns_continue(self):

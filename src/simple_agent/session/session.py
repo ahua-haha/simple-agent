@@ -9,8 +9,9 @@ from pi.ai import get_model
 
 from simple_agent.process.central_control import CentralControl
 from simple_agent.process.agent_process import AgentProcess
-from simple_agent.process.runners import PlanRunner, CollectRunner, SingleRunRunner
+from simple_agent.process.runners import CollectRunner, SingleRunRunner
 from simple_agent.process.explore_runner import ExploreRunner
+from simple_agent.process.plan_runner import PlanRunner
 from simple_agent.state.state import Task
 from simple_agent.tool.tool_mgr import ToolMgr
 from simple_agent.db.db import Database

@@ -38,21 +38,6 @@ class BaseRunner(ABC):
         ...
 
 
-class PlanRunner(BaseRunner):
-    """Runner for plan tasks — uses define_task and determine_state tools."""
-
-    type = "plan"
-
-    def __init__(self, db: Database, tools_mgr: ToolMgr, agent_process: AgentProcess):
-        self._db = db
-        self._tools_mgr = tools_mgr
-        self._agent_process = agent_process
-
-    async def run(self, task: "Task") -> RunnerResult:
-        # TODO: implement plan runner
-        return RunnerResult(kind="continue")
-
-
 class CollectRunner(BaseRunner):
     """Runner for collect tasks — uses record_textresult and coding tools."""
 
