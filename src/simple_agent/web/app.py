@@ -7,6 +7,7 @@ from fastapi.responses import HTMLResponse
 from jinja2 import Environment, FileSystemLoader
 
 from simple_agent.db.db import Database
+from simple_agent.models import register_custom_models
 from simple_agent.state.state import Task
 from simple_agent.web.chat_api import create_chat_router
 
@@ -70,3 +71,50 @@ def create_app(
         return HTMLResponse(content=html)
 
     return app
+
+
+def main() -> None:
+    """Entry point for ``python -m simple_agent.web.app``."""
+    import argparse
+
+    import uvicorn
+
+    parser = argparse.ArgumentParser(description="Simple Agent web server")
+    parser.add_argument("--port", type=int, default=8080, help="Port to listen on (default: 8080)")
+    parser.add_argument("--host", default="0.0.0.0", help="Host to bind (default: 0.0.0.0)")
+    parser.add_argument("--db", default="./data/tool_log.db", help="Path to SQLite database (default: ./data/tool_log.db)")
+    parser.add_argument("--model-provider", default=None, help="Model provider for chat API (e.g. anthropic, deepseek)")
+    parser.add_argument("--model-name", default=None, help="Model name for chat API (e.g. claude-sonnet-4-5)")
+    parser.add_argument("--system-prompt", default="You are a helpful assistant.", help="System prompt for chat API")
+    args = parser.parse_args()
+
+    register_custom_models()
+    model = None
+    if args.model_provider and args.model_name:
+        from pi.ai import get_model
+        from pi.ai.models import _model_registry
+
+        model = get_model(args.model_provider, args.model_name)
+        if model is None:
+            available = ", ".join(sorted(_model_registry.keys()))
+            print(
+                f"Error: model '{args.model_name}' not found for provider "
+                f"'{args.model_provider}'.\n"
+                f"Available providers: {available}",
+                flush=True,
+            )
+            import sys
+
+            sys.exit(1)
+
+    app = create_app(
+        db_path=args.db,
+        model=model,
+        system_prompt=args.system_prompt,
+    )
+
+    uvicorn.run(app, host=args.host, port=args.port)
+
+
+if __name__ == "__main__":
+    main()
