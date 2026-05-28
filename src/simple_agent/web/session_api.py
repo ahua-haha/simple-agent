@@ -17,14 +17,14 @@ from pi.agent import (
     ToolExecutionStartEvent,
 )
 
-from simple_agent.session.session_manager import SessionBusyError
+from simple_agent.session.session_manager import SessionBusyError, SessionManager
 
 
 class RunRequest(BaseModel):
     input: str
 
 
-def _get_session_manager(request: Request):
+def _get_session_manager(request: Request) -> SessionManager:
     return request.app.state.session_manager
 
 

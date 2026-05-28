@@ -42,6 +42,7 @@ class Session:
         self._db_path = os.path.join(base_dir, f"{self._id}.db")
         self._db = Database(self._db_path)
         self._tools_mgr = ToolMgr(self._db)
+        register_custom_models()
         self._agent_process = AgentProcess(get_model("deepseek", "deepseek-v4-pro"))
 
         runners = {
@@ -136,12 +137,11 @@ class Session:
             self._cursor = self._load_cursor()
 
         if self._cursor is None:
-            self._cursor = Task(input=user_input, state="PENDING")
+            self._cursor = Task(input=user_input, state="PENDING", type="plan")
             self._cursor_id = self._db.upsert_task(self._cursor)
             self._cursor.id = self._cursor_id
             self._checkpoint()
 
-        register_custom_models()
         self._running = True
         if self.event_queue is None:
             self.event_queue = asyncio.Queue()

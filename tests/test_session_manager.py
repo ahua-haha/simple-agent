@@ -140,6 +140,27 @@ class TestSessionManagerRunPause:
         assert s.id not in sm._cooldown_timers
 
 
+class TestSessionRunLive:
+    """Manual inspection: run a session with real LLM calls, print stream events."""
+
+    @pytest.mark.asyncio
+    async def test_run_and_print_stream_events(self, tmp_path):
+        sm = SessionManager(sessions_dir=str(tmp_path))
+        s = sm.create()
+
+        queue = sm.run(s.id, "Say hello in one short sentence.")
+
+        print("\n=== STREAM EVENTS ===")
+        while True:
+            event = await queue.get()
+            if event is None:
+                print("=== STREAM END (sentinel) ===")
+                break
+            event_type = type(event).__name__
+            print(f"[{event_type}] {event}")
+        print("========================\n")
+
+
 class TestAPIEndpoints:
     """Session API endpoints (via TestClient)."""
 

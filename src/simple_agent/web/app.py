@@ -1,26 +1,15 @@
 """FastAPI app for browsing the task tree and serving the agent chat API."""
 
 import os
-from pathlib import Path
 
-from fastapi import FastAPI, Request
-from fastapi.responses import HTMLResponse
-from jinja2 import Environment, FileSystemLoader
+from fastapi import FastAPI
 
 from simple_agent.db.db import Database
 from simple_agent.models import register_custom_models
 from simple_agent.session.session_manager import DEFAULT_COOLDOWN_SECONDS, SessionManager
-from simple_agent.state.state import Task
 from simple_agent.web.chat_api import create_chat_router
 from simple_agent.web.session_api import create_session_router
-
-TEMPLATES_DIR = Path(__file__).parent / "templates"
-jinja_env = Environment(loader=FileSystemLoader(str(TEMPLATES_DIR)))
-
-
-def render(template_name: str, **kwargs) -> str:
-    template = jinja_env.get_template(template_name)
-    return template.render(**kwargs)
+from simple_agent.web.task_api import router as task_router
 
 
 _db: Database | None = None
@@ -51,10 +40,14 @@ def create_app(
         cooldown_seconds=cooldown_seconds,
     )
     app.state.session_manager = session_manager
+    app.state.get_db = get_db
 
     # Session API — always registered
     session_router = create_session_router()
     app.include_router(session_router, prefix="/api")
+
+    # Task tree HTML API — always registered
+    app.include_router(task_router)
 
     # Legacy stateless chat — only when a model is explicitly provided
     if model is not None:
@@ -64,28 +57,6 @@ def create_app(
             tools=tools,
         )
         app.include_router(chat_router, prefix="/api")
-
-    @app.get("/", response_class=HTMLResponse)
-    async def task_tree(request: Request):
-        rows = get_db().load_all_tasks()
-        tasks = Task.from_db_rows(rows) if rows else {}
-        root = None
-        for task in tasks.values():
-            if task.parent_id is None:
-                root = task
-                break
-        html = render("task_tree.html", root=root, tasks=tasks)
-        return HTMLResponse(content=html)
-
-    @app.get("/task/{task_id}", response_class=HTMLResponse)
-    async def task_detail(request: Request, task_id: int):
-        rows = get_db().load_all_tasks()
-        all_tasks = Task.from_db_rows(rows) if rows else {}
-        task = all_tasks.get(task_id)
-        if not task:
-            return HTMLResponse(content="<h1>Task not found</h1>", status_code=404)
-        html = render("task_detail.html", task=task, tasks=all_tasks)
-        return HTMLResponse(content=html)
 
     return app
 
