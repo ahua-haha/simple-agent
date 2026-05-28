@@ -84,10 +84,10 @@ class Session:
         """Load the cursor task from DB by cursor_id."""
         if self._cursor_id is None:
             return None
-        row = self._db.get_task(self._cursor_id)
-        if row is None:
+        record = self._db.get_task(self._cursor_id)
+        if record is None:
             return None
-        tasks = Task.from_db_rows([row])
+        tasks = Task.from_db_rows([record])
         return tasks.get(self._cursor_id)
 
     def _ensure_task_metadata(self, task: Task) -> None:
@@ -98,13 +98,13 @@ class Session:
         """
         if "context_msgs" not in task.metadata:
             current_id = task.parent_id
-            ancestor_rows: list[dict] = []
+            ancestor_rows: list = []
             while current_id is not None:
-                row = self._db.get_task(current_id)
-                if row is None:
+                record = self._db.get_task(current_id)
+                if record is None:
                     break
-                ancestor_rows.append(row)
-                current_id = row.get("parent_id")
+                ancestor_rows.append(record)
+                current_id = record.parent_id
             ancestor_rows.reverse()
             tasks_by_id = Task.from_db_rows(ancestor_rows) if ancestor_rows else {}
             task.metadata["context_msgs"] = (
@@ -145,14 +145,9 @@ class Session:
                 self._ensure_task_metadata(self._cursor)
                 new_cursor, updates, inserts = await self._cc.run(self._cursor)
 
-                for t in updates:
-                    self._db.upsert_task(t)
-                for t in inserts:
-                    self._db.upsert_task(t)
-
                 self._cursor = new_cursor
                 self._cursor_id = self._cursor.id if self._cursor else None
-                self._checkpoint()
+                self._checkpoint(updates=updates, inserts=inserts)
 
                 if self._cancel_event.is_set():
                     break
@@ -180,8 +175,8 @@ class Session:
         """Free the cursor from memory, keep only persisted metadata.
 
         Sets ``self._cursor = None`` to release the Task object.  The
-        *cursor_id* stays in the JSON checkpoint so ``run()`` can
-        reload it from DB on next call.
+        *cursor_id* stays in the DB checkpoint so ``run()`` can
+        reload it on next call.
 
         Raises RuntimeError if the session is currently running.
         """
@@ -189,24 +184,21 @@ class Session:
             raise RuntimeError("Cannot park while session is running")
         self._cursor = None
         self._cancel_event.clear()
-        self.save()
+        self._checkpoint()
 
     @property
     def id(self) -> str:
         return self._id
 
-    def save(self) -> None:
-        """Persist session metadata to the database."""
+    def _checkpoint(self, updates=None, inserts=None) -> None:
+        """Atomically persist tasks and session metadata in one transaction."""
         self._updated_at = time.time()
-        self._db.upsert_session(
-            session_id=self._id,
-            name="",
-            cursor_id=self._cursor_id,
-        )
-
-    def _checkpoint(self) -> None:
-        """Alias for save, used internally after each transition."""
-        self.save()
+        all_tasks = (updates or []) + (inserts or [])
+        with self._db._get_session() as s:
+            for task in all_tasks:
+                self._db.upsert_task(task, session=s)
+            self._db.upsert_session(self._id, "", self._cursor_id, session=s)
+            s.commit()
 
     @staticmethod
     def list_sessions(base_dir: str = "./sessions") -> list[str]:

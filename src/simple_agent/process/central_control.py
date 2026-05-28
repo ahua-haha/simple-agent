@@ -69,11 +69,11 @@ class CentralControl:
         if cursor.parent_id is None:
             return None, [cursor], []
 
-        row = self._db.get_task(cursor.parent_id)
-        if row is None:
+        record = self._db.get_task(cursor.parent_id)
+        if record is None:
             return None, [cursor], []
 
-        parent = Task.from_db_rows([row])[cursor.parent_id]
+        parent = Task.from_db_rows([record])[cursor.parent_id]
 
         parent.messages.extend(cursor.result_msg or [])
         parent.finished_task_ids.append(cursor.id)

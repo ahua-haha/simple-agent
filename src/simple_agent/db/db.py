@@ -191,27 +191,3 @@ class Database:
         if record is not None:
             session.delete(record)
 
-    # ------------------------------------------------------------------
-    # atomic checkpoint
-    # ------------------------------------------------------------------
-
-    def checkpoint(
-        self,
-        session_id: str,
-        cursor_id: int | None,
-        updates: list | None = None,
-        inserts: list | None = None,
-    ) -> None:
-        """Atomically persist task changes and session metadata."""
-        with self._get_session() as s:
-            all_tasks: list = []
-            if updates:
-                all_tasks.extend(updates)
-            if inserts:
-                all_tasks.extend(inserts)
-
-            for task in all_tasks:
-                self.upsert_task(task, session=s)
-
-            self.upsert_session(session_id, "", cursor_id, session=s)
-            s.commit()
