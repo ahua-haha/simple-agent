@@ -132,6 +132,7 @@ class Session:
         """Run the task tree until finished, paused, or cancelled.
 
         Returns the root Task on completion, or None if paused.
+        *step_timeout* caps each ``_cc.run()`` call; None disables the cap.
         """
         if self._cursor is None:
             self._cursor = self._load_cursor()
@@ -160,6 +161,12 @@ class Session:
 
                 if self._cancel_event.is_set():
                     break
+        except Exception:
+            import traceback
+            traceback.print_exc()
+            if self.event_queue is not None:
+                self.event_queue.put_nowait({"type": "error"})
+            raise
         finally:
             self._running = False
             if self.event_queue is not None:

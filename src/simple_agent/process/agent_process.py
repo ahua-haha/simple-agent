@@ -141,6 +141,11 @@ class AgentProcess:
                 state.turn_count += 1
             self._emit(event)
 
+        if stream._background_task is not None:
+            exc = stream._background_task.exception()
+            if exc is not None:
+                raise exc
+
         return state
 
     def subscribe(self, callback: Callable) -> None:

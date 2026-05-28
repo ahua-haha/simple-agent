@@ -64,19 +64,24 @@ def agent_loop(
 
     async def _run() -> None:
         new_messages: list[AgentMessage] = list(prompts)
-        current_context = AgentContext(
-            system_prompt=context.system_prompt,
-            messages=list(context.messages) + list(prompts),
-            tools=context.tools,
-        )
+        try:
+            current_context = AgentContext(
+                system_prompt=context.system_prompt,
+                messages=list(context.messages) + list(prompts),
+                tools=context.tools,
+            )
 
-        stream.push(AgentStartEvent())
-        stream.push(TurnStartEvent())
-        for prompt in prompts:
-            stream.push(MessageStartEvent(message=prompt))
-            stream.push(MessageEndEvent(message=prompt))
+            stream.push(AgentStartEvent())
+            stream.push(TurnStartEvent())
+            for prompt in prompts:
+                stream.push(MessageStartEvent(message=prompt))
+                stream.push(MessageEndEvent(message=prompt))
 
-        await _run_loop(current_context, new_messages, config, cancel_event, stream, stream_fn)
+            await _run_loop(current_context, new_messages, config, cancel_event, stream, stream_fn)
+        except Exception:
+            stream.push(AgentEndEvent(messages=new_messages))
+            stream.end()
+            raise
 
     stream._background_task = asyncio.ensure_future(_run())
     return stream
@@ -98,16 +103,21 @@ def agent_loop_continue(
 
     async def _run() -> None:
         new_messages: list[AgentMessage] = []
-        current_context = AgentContext(
-            system_prompt=context.system_prompt,
-            messages=list(context.messages),
-            tools=context.tools,
-        )
+        try:
+            current_context = AgentContext(
+                system_prompt=context.system_prompt,
+                messages=list(context.messages),
+                tools=context.tools,
+            )
 
-        stream.push(AgentStartEvent())
-        stream.push(TurnStartEvent())
+            stream.push(AgentStartEvent())
+            stream.push(TurnStartEvent())
 
-        await _run_loop(current_context, new_messages, config, cancel_event, stream, stream_fn)
+            await _run_loop(current_context, new_messages, config, cancel_event, stream, stream_fn)
+        except Exception:
+            stream.push(AgentEndEvent(messages=new_messages))
+            stream.end()
+            raise
 
     stream._background_task = asyncio.ensure_future(_run())
     return stream
