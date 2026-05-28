@@ -28,6 +28,20 @@ class ToolCallRecord(SQLModel, table=True):
     created_at: int = Field(default_factory=lambda: int(time.time()), index=True)
 
 
+class SessionRecord(SQLModel, table=True):
+    """SQLite model for session metadata.
+
+    Stores the session identity and cursor position.  Task data lives
+    in separate ``TaskRecord`` rows linked by ``cursor_id``.
+    """
+
+    id: str = Field(primary_key=True)
+    name: str = Field(default="")
+    cursor_id: int | None = Field(default=None)
+    created_at: float = Field(default_factory=time.time)
+    updated_at: float = Field(default_factory=time.time)
+
+
 class TaskRecord(SQLModel, table=True):
     """SQLite model for task tree persistence.
 
@@ -123,6 +137,43 @@ class Database:
         with self._get_session() as session:
             records = session.exec(select(ToolCallRecord).order_by(ToolCallRecord.id.desc()).limit(limit)).all()
             return list(records)
+
+    # --- Session metadata operations ---
+
+    def upsert_session(self, session_id: str, name: str = "",
+                       cursor_id: int | None = None) -> None:
+        """Insert or update session metadata."""
+        with self._get_session() as s:
+            record = s.get(SessionRecord, session_id)
+            if record is None:
+                record = SessionRecord(id=session_id)
+                s.add(record)
+            record.name = name
+            record.cursor_id = cursor_id
+            record.updated_at = time.time()
+            s.commit()
+
+    def get_session(self, session_id: str) -> dict | None:
+        """Return session metadata by ID, or None."""
+        with self._get_session() as s:
+            record = s.get(SessionRecord, session_id)
+            if record is None:
+                return None
+            return {
+                "id": record.id,
+                "name": record.name,
+                "cursor_id": record.cursor_id,
+                "created_at": record.created_at,
+                "updated_at": record.updated_at,
+            }
+
+    def delete_session(self, session_id: str) -> None:
+        """Delete a session metadata row."""
+        with self._get_session() as s:
+            record = s.get(SessionRecord, session_id)
+            if record is not None:
+                s.delete(record)
+                s.commit()
 
     # --- Task operations ---
 

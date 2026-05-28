@@ -1,10 +1,11 @@
-"""Session — stores a task tree in SQLite, runs via CentralControl."""
+"""Session — stores a task tree and session metadata in SQLite."""
 
 from __future__ import annotations
 
 import asyncio
-import json
 import os
+import time
+import uuid
 
 from pi.ai import get_model
 
@@ -21,22 +22,24 @@ from simple_agent.models import register_custom_models
 
 
 class Session:
-    """A session that stores a task tree in SQLite and runs via CentralControl.
+    """A session that stores a task tree and metadata in SQLite.
 
-    Session state (cursor_id) is persisted to a JSON file.  Task data is
-    stored in the SQLite DB.
+    Each session is identified by a unique ID.  The DB file is
+    ``{session_id}.db`` inside *base_dir*.
 
     Usage::
 
-        session = Session("my-task")
+        session = Session()                         # new session, auto ID
         task = await session.run("build a test suite")
+
+        session2 = Session(session_id=s._id)        # reload existing
     """
 
-    def __init__(self, name: str, base_dir: str = "./sessions"):
-        self._name = name
+    def __init__(self, session_id: str | None = None,
+                 base_dir: str = "./sessions"):
+        self._id = session_id or f"session_{uuid.uuid4().hex[:12]}"
         self._base_dir = base_dir
-        self._db_path = os.path.join(base_dir, f"{name}.db")
-        self._session_path = os.path.join(base_dir, f"{name}.json")
+        self._db_path = os.path.join(base_dir, f"{self._id}.db")
         self._db = Database(self._db_path)
         self._tools_mgr = ToolMgr(self._db)
         self._agent_process = AgentProcess(get_model("deepseek", "deepseek-v4-pro"))
@@ -53,22 +56,19 @@ class Session:
         self._cancel_event = asyncio.Event()
         self._running = False
 
-        if os.path.exists(self._session_path):
-            self._load_session()
+        self._load_session()
+
+    def _load_session(self) -> None:
+        """Load session metadata from DB by session ID, or init defaults."""
+        data = self._db.get_session(self._id)
+        if data is not None:
+            self._cursor_id = data.get("cursor_id")
+            self._created_at = data.get("created_at", time.time())
+            self._updated_at = data.get("updated_at", time.time())
         else:
-            import time
             self._cursor_id: int | None = None
             self._created_at = time.time()
             self._updated_at = self._created_at
-
-    def _load_session(self) -> None:
-        """Load session metadata from file."""
-        import time
-        with open(self._session_path) as f:
-            data = json.load(f)
-        self._cursor_id = data.get("cursor_id")
-        self._created_at = data.get("created_at", time.time())
-        self._updated_at = data.get("updated_at", time.time())
 
     @property
     def root(self) -> Task | None:
@@ -191,20 +191,18 @@ class Session:
         self._cancel_event.clear()
         self.save()
 
-    def save(self) -> str:
-        """Persist session metadata to file.  Returns filepath."""
-        import time
+    @property
+    def id(self) -> str:
+        return self._id
+
+    def save(self) -> None:
+        """Persist session metadata to the database."""
         self._updated_at = time.time()
-        os.makedirs(os.path.dirname(self._session_path) or ".", exist_ok=True)
-        data = {
-            "name": self._name,
-            "cursor_id": self._cursor_id,
-            "created_at": self._created_at,
-            "updated_at": self._updated_at,
-        }
-        with open(self._session_path, "w") as f:
-            json.dump(data, f, indent=2)
-        return self._session_path
+        self._db.upsert_session(
+            session_id=self._id,
+            name="",
+            cursor_id=self._cursor_id,
+        )
 
     def _checkpoint(self) -> None:
         """Alias for save, used internally after each transition."""

@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import json
 import os
 
 import pytest
@@ -15,7 +14,7 @@ class TestSessionInit:
     """Tests for Session initialization."""
 
     def test_new_session_has_no_root(self, tmp_path):
-        session = Session("test", base_dir=str(tmp_path))
+        session = Session(base_dir=str(tmp_path))
         assert session.root is None
 
     def test_existing_session_loads_root(self, tmp_path):
@@ -26,7 +25,7 @@ class TestSessionInit:
         root = Task(input="hello", state="PENDING")
         root.id = db.upsert_task(root)
 
-        session = Session("test", base_dir=str(tmp_path))
+        session = Session(session_id="test", base_dir=str(tmp_path))
         assert session.root is not None
         assert session.root.input == "hello"
         assert session.root.state == "PENDING"
@@ -35,40 +34,44 @@ class TestSessionInit:
 class TestSessionSave:
     """Tests for session metadata save/load."""
 
-    def test_save_writes_json_file(self, tmp_path):
-        session = Session("test", base_dir=str(tmp_path))
-        filepath = session.save()
-        assert os.path.exists(filepath)
-        assert filepath.endswith(".json")
+    def test_save_persists_to_db(self, tmp_path):
+        session = Session(base_dir=str(tmp_path))
+        session._cursor_id = 7
+        session.save()
+
+        data = session._db.get_session(session.id)
+        assert data is not None
+        assert data["cursor_id"] == 7
+        assert "created_at" in data
+        assert "updated_at" in data
 
     def test_save_includes_all_metadata(self, tmp_path):
-        session = Session("test", base_dir=str(tmp_path))
-        filepath = session.save()
+        session = Session(base_dir=str(tmp_path))
+        session._cursor_id = 3
+        session.save()
 
-        with open(filepath) as f:
-            data = json.load(f)
-        assert data["name"] == "test"
-        assert "cursor_id" in data
+        data = session._db.get_session(session.id)
+        assert data["cursor_id"] == 3
         assert "created_at" in data
         assert "updated_at" in data
 
     def test_load_restores_metadata(self, tmp_path):
-        session = Session("test", base_dir=str(tmp_path))
+        session = Session(base_dir=str(tmp_path))
         session._cursor_id = 42
-        filepath = session.save()
+        session.save()
 
-        session2 = Session("test", base_dir=str(tmp_path))
+        session2 = Session(session_id=session.id, base_dir=str(tmp_path))
         assert session2._cursor_id == 42
 
     def test_new_session_has_timestamps(self, tmp_path):
-        session = Session("test", base_dir=str(tmp_path))
+        session = Session(base_dir=str(tmp_path))
         assert session._created_at is not None
         assert session._updated_at is not None
         assert session._created_at == session._updated_at
 
     def test_save_updates_updated_at(self, tmp_path):
         import time
-        session = Session("test", base_dir=str(tmp_path))
+        session = Session(base_dir=str(tmp_path))
         original = session._updated_at
         time.sleep(0.01)
         session.save()
