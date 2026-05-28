@@ -49,6 +49,8 @@ async def test_plan_runner_integration():
     )
     plan_task.id = db.upsert_task(plan_task)
 
+    plan_task.metadata["context_msgs"] = list(plan_task.messages)
+
     max_iterations = 5
     for i in range(max_iterations):
         print(f"\n{'='*60}")

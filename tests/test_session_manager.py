@@ -139,28 +139,6 @@ class TestSessionManagerRunPause:
         sm.run(s.id, "test")
         assert s.id not in sm._cooldown_timers
 
-
-class TestSessionRunLive:
-    """Manual inspection: run a session with real LLM calls, print stream events."""
-
-    @pytest.mark.asyncio
-    async def test_run_and_print_stream_events(self, tmp_path):
-        sm = SessionManager(sessions_dir=str(tmp_path))
-        s = sm.create()
-
-        queue = sm.run(s.id, "Say hello in one short sentence.")
-
-        print("\n=== STREAM EVENTS ===")
-        while True:
-            event = await queue.get()
-            if event is None:
-                print("=== STREAM END (sentinel) ===")
-                break
-            event_type = type(event).__name__
-            print(f"[{event_type}] {event}")
-        print("========================\n")
-
-
 class TestAPIEndpoints:
     """Session API endpoints (via TestClient)."""
 
@@ -251,3 +229,85 @@ class TestAPIEndpoints:
     def test_run_missing_session(self, client):
         resp = client.post("/api/sessions/nonexistent/run", json={"input": "hello"})
         assert resp.status_code == 404
+
+
+class TestSessionRunStream:
+    """End-to-end test: call session run API and print stream frames."""
+
+    @pytest.mark.asyncio
+    async def test_run_and_print_stream(self, tmp_path, unused_tcp_port):
+        import json as _json
+
+        import httpx
+        import uvicorn
+
+        from simple_agent.web.app import create_app
+
+        app = create_app(
+            db_path=":memory:",
+            sessions_dir=str(tmp_path),
+            cooldown_seconds=60,
+        )
+
+        config = uvicorn.Config(app, host="127.0.0.1", port=unused_tcp_port, log_level="error")
+        server = uvicorn.Server(config)
+        task = asyncio.get_event_loop().create_task(server.serve())
+
+        async with httpx.AsyncClient() as client:
+            # Wait for server to start
+            for _ in range(50):
+                try:
+                    await client.get(f"http://127.0.0.1:{unused_tcp_port}/api/sessions")
+                    break
+                except Exception:
+                    await asyncio.sleep(0.05)
+
+            resp = await client.post(f"http://127.0.0.1:{unused_tcp_port}/api/sessions")
+            assert resp.status_code == 201
+            sid = resp.json()["id"]
+
+            async with client.stream(
+                "POST",
+                f"http://127.0.0.1:{unused_tcp_port}/api/sessions/{sid}/run",
+                json={"input": "show me the directory structure"},
+            ) as resp:
+                assert resp.status_code == 200
+                assert resp.headers["x-vercel-ai-data-stream"] == "v1"
+
+                async for line in resp.aiter_lines():
+                    if not line:
+                        continue
+                    if line == "data: [DONE]":
+                        print("[DONE]", flush=True)
+                        break
+                    frame = _json.loads(line.removeprefix("data: "))
+                    ftype = frame.get("type", "?")
+                    if ftype == "text-delta":
+                        print(frame["delta"], end="", flush=True)
+                    elif ftype == "text-start":
+                        print(f"\n[text-start] ", end="", flush=True)
+                    elif ftype == "text-end":
+                        print(" [text-end]", flush=True)
+                    elif ftype == "reasoning-delta":
+                        print(frame["delta"], end="", flush=True)
+                    elif ftype == "reasoning-start":
+                        print(f"\n[reasoning-start] ", end="", flush=True)
+                    elif ftype == "reasoning-end":
+                        print(" [reasoning-end]", flush=True)
+                    elif ftype == "tool-input-start":
+                        print(f"\n[tool-input-start] {frame.get('toolName', '?')}", end="", flush=True)
+                    elif ftype == "tool-input-delta":
+                        print(frame["delta"], end="", flush=True)
+                    elif ftype == "tool-input-available":
+                        print(f"\n[tool-input-available] {frame.get('toolName')}: {frame.get('input')}", flush=True)
+                    elif ftype == "tool-output-available":
+                        print(f"[tool-output-available] {frame.get('toolCallId')}: {frame.get('output')}", flush=True)
+                    elif ftype == "finish":
+                        print(f"[finish] reason={frame.get('finishReason')}", flush=True)
+                    elif ftype == "error":
+                        print(f"[ERROR] {frame.get('errorText')}", flush=True)
+                    else:
+                        print(f"[{ftype}] {frame}", flush=True)
+
+        server.should_exit = True
+        await task

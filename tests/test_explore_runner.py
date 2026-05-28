@@ -46,6 +46,10 @@ async def test_explore_runner_integration():
     task.id = db.upsert_task(task)
     assert task.id is not None
 
+    from simple_agent.snapshot.ghost_indexer import RepoWatcher
+    task.metadata["repo_watcher"] = RepoWatcher(task.repo_path, "./data/snapshots")
+    task.metadata["context_msgs"] = list(task.messages)
+
     # Phase 1: execute
     result = await runner.run(task)
     assert result.kind == "continue"

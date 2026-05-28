@@ -111,7 +111,7 @@ class TestDBRoundtrip:
 
         rows = db.load_all_tasks()
         assert len(rows) == 1
-        assert rows[0]["input"] == "hello"
+        assert rows[0].input == "hello"
 
     def test_load_single_root(self):
         db = self._make_db()
@@ -128,7 +128,6 @@ class TestDBRoundtrip:
 
     def test_parent_child_roundtrip(self):
         db = self._make_db()
-
         root = _make_task(type="plan", state="WAITING")
         root.id = db.upsert_task(root)
 
@@ -145,7 +144,6 @@ class TestDBRoundtrip:
 
     def test_finished_task_ids_roundtrip(self):
         db = self._make_db()
-
         root = _make_task(type="plan", state="WAITING")
         root.id = db.upsert_task(root)
 

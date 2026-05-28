@@ -12,9 +12,31 @@ from pydantic import BaseModel
 
 from pi.agent import (
     AgentEndEvent,
+    AgentEvent,
+    AgentStartEvent,
+    AgentToolResult,
+    MessageEndEvent,
+    MessageStartEvent,
     MessageUpdateEvent,
     ToolExecutionEndEvent,
     ToolExecutionStartEvent,
+    ToolExecutionUpdateEvent,
+    TurnStartEvent,
+    TurnEndEvent,
+)
+from pi.ai.types import (
+    AssistantMessageEvent,
+    DoneEvent,
+    ErrorEvent,
+    TextDeltaEvent,
+    TextEndEvent,
+    TextStartEvent,
+    ThinkingDeltaEvent,
+    ThinkingEndEvent,
+    ThinkingStartEvent,
+    ToolCallDeltaEvent,
+    ToolCallEndEvent,
+    ToolCallStartEvent,
 )
 
 from simple_agent.session.session_manager import SessionBusyError, SessionManager
@@ -105,68 +127,131 @@ def create_session_router() -> APIRouter:
     return router
 
 
-# ── stream helper ──────────────────────────────────────────────────────
+# ── pi-agent → Vercel AI SDK v1 data frame conversion ────────────────────
+
+_REASON_MAP = {"stop": "stop", "length": "length", "tool_use": "tool-calls"}
+
+
+def convert_to_v6(event: AgentEvent | dict) -> list[dict]:
+    """Convert a pi-agent event to Vercel AI SDK data stream frame dicts.
+
+    Returns 0-N frame dicts. Each event maps independently — no mutable state.
+    """
+    # ── raw error dicts ───────────────────────────────────────────────
+    if isinstance(event, dict):
+        msg = event.get("errorText", event.get("message", ""))
+        return [{"type": "error", "errorText": str(msg)}]
+
+    # ── agent lifecycle ───────────────────────────────────────────────
+    if isinstance(event, AgentStartEvent):
+        return [{"type": "start", "messageId": f"msg_{id(event)}"}]
+
+    # ── message lifecycle ─────────────────────────────────────────────
+    if isinstance(event, MessageUpdateEvent):
+        return _convert_assistant_event(event.assistant_message_event)
+
+    # ── tool execution ────────────────────────────────────────────────
+    if isinstance(event, ToolExecutionEndEvent):
+        frame: dict = {
+            "type": "tool-output-available",
+            "toolCallId": event.tool_call_id,
+            "output": _extract_tool_output(event.result),
+        }
+        if event.is_error:
+            frame["errorText"] = "Tool execution failed"
+        return [frame]
+
+    # ── agent end (fallback finish) ───────────────────────────────────
+    if isinstance(event, AgentEndEvent):
+        return [{"type": "finish", "finishReason": "stop"}]
+
+    # ── passthrough (no frames emitted) ───────────────────────────────
+    if isinstance(event, (
+        MessageStartEvent,
+        MessageEndEvent,
+        ToolExecutionStartEvent,
+        ToolExecutionUpdateEvent,
+        TurnStartEvent,
+        TurnEndEvent,
+    )):
+        return []
+
+    return []
+
+
+def _convert_assistant_event(ae: AssistantMessageEvent) -> list[dict]:
+    """Map an AssistantMessageEvent subtype to Vercel AI SDK frames."""
+    tp = ae.type
+
+    if tp == "text_start":
+        return [{"type": "text-start", "id": f"txt-{ae.content_index}"}]
+
+    if tp == "text_delta":
+        return [{"type": "text-delta", "id": f"txt-{ae.content_index}", "delta": ae.delta}]
+
+    if tp == "text_end":
+        return [{"type": "text-end", "id": f"txt-{ae.content_index}"}]
+
+    if tp == "thinking_start":
+        return [{"type": "reasoning-start", "id": f"rsn-{ae.content_index}"}]
+
+    if tp == "thinking_delta":
+        return [{"type": "reasoning-delta", "id": f"rsn-{ae.content_index}", "delta": ae.delta}]
+
+    if tp == "thinking_end":
+        return [{"type": "reasoning-end", "id": f"rsn-{ae.content_index}"}]
+
+    if tp == "toolcall_start":
+        return [{"type": "tool-input-start", "toolCallId": f"call_{ae.content_index}", "toolName": ""}]
+
+    if tp == "toolcall_delta":
+        return [{"type": "tool-input-delta", "toolCallId": f"call_{ae.content_index}", "delta": ae.delta}]
+
+    if tp == "toolcall_end":
+        tc = ae.tool_call
+        return [{
+            "type": "tool-input-available",
+            "toolCallId": f"call_{ae.content_index}",
+            "toolName": tc.name,
+            "input": tc.arguments,
+        }]
+
+    if tp == "done":
+        return [{"type": "finish", "finishReason": _REASON_MAP.get(ae.reason, "stop")}]
+
+    if tp == "error":
+        msg = getattr(ae.error, "error_message", None) or str(ae.error)
+        return [{"type": "error", "errorText": msg}]
+
+    # "start" event inside MessageUpdate — redundant with MessageStartEvent
+    return []
+
+
+def _extract_tool_output(result) -> str:
+    """Extract text from an AgentToolResult's content items."""
+    if result is None:
+        return ""
+    if isinstance(result, (str, int, float, bool)):
+        return str(result)
+    if isinstance(result, (dict, list)):
+        return result
+    if isinstance(result, AgentToolResult):
+        parts = [c.text for c in result.content]
+        return "\n".join(parts) if parts else ""
+    return str(result)
+
+
+# ── stream ──────────────────────────────────────────────────────────────
 
 
 async def _stream_session_events(queue: asyncio.Queue) -> AsyncGenerator[str, None]:
-    """Convert agent events from *queue* to v6 data stream protocol frames."""
-    message_id = None
-    in_text_block = False
-    text_block_id = None
-    text_block_counter = 0
-
-    def _emit(frame: dict) -> str:
-        return f"data: {json.dumps(frame)}\n"
-
+    """Read pi-agent events from *queue*, yield Vercel AI SDK SSE lines."""
     while True:
         event = await queue.get()
         if event is None:
             break
 
-        if isinstance(event, AgentEndEvent):
-            if in_text_block:
-                yield _emit({"type": "text-end", "id": text_block_id})
-                in_text_block = False
-            finish_reason = "stop"
-            yield _emit({"type": "finish", "finishReason": finish_reason})
-
-        elif isinstance(event, MessageUpdateEvent):
-            ae = event.assistant_message_event
-            if ae.type == "text_delta":
-                if not in_text_block:
-                    text_block_counter += 1
-                    text_block_id = f"txt_{text_block_counter}"
-                    yield _emit({"type": "text-start", "id": text_block_id})
-                    if message_id is None:
-                        message_id = f"msg_{id(event)}"
-                        yield _emit({"type": "start", "messageId": message_id})
-                    in_text_block = True
-                yield _emit({"type": "text-delta", "id": text_block_id, "delta": ae.delta})
-
-        elif isinstance(event, ToolExecutionStartEvent):
-            if in_text_block:
-                yield _emit({"type": "text-end", "id": text_block_id})
-                in_text_block = False
-            yield _emit({
-                "type": "tool-input-start",
-                "toolCallId": event.tool_call_id,
-                "toolName": event.tool_name,
-            })
-            yield _emit({
-                "type": "tool-input-available",
-                "toolCallId": event.tool_call_id,
-                "toolName": event.tool_name,
-                "input": event.args,
-            })
-
-        elif isinstance(event, ToolExecutionEndEvent):
-            result = event.result
-            if not isinstance(result, dict):
-                result = {"value": str(result)} if not hasattr(result, "__dict__") else result.__dict__
-            yield _emit({
-                "type": "tool-output-available",
-                "toolCallId": event.tool_call_id,
-                "output": result,
-            })
+        for frame in convert_to_v6(event):
+            yield f"data: {json.dumps(frame)}\n"
 
     yield "data: [DONE]\n"
