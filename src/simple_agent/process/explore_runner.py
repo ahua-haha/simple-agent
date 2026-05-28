@@ -8,8 +8,6 @@ from simple_agent.process.agent_process import AgentProcess, AgentState
 from simple_agent.process.runners import BaseRunner, RunnerResult
 from simple_agent.tool.tool_mgr import ToolMgr
 from simple_agent.db.db import Database
-from simple_agent.snapshot.ghost_indexer import RepoWatcher
-
 if TYPE_CHECKING:
     from simple_agent.state.state import Task
 
@@ -55,8 +53,6 @@ class ExploreRunner(BaseRunner):
         return await self._execute(task)
 
     async def _execute(self, task: "Task") -> RunnerResult:
-        self._ensure_metadata(task)
-
         watcher = task.metadata["repo_watcher"]
         task.start_snapshot = task.start_snapshot or watcher.take_snapshot()
 
@@ -86,8 +82,6 @@ class ExploreRunner(BaseRunner):
         return RunnerResult(kind="continue")
 
     async def _collect(self, task: "Task") -> RunnerResult:
-        self._ensure_metadata(task)
-
         collect_state = AgentState()
         collect_tools: list = [
             collect_state.bind_tool(self._tools_mgr.create_record_textresult_tool()),
@@ -117,20 +111,3 @@ class ExploreRunner(BaseRunner):
         task.state = "FINISHED"
         return RunnerResult(kind="finished")
 
-    def _ensure_metadata(self, task: "Task") -> None:
-        """Init metadata if not already set (cached across transitions)."""
-        if "repo_watcher" not in task.metadata:
-            task.metadata["repo_watcher"] = RepoWatcher(task.repo_path, "./data/snapshots")
-        if "context_msgs" not in task.metadata:
-            from simple_agent.state.state import Task as TaskModel
-            current_id = task.parent_id
-            ancestor_rows = []
-            while current_id is not None:
-                row = self._db.get_task(current_id)
-                if row is None:
-                    break
-                ancestor_rows.append(row)
-                current_id = row.get("parent_id")
-            ancestor_rows.reverse()
-            tasks_by_id = TaskModel.from_db_rows(ancestor_rows) if ancestor_rows else {}
-            task.metadata["context_msgs"] = task.context(tasks_by_id) if tasks_by_id else list(task.messages)

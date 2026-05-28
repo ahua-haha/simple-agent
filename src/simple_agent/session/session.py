@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 import os
 
@@ -12,6 +13,7 @@ from simple_agent.process.agent_process import AgentProcess
 from simple_agent.process.runners import CollectRunner, SingleRunRunner
 from simple_agent.process.explore_runner import ExploreRunner
 from simple_agent.process.plan_runner import PlanRunner
+from simple_agent.snapshot.ghost_indexer import RepoWatcher
 from simple_agent.state.state import Task
 from simple_agent.tool.tool_mgr import ToolMgr
 from simple_agent.db.db import Database
@@ -46,6 +48,10 @@ class Session:
             "single_run": SingleRunRunner(self._db, self._tools_mgr, self._agent_process),
         }
         self._cc = CentralControl(self._db, runners)
+
+        self._cursor: Task | None = None
+        self._cancel_event = asyncio.Event()
+        self._running = False
 
         if os.path.exists(self._session_path):
             self._load_session()
@@ -84,30 +90,106 @@ class Session:
         tasks = Task.from_db_rows([row])
         return tasks.get(self._cursor_id)
 
-    async def run(self, user_input: str) -> Task:
-        cursor = self._load_cursor()
+    def _ensure_task_metadata(self, task: Task) -> None:
+        """Pre-load all runtime metadata for *task* so runners don't need to.
 
-        if cursor is None:
-            cursor = Task(input=user_input, state="PENDING")
-            self._cursor_id = self._db.upsert_task(cursor)
-            cursor.id = self._cursor_id
+        Populates ``task.metadata["context_msgs"]`` (ancestor message chain)
+        and, for explore tasks, ``task.metadata["repo_watcher"]``.
+        """
+        if "context_msgs" not in task.metadata:
+            current_id = task.parent_id
+            ancestor_rows: list[dict] = []
+            while current_id is not None:
+                row = self._db.get_task(current_id)
+                if row is None:
+                    break
+                ancestor_rows.append(row)
+                current_id = row.get("parent_id")
+            ancestor_rows.reverse()
+            tasks_by_id = Task.from_db_rows(ancestor_rows) if ancestor_rows else {}
+            task.metadata["context_msgs"] = (
+                task.context(tasks_by_id) if tasks_by_id else list(task.messages)
+            )
+
+        if task.type == "explore" and "repo_watcher" not in task.metadata:
+            task.metadata["repo_watcher"] = RepoWatcher(
+                task.repo_path, "./data/snapshots"
+            )
+
+    @property
+    def is_running(self) -> bool:
+        return self._running
+
+    async def run(self, user_input: str) -> Task | None:
+        """Run the task tree until finished, paused, or cancelled.
+
+        Returns the root Task on completion, or None if paused.
+        """
+        if self._cursor is None:
+            self._cursor = self._load_cursor()
+
+        if self._cursor is None:
+            self._cursor = Task(input=user_input, state="PENDING")
+            self._cursor_id = self._db.upsert_task(self._cursor)
+            self._cursor.id = self._cursor_id
             self._checkpoint()
 
         register_custom_models()
+        self._running = True
 
-        while cursor is not None:
-            new_cursor, updates, inserts = await self._cc.run(cursor)
+        try:
+            while self._cursor is not None:
+                if self._cancel_event.is_set():
+                    break
 
-            for t in updates:
-                self._db.upsert_task(t)
-            for t in inserts:
-                self._db.upsert_task(t)
+                self._ensure_task_metadata(self._cursor)
+                new_cursor, updates, inserts = await self._cc.run(self._cursor)
 
-            cursor = new_cursor
-            self._cursor_id = cursor.id if cursor else None
-            self._checkpoint()
+                for t in updates:
+                    self._db.upsert_task(t)
+                for t in inserts:
+                    self._db.upsert_task(t)
 
-        return self.root
+                self._cursor = new_cursor
+                self._cursor_id = self._cursor.id if self._cursor else None
+                self._checkpoint()
+
+                if self._cancel_event.is_set():
+                    break
+        finally:
+            self._running = False
+
+        if self._cursor is None:
+            return self.root
+
+        return None  # paused
+
+    def pause(self) -> None:
+        """Signal the run loop to stop at the next safe point.
+
+        The current transition completes, then the loop exits.
+        Safe to call from any task / thread.
+        """
+        self._cancel_event.set()
+
+    def resume(self) -> None:
+        """Clear the pause signal so ``run()`` can proceed again."""
+        self._cancel_event.clear()
+
+    def park(self) -> None:
+        """Free the cursor from memory, keep only persisted metadata.
+
+        Sets ``self._cursor = None`` to release the Task object.  The
+        *cursor_id* stays in the JSON checkpoint so ``run()`` can
+        reload it from DB on next call.
+
+        Raises RuntimeError if the session is currently running.
+        """
+        if self._running:
+            raise RuntimeError("Cannot park while session is running")
+        self._cursor = None
+        self._cancel_event.clear()
+        self.save()
 
     def save(self) -> str:
         """Persist session metadata to file.  Returns filepath."""

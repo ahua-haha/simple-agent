@@ -1,5 +1,6 @@
 """FastAPI app for browsing the task tree and serving the agent chat API."""
 
+import os
 from pathlib import Path
 
 from fastapi import FastAPI, Request
@@ -8,8 +9,10 @@ from jinja2 import Environment, FileSystemLoader
 
 from simple_agent.db.db import Database
 from simple_agent.models import register_custom_models
+from simple_agent.session.session_manager import DEFAULT_COOLDOWN_SECONDS, SessionManager
 from simple_agent.state.state import Task
 from simple_agent.web.chat_api import create_chat_router
+from simple_agent.web.session_api import create_session_router
 
 TEMPLATES_DIR = Path(__file__).parent / "templates"
 jinja_env = Environment(loader=FileSystemLoader(str(TEMPLATES_DIR)))
@@ -34,12 +37,26 @@ def create_app(
     model=None,
     system_prompt: str = "You are a helpful assistant.",
     tools: list | None = None,
+    sessions_dir: str = "./sessions",
+    cooldown_seconds: int = DEFAULT_COOLDOWN_SECONDS,
 ) -> FastAPI:
     global _db
     _db = Database(db_path)
 
     app = FastAPI(title="Simple Agent Web")
 
+    # SessionManager — always available, even without a model
+    session_manager = SessionManager(
+        sessions_dir=sessions_dir,
+        cooldown_seconds=cooldown_seconds,
+    )
+    app.state.session_manager = session_manager
+
+    # Session API — always registered
+    session_router = create_session_router()
+    app.include_router(session_router, prefix="/api")
+
+    # Legacy stateless chat — only when a model is explicitly provided
     if model is not None:
         chat_router = create_chat_router(
             model=model,
@@ -86,6 +103,17 @@ def main() -> None:
     parser.add_argument("--model-provider", default=None, help="Model provider for chat API (e.g. anthropic, deepseek)")
     parser.add_argument("--model-name", default=None, help="Model name for chat API (e.g. claude-sonnet-4-5)")
     parser.add_argument("--system-prompt", default="You are a helpful assistant.", help="System prompt for chat API")
+    parser.add_argument(
+        "--cooldown-seconds",
+        type=int,
+        default=int(os.environ.get("SESSION_COOLDOWN_SECONDS", str(DEFAULT_COOLDOWN_SECONDS))),
+        help=f"Seconds before an idle session parks to disk (default: {DEFAULT_COOLDOWN_SECONDS})",
+    )
+    parser.add_argument(
+        "--sessions-dir",
+        default="./sessions",
+        help="Directory for session persistence (default: ./sessions)",
+    )
     args = parser.parse_args()
 
     register_custom_models()
@@ -111,6 +139,8 @@ def main() -> None:
         db_path=args.db,
         model=model,
         system_prompt=args.system_prompt,
+        sessions_dir=args.sessions_dir,
+        cooldown_seconds=args.cooldown_seconds,
     )
 
     uvicorn.run(app, host=args.host, port=args.port)

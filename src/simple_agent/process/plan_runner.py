@@ -41,8 +41,6 @@ class PlanRunner(BaseRunner):
         self._agent_process = agent_process
 
     async def run(self, task: "Task") -> RunnerResult:
-        self._ensure_metadata(task)
-
         state = AgentState()
         tools: list = [
             state.bind_tool(self._tools_mgr.create_define_task_tool(), stop=True),
@@ -78,17 +76,3 @@ class PlanRunner(BaseRunner):
 
         return RunnerResult(kind="continue")
 
-    def _ensure_metadata(self, task: "Task") -> None:
-        if "context_msgs" not in task.metadata:
-            from simple_agent.state.state import Task as TaskModel
-            current_id = task.parent_id
-            ancestor_rows = []
-            while current_id is not None:
-                row = self._db.get_task(current_id)
-                if row is None:
-                    break
-                ancestor_rows.append(row)
-                current_id = row.get("parent_id")
-            ancestor_rows.reverse()
-            tasks_by_id = TaskModel.from_db_rows(ancestor_rows) if ancestor_rows else {}
-            task.metadata["context_msgs"] = task.context(tasks_by_id) if tasks_by_id else list(task.messages)
