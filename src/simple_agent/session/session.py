@@ -55,8 +55,15 @@ class Session:
         self._cursor: Task | None = None
         self._cancel_event = asyncio.Event()
         self._running = False
+        self.event_queue: asyncio.Queue | None = None
 
+        self._agent_process.subscribe(self._on_agent_event)
         self._load_session()
+
+    def _on_agent_event(self, event) -> None:
+        """Push agent events into the event queue if one is active."""
+        if self.event_queue is not None:
+            self.event_queue.put_nowait(event)
 
     def _load_session(self) -> None:
         """Load session metadata from DB by session ID, or init defaults."""
@@ -136,6 +143,8 @@ class Session:
 
         register_custom_models()
         self._running = True
+        if self.event_queue is None:
+            self.event_queue = asyncio.Queue()
 
         try:
             while self._cursor is not None:
@@ -153,6 +162,9 @@ class Session:
                     break
         finally:
             self._running = False
+            if self.event_queue is not None:
+                self.event_queue.put_nowait(None)
+                self.event_queue = None
 
         if self._cursor is None:
             return self.root
@@ -200,10 +212,3 @@ class Session:
             self._db.upsert_session(self._id, "", self._cursor_id, session=s)
             s.commit()
 
-    @staticmethod
-    def list_sessions(base_dir: str = "./sessions") -> list[str]:
-        if not os.path.isdir(base_dir):
-            return []
-        return sorted(
-            f[:-3] for f in os.listdir(base_dir) if f.endswith(".db")
-        )
