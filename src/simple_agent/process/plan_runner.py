@@ -17,8 +17,8 @@ SYSTEM_PROMPT = """You are a planner. Examine the conversation context and decid
 If more exploration or work is needed: call 'define_task' with a clear, self-contained
 description of the sub-task to perform.
 
-If enough information has been gathered to answer the original request:
-call 'determine_state' with state='finished' and a reason explaining why.
+If enough information has been gathered to answer the original request: respond directly
+with a summary of what was accomplished. Do NOT call any tool — just write your response.
 
 The sub-task agent inherits the full conversation context, so you do not need
 to repeat information the sub-task can already see — just describe what to do.
@@ -28,9 +28,9 @@ to repeat information the sub-task can already see — just describe what to do.
 class PlanRunner(BaseRunner):
     """Runner for plan tasks — create sub-tasks or finish.
 
-    Examines task.context(), runs the agent with define_task and
-    determine_state tools.  Returns a signal that CentralControl
-    uses to move the cursor.
+    Examines task.context(), runs the agent with the define_task tool.
+    If the agent calls it, a sub-task is created.  If the agent responds
+    directly (no tool call), the task is finished.
     """
 
     type = "plan"
@@ -42,10 +42,9 @@ class PlanRunner(BaseRunner):
 
     async def run(self, task: "Task") -> RunnerResult:
         state = AgentState()
-        state.stop_condition = lambda s: bool(s.tool_results)
+        state.stop_condition = lambda s: "define_task" in s.tool_results
         tools: list = [
             state.bind_tool(self._tools_mgr.create_define_task_tool()),
-            state.bind_tool(self._tools_mgr.create_determine_state_tool()),
         ]
 
         await self._agent_process.run(
@@ -68,12 +67,6 @@ class PlanRunner(BaseRunner):
                 sub.messages = []
                 return RunnerResult(kind="sub_task", child=sub)
 
-        if "determine_state" in state.tool_results:
-            from simple_agent.state.state import StateClarification
-            sc = state.tool_results["determine_state"][-1]
-            if isinstance(sc, StateClarification) and sc.state == "finished":
-                task.result_msg = list(task.messages)
-                return RunnerResult(kind="finished")
-
-        return RunnerResult(kind="continue")
+        task.result_msg = list(task.messages)
+        return RunnerResult(kind="finished")
 
