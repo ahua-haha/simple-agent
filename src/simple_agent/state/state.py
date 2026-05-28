@@ -1,11 +1,62 @@
-"""State module for agent state management."""
+"""State module — domain models, DB record classes, and serialization."""
 
 from __future__ import annotations
 
-from pydantic import BaseModel
+import json
+import time
+
+from pydantic import BaseModel, TypeAdapter
+from sqlmodel import SQLModel, Field
 
 from pi.agent.types import AgentMessage, AgentToolResult
 from pi.ai.types import ToolCall
+
+
+# ── DB record classes ────────────────────────────────────────────────
+
+
+class ToolCallRecord(SQLModel, table=True):
+    """SQLite model for tool call executions."""
+
+    id: int | None = Field(default=None, primary_key=True)
+    tool: str = Field(index=True)
+    content: str | None = Field(default=None)  # JSON serialized ToolExecMessage
+    created_at: int = Field(default_factory=lambda: int(time.time()), index=True)
+
+
+class SessionRecord(SQLModel, table=True):
+    """SQLite model for session metadata."""
+
+    id: str = Field(primary_key=True)
+    name: str = Field(default="")
+    cursor_id: int | None = Field(default=None)
+    created_at: float = Field(default_factory=time.time)
+    updated_at: float = Field(default_factory=time.time)
+
+
+class TaskRecord(SQLModel, table=True):
+    """SQLite model for task tree persistence.
+
+    Each task is a flat row.  ``parent_id`` and ``running_task_id`` are
+    plain ints (no FK) resolved to object refs in memory on load.
+    """
+
+    id: int | None = Field(default=None, primary_key=True)
+    parent_id: int | None = Field(default=None, index=True)
+    running_task_id: int | None = Field(default=None)
+    finished_task_ids: str | None = None  # JSON: list[int]
+    type: str = Field(default="single_run")
+    state: str = Field(default="PENDING")
+    input: str = ""
+    messages: str | None = None  # JSON: list[AgentMessage]
+    result: str | None = None    # JSON: list[TextResult]
+    result_msg: str | None = None  # JSON: list[AgentMessage]
+    repo_path: str = "."
+    start_snapshot: str | None = None
+    end_snapshot: str | None = None
+
+
+# ── Domain models ────────────────────────────────────────────────────
 
 
 class ToolExecMessage(BaseModel):
@@ -27,6 +78,9 @@ TEXT_RESULT_JSON_SCHEMA: dict = {
     },
     "required": ["desc", "toolCallLogID"],
 }
+
+_message_adapter = TypeAdapter(list[AgentMessage])
+_result_adapter = TypeAdapter(list[TextResult])
 
 
 class Task(BaseModel):
@@ -58,6 +112,24 @@ class Task(BaseModel):
     running_task: "Task | None" = None
 
     model_config = {"arbitrary_types_allowed": True}
+
+    def to_db_row(self) -> TaskRecord:
+        """Return a new ``TaskRecord`` with serialized fields."""
+        return TaskRecord(
+            id=self.id,
+            parent_id=self.parent_id,
+            running_task_id=self.running_task_id,
+            finished_task_ids=json.dumps(self.finished_task_ids or []),
+            type=self.type,
+            state=self.state,
+            input=self.input,
+            messages=_message_adapter.dump_json(self.messages or []).decode("utf-8"),
+            result=_result_adapter.dump_json(self.result or []).decode("utf-8"),
+            result_msg=_message_adapter.dump_json(self.result_msg or []).decode("utf-8"),
+            repo_path=self.repo_path,
+            start_snapshot=self.start_snapshot,
+            end_snapshot=self.end_snapshot,
+        )
 
     def __init__(self, **data):
         super().__init__(**data)
@@ -93,29 +165,29 @@ class Task(BaseModel):
         return self
 
     @staticmethod
-    def from_db_rows(rows: list[dict]) -> dict[int, "Task"]:
-        """Build Task objects from flat DB rows.
+    def from_db_rows(records: list[TaskRecord]) -> dict[int, "Task"]:
+        """Build Task objects from ``TaskRecord`` rows.
 
         Returns a dict mapping ``id → Task`` with ``running_task``
         object refs wired.  Callers can find the root via
         ``parent_id is None``.
         """
         tasks_by_id: dict[int, Task] = {}
-        for r in rows:
+        for r in records:
             task = Task(
-                id=r["id"],
-                parent_id=r.get("parent_id"),
-                running_task_id=r.get("running_task_id"),
-                finished_task_ids=r.get("finished_task_ids", []),
-                type=r["type"],
-                state=r["state"],
-                input=r["input"],
-                messages=r.get("messages", []),
-                result=r.get("result", []),
-                result_msg=r.get("result_msg", []),
-                repo_path=r.get("repo_path", "."),
-                start_snapshot=r.get("start_snapshot"),
-                end_snapshot=r.get("end_snapshot"),
+                id=r.id,
+                parent_id=r.parent_id,
+                running_task_id=r.running_task_id,
+                finished_task_ids=json.loads(r.finished_task_ids or "[]"),
+                type=r.type,
+                state=r.state,
+                input=r.input,
+                messages=_message_adapter.validate_json(r.messages or "[]"),
+                result=_result_adapter.validate_json(r.result or "[]"),
+                result_msg=_message_adapter.validate_json(r.result_msg or "[]"),
+                repo_path=r.repo_path or ".",
+                start_snapshot=r.start_snapshot,
+                end_snapshot=r.end_snapshot,
             )
             tasks_by_id[task.id] = task
 
