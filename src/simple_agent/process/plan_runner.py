@@ -42,9 +42,10 @@ class PlanRunner(BaseRunner):
 
     async def run(self, task: "Task") -> RunnerResult:
         state = AgentState()
+        state.stop_condition = lambda s: bool(s.tool_results)
         tools: list = [
-            state.bind_tool(self._tools_mgr.create_define_task_tool(), stop=True),
-            state.bind_tool(self._tools_mgr.create_determine_state_tool(), stop=True),
+            state.bind_tool(self._tools_mgr.create_define_task_tool()),
+            state.bind_tool(self._tools_mgr.create_determine_state_tool()),
         ]
 
         await self._agent_process.run(

@@ -49,10 +49,10 @@ class TestAgentState:
         state = AgentState()
         assert state.is_set() is False
 
-    def test_is_set_when_finish_reason_set(self):
+    def test_is_set_not_triggered_by_finish_reason(self):
         state = AgentState()
         state.finish_reason = "determine_state"
-        assert state.is_set() is True
+        assert state.is_set() is False
 
     def test_is_set_after_explicit_set(self):
         state = AgentState()
@@ -113,13 +113,14 @@ class TestBindTool:
         asyncio.run(_run())
         assert state.tool_results["record_textresult"] == ["accomplished X"]
 
-    def test_bind_tool_stop_sets_finish_reason(self):
+    def test_bind_tool_stop_via_condition(self):
         state = AgentState()
+        state.stop_condition = lambda s: "determine_state" in s.tool_results
 
         tool = _make_tool(name="determine_state")
         tool.result = "finished"
 
-        state.bind_tool(tool, stop=True)
+        state.bind_tool(tool)
 
         import asyncio
 
@@ -127,8 +128,24 @@ class TestBindTool:
             await tool.execute("id1", {})
 
         asyncio.run(_run())
-        assert state.finish_reason == "determine_state"
+        assert "determine_state" in state.tool_results
         assert state.is_set() is True
+
+    def test_bind_tool_does_not_set_finish_reason(self):
+        state = AgentState()
+
+        tool = _make_tool(name="determine_state")
+        tool.result = "finished"
+
+        state.bind_tool(tool)
+
+        import asyncio
+
+        async def _run():
+            await tool.execute("id1", {})
+
+        asyncio.run(_run())
+        assert state.finish_reason is None
 
     def test_bind_tool_returns_tool(self):
         state = AgentState()

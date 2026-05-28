@@ -17,9 +17,13 @@ from simple_agent.models import register_custom_models, get_api_key
 class AgentState(asyncio.Event):
     """Per-run state owned by the caller.
 
-    The caller creates this, binds tools to write into ``tool_results``
-    and to set ``finish_reason``, configures ``stop_condition``, then
+    The caller creates this, binds tools via ``bind_tool`` to record
+    results into ``tool_results``, configures ``stop_condition``, then
     passes it to ``AgentProcess.run()`` as the ``cancel_event``.
+
+    Stop is controlled exclusively through ``stop_condition`` (state-driven)
+    and explicit ``set()`` (for pause/cancel).  ``finish_reason`` is a
+    purely informational field — the framework never reads it.
 
     While the agent runs, ``agent_loop`` checks ``is_set()`` to decide
     whether to stop.  After the run the caller reads results from the
@@ -39,19 +43,17 @@ class AgentState(asyncio.Event):
     def is_set(self) -> bool:
         if self.stop_condition is not None and self.stop_condition(self):
             return True
-        if self.finish_reason is not None:
-            return True
         return super().is_set()
 
-    def bind_tool(self, tool: AgentTool, *, stop: bool = False) -> AgentTool:
+    def bind_tool(self, tool: AgentTool) -> AgentTool:
         """Wrap *tool* so its result is recorded into ``tool_results``.
 
         After each execution, if ``tool.result`` is set (e.g. by a
         ``ToolMgr.create_record_tool`` tool), it is appended to
         ``state.tool_results[tool.name]``.
 
-        If *stop* is True, the tool also sets ``finish_reason`` and
-        triggers ``set()`` to stop the agent loop.
+        Does NOT set ``finish_reason`` or call ``set()`` — stop behavior
+        is controlled exclusively through ``stop_condition``.
         """
         _state = self
         _original = tool.execute
@@ -66,9 +68,6 @@ class AgentState(asyncio.Event):
             if tool.result is not None:
                 _state.tool_results.setdefault(tool.name, []).append(tool.result)
                 tool.result = None
-            if stop:
-                _state.finish_reason = tool.name
-                _state.set()
             return res
 
         tool.execute = _wrapped

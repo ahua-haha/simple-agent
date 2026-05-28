@@ -57,8 +57,9 @@ class ExploreRunner(BaseRunner):
         task.start_snapshot = task.start_snapshot or watcher.take_snapshot()
 
         state = AgentState()
+        state.stop_condition = lambda s: "determine_state" in s.tool_results
         tools: list = [
-            state.bind_tool(self._tools_mgr.create_determine_state_tool(), stop=True),
+            state.bind_tool(self._tools_mgr.create_determine_state_tool()),
             *self._tools_mgr.create_all_tools(task.repo_path),
         ]
         await self._agent_process.run(
