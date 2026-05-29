@@ -223,8 +223,7 @@ class TestAPIEndpoints:
 
         resp = client.post(f"/api/sessions/{sid}/run", json={"input": "hello"})
         assert resp.status_code == 200
-        assert "text/plain" in resp.headers["content-type"]
-        assert resp.headers["x-vercel-ai-data-stream"] == "v1"
+        assert "text/event-stream" in resp.headers["content-type"]
 
     def test_run_missing_session(self, client):
         resp = client.post("/api/sessions/nonexistent/run", json={"input": "hello"})
@@ -269,45 +268,25 @@ class TestSessionRunStream:
             async with client.stream(
                 "POST",
                 f"http://127.0.0.1:{unused_tcp_port}/api/sessions/{sid}/run",
-                json={"input": "show me the directory structure"},
+                json={"input": "who are you?"},
             ) as resp:
                 assert resp.status_code == 200
-                assert resp.headers["x-vercel-ai-data-stream"] == "v1"
+                assert "text/event-stream" in resp.headers["content-type"]
 
+                event_type = None
                 async for line in resp.aiter_lines():
                     if not line:
+                        event_type = None
                         continue
                     if line == "data: [DONE]":
                         print("[DONE]", flush=True)
                         break
-                    frame = _json.loads(line.removeprefix("data: "))
-                    ftype = frame.get("type", "?")
-                    if ftype == "text-delta":
-                        print(frame["delta"], end="", flush=True)
-                    elif ftype == "text-start":
-                        print(f"\n[text-start] ", end="", flush=True)
-                    elif ftype == "text-end":
-                        print(" [text-end]", flush=True)
-                    elif ftype == "reasoning-delta":
-                        print(frame["delta"], end="", flush=True)
-                    elif ftype == "reasoning-start":
-                        print(f"\n[reasoning-start] ", end="", flush=True)
-                    elif ftype == "reasoning-end":
-                        print(" [reasoning-end]", flush=True)
-                    elif ftype == "tool-input-start":
-                        print(f"\n[tool-input-start] {frame.get('toolName', '?')}", end="", flush=True)
-                    elif ftype == "tool-input-delta":
-                        print(frame["delta"], end="", flush=True)
-                    elif ftype == "tool-input-available":
-                        print(f"\n[tool-input-available] {frame.get('toolName')}: {frame.get('input')}", flush=True)
-                    elif ftype == "tool-output-available":
-                        print(f"[tool-output-available] {frame.get('toolCallId')}: {frame.get('output')}", flush=True)
-                    elif ftype == "finish":
-                        print(f"[finish] reason={frame.get('finishReason')}", flush=True)
-                    elif ftype == "error":
-                        print(f"[ERROR] {frame.get('errorText')}", flush=True)
-                    else:
-                        print(f"[{ftype}] {frame}", flush=True)
+                    if line.startswith("event: "):
+                        event_type = line.removeprefix("event: ")
+                        print(f"\n[{event_type}] ", end="", flush=True)
+                    elif line.startswith("data: "):
+                        payload = _json.loads(line.removeprefix("data: "))
+                        print(_json.dumps(payload, indent=None)[:120], flush=True)
 
         server.should_exit = True
         await task

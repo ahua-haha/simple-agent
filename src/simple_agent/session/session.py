@@ -133,6 +133,7 @@ class Session:
     def is_running(self) -> bool:
         return self._running
 
+    @logged(_log)
     async def run(self, user_input: str) -> Task | None:
         """Run the task tree until finished, paused, or cancelled.
 
@@ -143,7 +144,7 @@ class Session:
             self._cursor = self._load_cursor()
 
         if self._cursor is None:
-            self._cursor = Task(input=user_input, state="PENDING", type="plan")
+            self._cursor = Task(input=user_input, state="PENDING", type="explore")
             self._cursor_id = self._db.upsert_task(self._cursor)
             self._cursor.id = self._cursor_id
             self._checkpoint()

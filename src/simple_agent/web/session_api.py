@@ -4,40 +4,13 @@ from __future__ import annotations
 
 import asyncio
 import json
+from dataclasses import asdict
 from typing import AsyncGenerator
 
 from fastapi import APIRouter, Request, HTTPException
 from fastapi.responses import StreamingResponse
+from pi.agent import AgentEvent
 from pydantic import BaseModel
-
-from pi.agent import (
-    AgentEndEvent,
-    AgentEvent,
-    AgentStartEvent,
-    AgentToolResult,
-    MessageEndEvent,
-    MessageStartEvent,
-    MessageUpdateEvent,
-    ToolExecutionEndEvent,
-    ToolExecutionStartEvent,
-    ToolExecutionUpdateEvent,
-    TurnStartEvent,
-    TurnEndEvent,
-)
-from pi.ai.types import (
-    AssistantMessageEvent,
-    DoneEvent,
-    ErrorEvent,
-    TextDeltaEvent,
-    TextEndEvent,
-    TextStartEvent,
-    ThinkingDeltaEvent,
-    ThinkingEndEvent,
-    ThinkingStartEvent,
-    ToolCallDeltaEvent,
-    ToolCallEndEvent,
-    ToolCallStartEvent,
-)
 
 from simple_agent.session.session_manager import SessionBusyError, SessionManager
 
@@ -109,9 +82,8 @@ async def run_session(session_id: str, body: RunRequest, request: Request):
 
     response = StreamingResponse(
         _stream_session_events(queue),
-        media_type="text/plain; charset=utf-8",
+        media_type="text/event-stream",
     )
-    response.headers["x-vercel-ai-data-stream"] = "v1"
     return response
 
 
@@ -128,125 +100,26 @@ def create_session_router() -> APIRouter:
     return router
 
 
-# ── pi-agent → Vercel AI SDK v1 data frame conversion ────────────────────
+# ── event serialization ──────────────────────────────────────────────────
 
-_REASON_MAP = {"stop": "stop", "length": "length", "tool_use": "tool-calls"}
-
-
-def convert_to_v6(event: AgentEvent | dict) -> list[dict]:
-    """Convert a pi-agent event to Vercel AI SDK data stream frame dicts.
-
-    Returns 0-N frame dicts. Each event maps independently — no mutable state.
-    """
-    # ── raw error dicts ───────────────────────────────────────────────
+def _serialize(event: AgentEvent | dict) -> str:
+    """Serialize a pi-agent event to a single-line JSON string."""
     if isinstance(event, dict):
-        msg = event.get("errorText", event.get("message", ""))
-        return [{"type": "error", "errorText": str(msg)}]
-
-    # ── agent lifecycle ───────────────────────────────────────────────
-    if isinstance(event, AgentStartEvent):
-        return [{"type": "start", "messageId": f"msg_{id(event)}"}]
-
-    # ── message lifecycle ─────────────────────────────────────────────
-    if isinstance(event, MessageUpdateEvent):
-        return _convert_assistant_event(event.assistant_message_event)
-
-    # ── tool execution ────────────────────────────────────────────────
-    if isinstance(event, ToolExecutionEndEvent):
-        frame: dict = {
-            "type": "tool-output-available",
-            "toolCallId": event.tool_call_id,
-            "output": _extract_tool_output(event.result),
-        }
-        if event.is_error:
-            frame["errorText"] = "Tool execution failed"
-        return [frame]
-
-    # ── agent end (fallback finish) ───────────────────────────────────
-    if isinstance(event, AgentEndEvent):
-        return [{"type": "finish", "finishReason": "stop"}]
-
-    # ── passthrough (no frames emitted) ───────────────────────────────
-    if isinstance(event, (
-        MessageStartEvent,
-        MessageEndEvent,
-        ToolExecutionStartEvent,
-        ToolExecutionUpdateEvent,
-        TurnStartEvent,
-        TurnEndEvent,
-    )):
-        return []
-
-    return []
-
-
-def _convert_assistant_event(ae: AssistantMessageEvent) -> list[dict]:
-    """Map an AssistantMessageEvent subtype to Vercel AI SDK frames."""
-    tp = ae.type
-
-    if tp == "text_start":
-        return [{"type": "text-start", "id": f"txt-{ae.content_index}"}]
-
-    if tp == "text_delta":
-        return [{"type": "text-delta", "id": f"txt-{ae.content_index}", "delta": ae.delta}]
-
-    if tp == "text_end":
-        return [{"type": "text-end", "id": f"txt-{ae.content_index}"}]
-
-    if tp == "thinking_start":
-        return [{"type": "reasoning-start", "id": f"rsn-{ae.content_index}"}]
-
-    if tp == "thinking_delta":
-        return [{"type": "reasoning-delta", "id": f"rsn-{ae.content_index}", "delta": ae.delta}]
-
-    if tp == "thinking_end":
-        return [{"type": "reasoning-end", "id": f"rsn-{ae.content_index}"}]
-
-    if tp == "toolcall_start":
-        return [{"type": "tool-input-start", "toolCallId": f"call_{ae.content_index}", "toolName": ""}]
-
-    if tp == "toolcall_delta":
-        return [{"type": "tool-input-delta", "toolCallId": f"call_{ae.content_index}", "delta": ae.delta}]
-
-    if tp == "toolcall_end":
-        tc = ae.tool_call
-        return [{
-            "type": "tool-input-available",
-            "toolCallId": f"call_{ae.content_index}",
-            "toolName": tc.name,
-            "input": tc.arguments,
-        }]
-
-    if tp == "done":
-        return [{"type": "finish", "finishReason": _REASON_MAP.get(ae.reason, "stop")}]
-
-    if tp == "error":
-        msg = getattr(ae.error, "error_message", None) or str(ae.error)
-        return [{"type": "error", "errorText": msg}]
-
-    # "start" event inside MessageUpdate — redundant with MessageStartEvent
-    return []
-
-
-def _extract_tool_output(result) -> str:
-    """Extract text from an AgentToolResult's content items."""
-    if result is None:
-        return ""
-    if isinstance(result, (str, int, float, bool)):
-        return str(result)
-    if isinstance(result, (dict, list)):
-        return result
-    if isinstance(result, AgentToolResult):
-        parts = [c.text for c in result.content]
-        return "\n".join(parts) if parts else ""
-    return str(result)
+        return json.dumps(event)
+    return json.dumps(asdict(event), default=lambda o: o.model_dump())
 
 
 # ── stream ──────────────────────────────────────────────────────────────
 
 
 async def _stream_session_events(queue: asyncio.Queue) -> AsyncGenerator[str, None]:
-    """Read pi-agent events from *queue*, yield Vercel AI SDK SSE lines."""
+    """Read pi-agent events from *queue*, yield SSE frames.
+
+    Each event is serialized as:
+        event: <AgentEvent.type>
+        data: <JSON AgentEvent>
+        <blank line>
+    """
     import logging
     logger = logging.getLogger(__name__)
 
@@ -256,12 +129,14 @@ async def _stream_session_events(queue: asyncio.Queue) -> AsyncGenerator[str, No
             logger.debug("stream: received sentinel, closing")
             break
 
-        event_type = type(event).__name__ if not isinstance(event, dict) else "dict"
-        logger.debug("stream: event=%s", event_type)
+        if isinstance(event, dict):
+            event_type = event.get("type", "error")
+        else:
+            event_type = getattr(event, "type", type(event).__name__)
 
-        for frame in convert_to_v6(event):
-            logger.debug("stream: frame type=%s", frame.get("type"))
-            yield f"data: {json.dumps(frame)}\n"
+        payload = _serialize(event)
+        logger.debug("stream: event=%s", event_type)
+        yield f"event: {event_type}\ndata: {payload}\n\n"
 
     logger.debug("stream: sending [DONE]")
-    yield "data: [DONE]\n"
+    yield "data: [DONE]\n\n"
