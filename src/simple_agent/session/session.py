@@ -3,12 +3,14 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 import os
 import time
 import uuid
 
 from pi.ai import get_model
 
+from simple_agent.log import logged
 from simple_agent.process.central_control import CentralControl
 from simple_agent.process.agent_process import AgentProcess
 from simple_agent.process.runners import CollectRunner, SingleRunRunner
@@ -19,6 +21,8 @@ from simple_agent.state.state import Task
 from simple_agent.tool.tool_mgr import ToolMgr
 from simple_agent.db.db import Database
 from simple_agent.models import register_custom_models
+
+_log = logging.getLogger(__name__)
 
 
 class Session:
@@ -63,6 +67,7 @@ class Session:
 
     def _on_agent_event(self, event) -> None:
         """Push agent events into the event queue if one is active."""
+        _log.debug("agent event: %s", type(event).__name__)
         if self.event_queue is not None:
             self.event_queue.put_nowait(event)
 
@@ -162,6 +167,7 @@ class Session:
                 if self._cancel_event.is_set():
                     break
         except Exception:
+            _log.exception("run: session=%s failed", self._id)
             import traceback
             traceback.print_exc()
             if self.event_queue is not None:
@@ -174,8 +180,11 @@ class Session:
                 self.event_queue = None
 
         if self._cursor is None:
-            return self.root
+            result = self.root
+            _log.info("run: session=%s done, result=%s", self._id, result.id if result else None)
+            return result
 
+        _log.info("run: session=%s paused", self._id)
         return None  # paused
 
     def pause(self) -> None:

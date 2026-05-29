@@ -47,8 +47,14 @@ def create_app(
 def main() -> None:
     """Entry point for ``python -m simple_agent.web.app``."""
     import argparse
+    import logging
 
     import uvicorn
+
+    logging.basicConfig(
+        level=logging.INFO,
+        format="%(levelname)-8s %(message)s",
+    )
 
     parser = argparse.ArgumentParser(description="Simple Agent web server")
     parser.add_argument("--port", type=int, default=8080, help="Port to listen on (default: 8080)")

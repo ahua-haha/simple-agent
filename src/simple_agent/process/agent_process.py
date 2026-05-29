@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 import time
 from typing import Any, Callable
 
@@ -11,7 +12,10 @@ from pi.agent.loop import agent_loop
 from pi.agent.types import AgentContext, AgentEndEvent, AgentLoopConfig, AgentMessage, ToolExecutionEndEvent, TurnEndEvent
 from pi.ai.types import UserMessage, TextContent
 
+from simple_agent.log import logged
 from simple_agent.models import register_custom_models, get_api_key
+
+_log = logging.getLogger(__name__)
 
 
 class AgentState(asyncio.Event):
@@ -90,6 +94,7 @@ class AgentProcess:
         self._listeners: list[Callable] = []
         self.state: AgentState = AgentState()
 
+    @logged(_log)
     async def run(
         self,
         system_prompt: str,

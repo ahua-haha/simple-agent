@@ -2,15 +2,18 @@
 
 from __future__ import annotations
 
+import logging
 from typing import TYPE_CHECKING
 
-
+from simple_agent.log import logged
 from simple_agent.process.runners import BaseRunner, RunnerResult
 from simple_agent.state.state import Task
 from simple_agent.db.db import Database
 
 if TYPE_CHECKING:
     from collections.abc import Callable
+
+_log = logging.getLogger(__name__)
 
 
 class CentralControl:
@@ -34,6 +37,7 @@ class CentralControl:
         self._db = db
         self._runners = runners
 
+    @logged(_log)
     async def run(self, cursor: Task) -> tuple[Task | None, list[Task], list[Task]]:
         """Execute one transition.
 

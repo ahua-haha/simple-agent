@@ -99,6 +99,7 @@ async def delete_session(session_id: str, request: Request):
 @router.post("/sessions/{session_id}/run")
 async def run_session(session_id: str, body: RunRequest, request: Request):
     sm = _get_session_manager(request)
+    print(body.input)
     try:
         queue = sm.run(session_id, body.input)
     except SessionBusyError:
@@ -246,12 +247,21 @@ def _extract_tool_output(result) -> str:
 
 async def _stream_session_events(queue: asyncio.Queue) -> AsyncGenerator[str, None]:
     """Read pi-agent events from *queue*, yield Vercel AI SDK SSE lines."""
+    import logging
+    logger = logging.getLogger(__name__)
+
     while True:
         event = await queue.get()
         if event is None:
+            logger.debug("stream: received sentinel, closing")
             break
 
+        event_type = type(event).__name__ if not isinstance(event, dict) else "dict"
+        logger.debug("stream: event=%s", event_type)
+
         for frame in convert_to_v6(event):
+            logger.debug("stream: frame type=%s", frame.get("type"))
             yield f"data: {json.dumps(frame)}\n"
 
+    logger.debug("stream: sending [DONE]")
     yield "data: [DONE]\n"

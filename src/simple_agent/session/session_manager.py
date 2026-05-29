@@ -3,10 +3,14 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 import os
 import time
 
+from simple_agent.log import logged
 from simple_agent.session.session import Session
+
+_log = logging.getLogger(__name__)
 
 
 DEFAULT_COOLDOWN_SECONDS = 300
@@ -133,6 +137,7 @@ class SessionManager:
     # run / pause / cooldown
     # ------------------------------------------------------------------
 
+    @logged(_log)
     def run(self, session_id: str, user_input: str) -> asyncio.Queue:
         """Start a background run of *session_id* with *user_input*.
 
