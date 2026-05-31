@@ -1,4 +1,6 @@
 import type { Metadata } from "next";
+import { TooltipProvider } from "@/components/ui/tooltip";
+import "./globals.css";
 
 export const metadata: Metadata = {
   title: "Agent Chat",
@@ -12,8 +14,8 @@ export default function RootLayout({
 }) {
   return (
     <html lang="en">
-      <body style={{ margin: 0, fontFamily: "system-ui, sans-serif" }}>
-        {children}
+      <body>
+        <TooltipProvider>{children}</TooltipProvider>
       </body>
     </html>
   );
