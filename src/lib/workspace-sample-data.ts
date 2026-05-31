@@ -1,6 +1,6 @@
 export type WorkspaceLanguage = "typescript" | "markdown" | "json" | "text";
 
-export type WorkspaceViewMode = "raw" | "preview";
+export type WorkspaceViewMode = "raw" | "preview" | "wysiwyg";
 
 export type WorkspaceFile = {
   type: "file";
@@ -166,6 +166,6 @@ export function getWorkspaceFileById(
 export function getWorkspaceViewModes(
   file: WorkspaceFile,
 ): WorkspaceViewMode[] {
-  if (file.language === "markdown") return ["raw", "preview"];
+  if (file.language === "markdown") return ["raw", "preview", "wysiwyg"];
   return ["raw"];
 }

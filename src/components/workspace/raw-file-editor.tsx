@@ -11,7 +11,7 @@ export function RawFileEditor({ value, onChange }: RawFileEditorProps) {
       value={value}
       onChange={(event) => onChange(event.target.value)}
       spellCheck={false}
-      className="h-full min-h-0 w-full resize-none border-0 bg-slate-950 p-4 font-mono text-sm leading-6 text-slate-100 outline-none"
+      className="h-full min-h-0 w-full resize-none border-0 bg-white p-4 font-mono text-sm leading-6 text-slate-950 outline-none"
       aria-label="Raw file content"
     />
   );

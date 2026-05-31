@@ -1,5 +1,6 @@
 import type { Metadata } from "next";
 import { TooltipProvider } from "@/components/ui/tooltip";
+import "@milkdown/crepe/theme/frame.css";
 import "./globals.css";
 
 export const metadata: Metadata = {

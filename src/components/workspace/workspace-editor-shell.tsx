@@ -2,6 +2,7 @@
 
 import { FileViewSwitcher } from "@/components/workspace/file-view-switcher";
 import { MarkdownPreview } from "@/components/workspace/markdown-preview";
+import { MarkdownWysiwygEditor } from "@/components/workspace/markdown-wysiwyg-editor";
 import { RawFileEditor } from "@/components/workspace/raw-file-editor";
 import { Badge } from "@/components/ui/badge";
 import { Separator } from "@/components/ui/separator";
@@ -65,6 +66,12 @@ export function WorkspaceEditorShell({
       <div className="min-h-0 flex-1">
         {viewMode === "preview" ? (
           <MarkdownPreview content={content} />
+        ) : viewMode === "wysiwyg" ? (
+          <MarkdownWysiwygEditor
+            key={file.id}
+            value={content}
+            onChange={onContentChange}
+          />
         ) : (
           <RawFileEditor value={content} onChange={onContentChange} />
         )}

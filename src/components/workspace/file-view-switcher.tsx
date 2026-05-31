@@ -24,10 +24,16 @@ export function FileViewSwitcher({
       <TabsList>
         {modes.map((mode) => (
           <TabsTrigger key={mode} value={mode} className="capitalize">
-            {mode === "raw" ? "Raw" : "Preview"}
+            {getViewModeLabel(mode)}
           </TabsTrigger>
         ))}
       </TabsList>
     </Tabs>
   );
+}
+
+function getViewModeLabel(mode: WorkspaceViewMode) {
+  if (mode === "raw") return "Raw";
+  if (mode === "preview") return "Preview";
+  return "WYSIWYG";
 }
