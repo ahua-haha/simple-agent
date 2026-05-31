@@ -1,7 +1,8 @@
 import type { Metadata } from "next";
 import { TooltipProvider } from "@/components/ui/tooltip";
-import "@milkdown/crepe/theme/frame.css";
 import "./globals.css";
+import "@milkdown/crepe/theme/common/style.css";
+import "@milkdown/crepe/theme/frame.css";
 
 export const metadata: Metadata = {
   title: "Agent Chat",

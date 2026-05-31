@@ -1,6 +1,7 @@
 "use client";
 
-import { Crepe, CrepeFeature } from "@milkdown/crepe";
+import { Crepe } from "@milkdown/crepe";
+import { Milkdown, MilkdownProvider, useEditor } from "@milkdown/react";
 import { useEffect, useRef } from "react";
 
 type MarkdownWysiwygEditorProps = {
@@ -12,41 +13,28 @@ export function MarkdownWysiwygEditor({
   value,
   onChange,
 }: MarkdownWysiwygEditorProps) {
-  const rootRef = useRef<HTMLDivElement>(null);
-  const crepeRef = useRef<Crepe | null>(null);
+  return (
+    <div className="workspace-wysiwyg h-full overflow-auto bg-background">
+      <MilkdownProvider>
+        <CrepeMarkdownEditor value={value} onChange={onChange} />
+      </MilkdownProvider>
+    </div>
+  );
+}
+
+function CrepeMarkdownEditor({ value, onChange }: MarkdownWysiwygEditorProps) {
   const onChangeRef = useRef(onChange);
+  const initialValueRef = useRef(value);
   const ignoreFirstUpdateRef = useRef(true);
 
   useEffect(() => {
     onChangeRef.current = onChange;
   }, [onChange]);
 
-  useEffect(() => {
-    const root = rootRef.current;
-    if (!root) return;
-
+  useEditor((root) => {
     const crepe = new Crepe({
       root,
-      defaultValue: value,
-      features: {
-        [CrepeFeature.CodeMirror]: true,
-        [CrepeFeature.ListItem]: false,
-        [CrepeFeature.LinkTooltip]: false,
-        [CrepeFeature.Cursor]: true,
-        [CrepeFeature.ImageBlock]: false,
-        [CrepeFeature.BlockEdit]: false,
-        [CrepeFeature.Toolbar]: false,
-        [CrepeFeature.Placeholder]: true,
-        [CrepeFeature.Table]: true,
-        [CrepeFeature.Latex]: false,
-        [CrepeFeature.TopBar]: false,
-        [CrepeFeature.AI]: false,
-      },
-      featureConfigs: {
-        [CrepeFeature.Placeholder]: {
-          text: "Start writing markdown...",
-        },
-      },
+      defaultValue: initialValueRef.current,
     });
 
     crepe.on((api) => {
@@ -59,18 +47,8 @@ export function MarkdownWysiwygEditor({
       });
     });
 
-    crepeRef.current = crepe;
-    void crepe.create();
-
-    return () => {
-      crepeRef.current = null;
-      void crepe.destroy();
-    };
+    return crepe;
   }, []);
 
-  return (
-    <div className="workspace-wysiwyg h-full overflow-auto bg-background">
-      <div ref={rootRef} className="h-full" />
-    </div>
-  );
+  return <Milkdown />;
 }

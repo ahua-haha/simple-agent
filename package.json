@@ -13,6 +13,7 @@
     "@assistant-ui/react-markdown": "^0.14.1",
     "@earendil-works/pi-agent-core": "^0.78.0",
     "@milkdown/crepe": "^7.21.1",
+    "@milkdown/react": "^7.21.1",
     "@tailwindcss/postcss": "^4.3.0",
     "ai": "^6.0.193",
     "class-variance-authority": "^0.7.1",
