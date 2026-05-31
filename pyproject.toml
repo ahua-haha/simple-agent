@@ -14,6 +14,7 @@ dependencies = [
     "pi-ai",
     "pi-coding-agent",
     "pi-tui",
+    "socksio>=1.0.0",
     "sqlmodel>=0.0.38",
     "tree-sitter>=0.25.2",
     "uvicorn>=0.34.0",
