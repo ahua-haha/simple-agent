@@ -30,7 +30,7 @@ export function MarkdownWysiwygEditor({
       defaultValue: value,
       features: {
         [CrepeFeature.CodeMirror]: true,
-        [CrepeFeature.ListItem]: true,
+        [CrepeFeature.ListItem]: false,
         [CrepeFeature.LinkTooltip]: false,
         [CrepeFeature.Cursor]: true,
         [CrepeFeature.ImageBlock]: false,
@@ -69,7 +69,7 @@ export function MarkdownWysiwygEditor({
   }, []);
 
   return (
-    <div className="h-full overflow-auto bg-background">
+    <div className="workspace-wysiwyg h-full overflow-auto bg-background">
       <div ref={rootRef} className="h-full" />
     </div>
   );

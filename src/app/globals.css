@@ -81,3 +81,52 @@
     @apply bg-background text-foreground;
   }
 }
+
+.workspace-wysiwyg .milkdown {
+  height: 100%;
+}
+
+.workspace-wysiwyg .ProseMirror {
+  min-height: 100%;
+  padding: 1.25rem 1.5rem;
+  outline: none;
+  font-size: 0.9375rem;
+  line-height: 1.7;
+}
+
+.workspace-wysiwyg .ProseMirror h1 {
+  margin: 0 0 1rem;
+  font-size: 1.875rem;
+  line-height: 1.2;
+  font-weight: 700;
+}
+
+.workspace-wysiwyg .ProseMirror h2 {
+  margin: 1.5rem 0 0.75rem;
+  font-size: 1.35rem;
+  line-height: 1.3;
+  font-weight: 650;
+}
+
+.workspace-wysiwyg .ProseMirror p {
+  margin: 0.65rem 0;
+}
+
+.workspace-wysiwyg .ProseMirror ul,
+.workspace-wysiwyg .ProseMirror ol {
+  margin: 0.75rem 0;
+  padding-left: 1.5rem;
+}
+
+.workspace-wysiwyg .ProseMirror ul {
+  list-style-type: disc;
+}
+
+.workspace-wysiwyg .ProseMirror ol {
+  list-style-type: decimal;
+}
+
+.workspace-wysiwyg .ProseMirror li {
+  margin: 0.25rem 0;
+  padding-left: 0.25rem;
+}
