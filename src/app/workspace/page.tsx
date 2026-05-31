@@ -1,6 +1,7 @@
 "use client";
 
 import { FileTree } from "@/components/workspace/file-tree";
+import { WorkspaceChatPanel } from "@/components/workspace/workspace-chat-panel";
 import { WorkspaceEditorShell } from "@/components/workspace/workspace-editor-shell";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { Separator } from "@/components/ui/separator";
@@ -60,20 +61,23 @@ export default function WorkspacePage() {
           </div>
         </ScrollArea>
       </aside>
-      <WorkspaceEditorShell
-        file={selectedFile}
-        content={content}
-        dirty={dirty}
-        viewMode={viewMode}
-        availableViewModes={availableViewModes}
-        onViewModeChange={setViewMode}
-        onContentChange={(nextContent) =>
-          setEditedContents((current) => ({
-            ...current,
-            [selectedFile.id]: nextContent,
-          }))
-        }
-      />
+      <section className="relative flex min-w-0 flex-1">
+        <WorkspaceEditorShell
+          file={selectedFile}
+          content={content}
+          dirty={dirty}
+          viewMode={viewMode}
+          availableViewModes={availableViewModes}
+          onViewModeChange={setViewMode}
+          onContentChange={(nextContent) =>
+            setEditedContents((current) => ({
+              ...current,
+              [selectedFile.id]: nextContent,
+            }))
+          }
+        />
+        <WorkspaceChatPanel />
+      </section>
     </main>
   );
 }
