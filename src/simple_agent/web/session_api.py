@@ -37,8 +37,6 @@ async def create_session(request: Request):
     session = sm.create()
     return {
         "id": session.id,
-        "created_at": session._created_at,
-        "updated_at": session._updated_at,
     }
 
 
@@ -56,8 +54,6 @@ async def get_session(session_id: str, request: Request):
         raise HTTPException(status_code=404, detail="Session not found")
     return {
         "id": session.id,
-        "created_at": session._created_at,
-        "updated_at": session._updated_at,
     }
 
 

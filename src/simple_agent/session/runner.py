@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from typing import TYPE_CHECKING, Literal
+from typing import TYPE_CHECKING, Callable, Literal
 
 from simple_agent.tool.common_tools import create_all_coding_tools
 
@@ -60,6 +60,12 @@ class SessionRunner:
         self._phase = "idle"
         self._active_user_task_id = None
         self._messages = []
+
+    def subscribe(self, callback: Callable) -> None:
+        self._agent_process.subscribe(callback)
+
+    def pause(self) -> None:
+        self._cancel_event.set()
 
     def load(self) -> None:
         metadata = self._db.get_runner_state_metadata(self._session_id)

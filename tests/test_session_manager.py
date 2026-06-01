@@ -44,26 +44,23 @@ class TestSessionManager:
     def test_persistence_round_trip(self, tmp_path):
         sm = SessionManager(sessions_dir=str(tmp_path))
         s = sm.create()
-        s._cursor_id = 42
-        s._checkpoint()
 
         # Reload
         sm2 = SessionManager(sessions_dir=str(tmp_path))
         restored = sm2.get(s.id)
         assert restored is not None
-        assert restored._cursor_id == 42
+        assert restored.id == s.id
 
     def test_reload_skips_bad_dir_entries(self, tmp_path):
         # Create a non-db file in the sessions dir — shouldn't crash reload
         sm = SessionManager(sessions_dir=str(tmp_path))
         s = sm.create()
-        s._checkpoint()
 
         sm2 = SessionManager(sessions_dir=str(tmp_path))
         # Session is parked (not auto-loaded), get() reloads from disk
         restored = sm2.get(s.id)
         assert restored is not None
-        assert restored._cursor_id == s._cursor_id
+        assert restored.id == s.id
 
 
 class TestSessionManagerRunPause:
@@ -103,7 +100,7 @@ class TestSessionManagerRunPause:
         sm = SessionManager(sessions_dir=str(tmp_path))
         s = sm.create()
         sm.pause(s.id)
-        assert s._cancel_event.is_set()
+        assert s._runner._cancel_event.is_set()
 
     @pytest.mark.asyncio
     async def test_pause_idle_session_is_noop(self, tmp_path):
@@ -162,7 +159,7 @@ class TestAPIEndpoints:
         assert resp.status_code == 201
         data = resp.json()
         assert "id" in data
-        assert "created_at" in data
+        assert "created_at" not in data
 
     def test_list_sessions(self, client):
         client.post("/api/sessions", json={})

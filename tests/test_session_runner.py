@@ -17,6 +17,7 @@ from simple_agent.tool.execution_logger import ToolExecutionLogger
 class FakeAgentProcess:
     def __init__(self):
         self.calls = []
+        self.subscribers = []
 
     async def run(self, system_prompt, messages, tools, user_prompt="", cancel_event=None):
         self.calls.append(
@@ -29,6 +30,9 @@ class FakeAgentProcess:
             }
         )
         return [AssistantMessage(role="assistant", content=[TextContent(text="done")])]
+
+    def subscribe(self, callback):
+        self.subscribers.append(callback)
 
 
 @pytest.mark.asyncio
@@ -70,6 +74,45 @@ async def test_session_runner_creates_task_runs_agent_and_persists_messages(tmp_
 class FailingAgentProcess:
     async def run(self, system_prompt, messages, tools, user_prompt="", cancel_event=None):
         raise RuntimeError("agent failed")
+
+    def subscribe(self, callback):
+        pass
+
+
+def test_session_runner_subscribe_delegates_to_agent_process(tmp_path):
+    db = Database(str(tmp_path / "session.db"))
+    agent_process = FakeAgentProcess()
+    runner = SessionRunner(
+        session_id="session_a",
+        db=db,
+        task_manager=TaskManager(db),
+        execution_logger=ToolExecutionLogger(db, session_id="session_a"),
+        agent_process=agent_process,
+        cancel_event=asyncio.Event(),
+    )
+
+    def callback(event):
+        return event
+
+    runner.subscribe(callback)
+
+    assert agent_process.subscribers == [callback]
+
+
+def test_session_runner_pause_controls_cancel_event(tmp_path):
+    db = Database(str(tmp_path / "session.db"))
+    cancel_event = asyncio.Event()
+    runner = SessionRunner(
+        session_id="session_a",
+        db=db,
+        task_manager=TaskManager(db),
+        execution_logger=ToolExecutionLogger(db, session_id="session_a"),
+        agent_process=FakeAgentProcess(),
+        cancel_event=cancel_event,
+    )
+
+    runner.pause()
+    assert cancel_event.is_set()
 
 
 @pytest.mark.asyncio

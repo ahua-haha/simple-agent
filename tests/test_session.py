@@ -12,64 +12,17 @@ from simple_agent.session import Session
 class TestSessionInit:
     """Tests for Session initialization."""
 
-    def test_new_session_has_no_cursor_id(self, tmp_path):
+    def test_new_session_has_id(self, tmp_path):
         session = Session(base_dir=str(tmp_path))
-        assert session._cursor_id is None
+        assert session.id.startswith("session_")
 
-    def test_existing_session_loads_metadata(self, tmp_path):
-        from simple_agent.db.db import Database
-
-        db_path = os.path.join(str(tmp_path), "test.db")
-        db = Database(db_path)
-        db.upsert_session("test", cursor_id=77)
-
+    def test_existing_session_uses_provided_id(self, tmp_path):
         session = Session(session_id="test", base_dir=str(tmp_path))
-        assert session._cursor_id == 77
+        assert session.id == "test"
 
-
-class TestSessionCheckpoint:
-    """Tests for session checkpoint (metadata + task persistence)."""
-
-    def test_checkpoint_persists_metadata(self, tmp_path):
+    def test_new_session_initializes_runner(self, tmp_path):
         session = Session(base_dir=str(tmp_path))
-        session._cursor_id = 7
-        session._checkpoint()
-
-        data = session._db.get_session(session.id)
-        assert data is not None
-        assert data["cursor_id"] == 7
-        assert "created_at" in data
-        assert "updated_at" in data
-
-    def test_checkpoint_persists_tasks(self, tmp_path):
-        session = Session(base_dir=str(tmp_path))
-        session._cursor_id = 9
-        session._checkpoint()
-
-        data = session._db.get_session(session.id)
-        assert data["cursor_id"] == 9
-
-    def test_load_restores_metadata(self, tmp_path):
-        session = Session(base_dir=str(tmp_path))
-        session._cursor_id = 42
-        session._checkpoint()
-
-        session2 = Session(session_id=session.id, base_dir=str(tmp_path))
-        assert session2._cursor_id == 42
-
-    def test_new_session_has_timestamps(self, tmp_path):
-        session = Session(base_dir=str(tmp_path))
-        assert session._created_at is not None
-        assert session._updated_at is not None
-        assert session._created_at == session._updated_at
-
-    def test_checkpoint_updates_updated_at(self, tmp_path):
-        import time
-        session = Session(base_dir=str(tmp_path))
-        original = session._updated_at
-        time.sleep(0.01)
-        session._checkpoint()
-        assert session._updated_at > original
+        assert session._runner is not None
 
 
 class TestSessionManagerList:
@@ -84,9 +37,7 @@ class TestSessionManagerList:
     def test_lists_db_files(self, tmp_path):
         from simple_agent.session.session_manager import SessionManager
         for name in ["a", "b"]:
-            from simple_agent.db.db import Database
-            db = Database(os.path.join(str(tmp_path), f"{name}.db"))
-            db.upsert_session(name, cursor_id=1)
+            open(os.path.join(str(tmp_path), f"{name}.db"), "w").close()
 
         sm = SessionManager(sessions_dir=str(tmp_path))
         sessions = sm.list()
@@ -95,9 +46,7 @@ class TestSessionManagerList:
 
     def test_ignores_non_db(self, tmp_path):
         from simple_agent.session.session_manager import SessionManager
-        from simple_agent.db.db import Database
-        db = Database(os.path.join(str(tmp_path), "test.db"))
-        db.upsert_session("test", cursor_id=1)
+        open(os.path.join(str(tmp_path), "test.db"), "w").close()
         with open(os.path.join(str(tmp_path), "notes.txt"), "w") as f:
             f.write("hello")
 
@@ -158,6 +107,14 @@ class TestSessionEventQueue:
         session._on_agent_event(event)
 
 
+def test_session_pause_delegates_to_runner(tmp_path):
+    session = Session(base_dir=str(tmp_path))
+
+    session.pause()
+
+    assert session._runner._cancel_event.is_set()
+
+
 def test_session_initializes_task_manager(tmp_path):
     from simple_agent.session.session import Session
 
@@ -165,6 +122,7 @@ def test_session_initializes_task_manager(tmp_path):
 
     assert session._task_manager is not None
     assert session._execution_logger is not None
+    assert session._runner is not None
 
 
 @pytest.mark.asyncio
@@ -198,4 +156,4 @@ async def test_session_run_creates_user_task_and_calls_agent_once(tmp_path, monk
     assert "create_todo" in calls[0]["tools"]
     assert "finish_todo" in calls[0]["tools"]
     assert "error_todo" in calls[0]["tools"]
-    assert calls[0]["cancel_event"] is session._cancel_event
+    assert calls[0]["cancel_event"] is session._runner._cancel_event

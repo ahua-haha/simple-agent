@@ -1,11 +1,10 @@
-"""Session — stores a task tree and session metadata in SQLite."""
+"""Session — user-facing interaction wrapper for a persisted runner."""
 
 from __future__ import annotations
 
 import asyncio
 import logging
 import os
-import time
 import uuid
 
 from pi.ai import get_model
@@ -20,20 +19,13 @@ from simple_agent.models import register_custom_models
 
 _log = logging.getLogger(__name__)
 
-SYSTEM_PROMPT = """You are a helpful coding agent.
-
-Use create_todo before starting a coherent unit of work.
-Call finish_todo when the active todo is complete.
-Call error_todo if the active todo cannot be completed.
-Keep responses concise and use available tools to do the work.
-"""
-
 
 class Session:
-    """A session that stores a task tree and metadata in SQLite.
+    """A user-facing session wrapper.
 
     Each session is identified by a unique ID.  The DB file is
-    ``{session_id}.db`` inside *base_dir*.
+    ``{session_id}.db`` inside *base_dir*. Runtime state is owned by
+    ``SessionRunner``.
 
     Usage::
 
@@ -57,30 +49,24 @@ class Session:
         )
         register_custom_models()
         self._agent_process = AgentProcess(get_model("deepseek", "deepseek-v4-pro"))
-        self._cancel_event = asyncio.Event()
+        self._runner = SessionRunner(
+            session_id=self._id,
+            db=self._db,
+            task_manager=self._task_manager,
+            execution_logger=self._execution_logger,
+            agent_process=self._agent_process,
+            cancel_event=asyncio.Event(),
+        )
         self._running = False
         self.event_queue: asyncio.Queue | None = None
 
-        self._agent_process.subscribe(self._on_agent_event)
-        self._load_session()
+        self._runner.subscribe(self._on_agent_event)
 
     def _on_agent_event(self, event) -> None:
         """Push agent events into the event queue if one is active."""
         _log.debug("agent event: %s", type(event).__name__)
         if self.event_queue is not None:
             self.event_queue.put_nowait(event)
-
-    def _load_session(self) -> None:
-        """Load session metadata from DB by session ID, or init defaults."""
-        data = self._db.get_session(self._id)
-        if data is not None:
-            self._cursor_id = data.get("cursor_id")
-            self._created_at = data.get("created_at", time.time())
-            self._updated_at = data.get("updated_at", time.time())
-        else:
-            self._cursor_id: int | None = None
-            self._created_at = time.time()
-            self._updated_at = self._created_at
 
     @property
     def is_running(self) -> bool:
@@ -94,10 +80,7 @@ class Session:
             self.event_queue = asyncio.Queue()
 
         try:
-            runner = self._create_runner()
-            user_task = await runner.run(user_input)
-            self._cursor_id = user_task.id if user_task is not None else None
-            self._checkpoint()
+            user_task = await self._runner.run(user_input)
         except Exception:
             _log.exception("run: session=%s failed", self._id)
             if self.event_queue is not None:
@@ -109,18 +92,8 @@ class Session:
                 self.event_queue.put_nowait(None)
                 self.event_queue = None
 
-        _log.info("run: session=%s done, result=%s", self._id, self._cursor_id)
+        _log.info("run: session=%s done, result=%s", self._id, user_task.id if user_task else None)
         return user_task
-
-    def _create_runner(self) -> SessionRunner:
-        return SessionRunner(
-            session_id=self._id,
-            db=self._db,
-            task_manager=self._task_manager,
-            execution_logger=self._execution_logger,
-            agent_process=self._agent_process,
-            cancel_event=self._cancel_event,
-        )
 
     def pause(self) -> None:
         """Signal the run loop to stop at the next safe point.
@@ -128,29 +101,8 @@ class Session:
         The current transition completes, then the loop exits.
         Safe to call from any task / thread.
         """
-        self._cancel_event.set()
-
-    def resume(self) -> None:
-        """Clear the pause signal so ``run()`` can proceed again."""
-        self._cancel_event.clear()
-
-    def park(self) -> None:
-        """Clear in-memory signals and keep persisted session metadata."""
-        if self._running:
-            raise RuntimeError("Cannot park while session is running")
-        self._cancel_event.clear()
-        self._checkpoint()
+        self._runner.pause()
 
     @property
     def id(self) -> str:
         return self._id
-
-    def _checkpoint(self, updates=None, inserts=None) -> None:
-        """Atomically persist tasks and session metadata in one transaction."""
-        self._updated_at = time.time()
-        all_tasks = (updates or []) + (inserts or [])
-        with self._db._get_session() as s:
-            for task in all_tasks:
-                self._db.upsert_task(task, session=s)
-            self._db.upsert_session(self._id, "", self._cursor_id, session=s)
-            s.commit()

@@ -5,7 +5,6 @@ from __future__ import annotations
 import asyncio
 import logging
 import os
-import time
 
 from simple_agent.log import logged
 from simple_agent.session.session import Session
@@ -48,9 +47,8 @@ class SessionManager:
     # ------------------------------------------------------------------
 
     def create(self) -> Session:
-        """Create a new session, persist it, and register in memory."""
+        """Create a new session and register it in memory."""
         session = Session(base_dir=self._sessions_dir)
-        session._checkpoint()
         self._sessions[session.id] = session
         return session
 
@@ -87,8 +85,6 @@ class SessionManager:
             result.append({
                 "id": sid,
                 "status": "running" if sid in self._run_tasks else "idle",
-                "created_at": session._created_at,
-                "updated_at": session._updated_at,
             })
 
         # Add parked sessions (on disk, not in memory)
@@ -101,8 +97,6 @@ class SessionManager:
                     result.append({
                         "id": sid,
                         "status": "parked",
-                        "created_at": None,
-                        "updated_at": None,
                     })
 
         return result
@@ -122,11 +116,8 @@ class SessionManager:
             self._cooldown_timers[session_id].cancel()
             del self._cooldown_timers[session_id]
 
-        # Park the session (release cursor) if in memory
         if session_id in self._sessions:
-            session = self._sessions.pop(session_id)
-            if not session._running:
-                session.park()
+            self._sessions.pop(session_id)
 
         # Delete DB file
         db_path = os.path.join(self._sessions_dir, f"{session_id}.db")
@@ -200,8 +191,7 @@ class SessionManager:
         async def _cooldown():
             await asyncio.sleep(self._cooldown_seconds)
             if session_id in self._sessions:
-                s = self._sessions.pop(session_id)
-                s.park()
+                self._sessions.pop(session_id)
             self._cooldown_timers.pop(session_id, None)
 
         self._cooldown_timers[session_id] = asyncio.create_task(_cooldown())
