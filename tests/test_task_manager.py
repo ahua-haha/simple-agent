@@ -4,7 +4,10 @@ from __future__ import annotations
 
 import tempfile
 
+import pytest
+
 from simple_agent.db.db import Database
+from simple_agent.task_manager import TaskManager, TaskManagerError
 from simple_agent.task_manager.models import ManagedTask, TaskItem
 
 
@@ -64,3 +67,63 @@ def test_managed_task_roundtrip_preserves_items():
         ("tool_call", 1),
         ("task", 2),
     ]
+
+
+def test_create_user_task_sets_active_user_task():
+    db = _make_db()
+    manager = TaskManager(db)
+
+    user_task = manager.create_user_task("Build feature")
+
+    assert user_task.id is not None
+    assert user_task.kind == "user_task"
+    assert user_task.title == "Build feature"
+    assert manager.active_user_task_id == user_task.id
+
+
+def test_create_todo_appends_task_item_to_user_task():
+    db = _make_db()
+    manager = TaskManager(db)
+    user_task = manager.create_user_task("Build feature")
+
+    todo = manager.create_todo("Inspect files")
+    loaded_user_task = db.get_managed_task(user_task.id)
+
+    assert todo.parent_id == user_task.id
+    assert manager.active_todo_id == todo.id
+    assert [(item.kind, item.ref_id) for item in loaded_user_task.items] == [
+        ("task", todo.id),
+    ]
+
+
+def test_create_todo_rejects_existing_active_todo():
+    db = _make_db()
+    manager = TaskManager(db)
+    manager.create_user_task("Build feature")
+    manager.create_todo("Inspect files")
+
+    with pytest.raises(TaskManagerError, match="active todo"):
+        manager.create_todo("Edit files")
+
+
+def test_finish_todo_marks_done_and_clears_active_todo():
+    db = _make_db()
+    manager = TaskManager(db)
+    manager.create_user_task("Build feature")
+    todo = manager.create_todo("Inspect files")
+
+    finished = manager.finish_todo("Found app.py")
+
+    assert finished.id == todo.id
+    assert finished.status == "done"
+    assert finished.result == "Found app.py"
+    assert manager.active_todo_id is None
+
+
+def test_finish_todo_rejects_missing_active_todo():
+    db = _make_db()
+    manager = TaskManager(db)
+    manager.create_user_task("Build feature")
+
+    with pytest.raises(TaskManagerError, match="No active todo"):
+        manager.finish_todo()
