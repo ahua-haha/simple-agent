@@ -76,7 +76,8 @@ class TestSessionManagerRunPause:
 
         # Mock Session.run to avoid actual LLM calls
         async def mock_run(self, user_input):
-            pass
+            from simple_agent.task_manager.models import ManagedTask
+            return ManagedTask(id=1, kind="user_task", title=user_input, status="done")
 
         monkeypatch.setattr(
             "simple_agent.session.session.Session.run", mock_run
@@ -130,7 +131,8 @@ class TestSessionManagerRunPause:
 
         # Mock Session.run to avoid actual LLM calls
         async def mock_run(self, user_input):
-            pass
+            from simple_agent.task_manager.models import ManagedTask
+            return ManagedTask(id=1, kind="user_task", title=user_input, status="done")
 
         monkeypatch.setattr(
             "simple_agent.session.session.Session.run", mock_run
@@ -214,8 +216,10 @@ class TestAPIEndpoints:
 
         # Mock Session.run to avoid actual LLM calls
         async def mock_run(self, user_input):
+            from simple_agent.task_manager.models import ManagedTask
             if self.event_queue is not None:
                 self.event_queue.put_nowait(None)
+            return ManagedTask(id=1, kind="user_task", title=user_input, status="done")
 
         monkeypatch.setattr(
             "simple_agent.session.session.Session.run", mock_run
