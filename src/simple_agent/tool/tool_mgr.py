@@ -24,9 +24,10 @@ class ToolMgr:
     tools: list[AgentTool]
     records: list[ToolExecMessage]
 
-    def __init__(self, db: Database | None = None):
+    def __init__(self, db: Database | None = None, task_manager=None):
         self.tools: list[AgentTool] = []
         self._db = db or Database()
+        self._task_manager = task_manager
 
     def create_all_tools(self, cwd: str) -> list[AgentTool]:
         tools = list(create_all_tools(cwd).values())
@@ -59,8 +60,76 @@ class ToolMgr:
                 raw_output=raw,
                 tool_result=res,
             )
-            self._db.insert_tool_call(tool_exec)
+            log_id = self._db.insert_tool_call(tool_exec)
+            if self._task_manager is not None:
+                self._task_manager.record_tool_call(log_id)
             return res
+        tool.execute = execute
+        return tool
+
+    def create_create_todo_tool(self) -> AgentTool:
+        tool = AgentTool(
+            name="create_todo",
+            description="Create a todo for the next coherent unit of work.",
+            parameters={
+                "type": "object",
+                "properties": {
+                    "title": {"type": "string", "description": "Short title for the todo"},
+                },
+                "required": ["title"],
+            },
+        )
+
+        async def execute(tool_call_id, params, cancel_event=None, on_update=None):
+            if self._task_manager is None:
+                return AgentToolResult(content=[TextContent(text="task manager is not configured")])
+            todo = self._task_manager.create_todo(params["title"])
+            return AgentToolResult(content=[TextContent(text=f"created todo {todo.id}")])
+
+        tool.execute = execute
+        return tool
+
+    def create_finish_todo_tool(self) -> AgentTool:
+        tool = AgentTool(
+            name="finish_todo",
+            description="Mark the active todo as done.",
+            parameters={
+                "type": "object",
+                "properties": {
+                    "result": {"type": "string", "description": "Optional concise result for this todo"},
+                },
+                "required": [],
+            },
+        )
+
+        async def execute(tool_call_id, params, cancel_event=None, on_update=None):
+            if self._task_manager is None:
+                return AgentToolResult(content=[TextContent(text="task manager is not configured")])
+            todo = self._task_manager.finish_todo(params.get("result"))
+            return AgentToolResult(content=[TextContent(text=f"finished todo {todo.id}")])
+
+        tool.execute = execute
+        return tool
+
+    def create_error_todo_tool(self) -> AgentTool:
+        tool = AgentTool(
+            name="error_todo",
+            description="Mark the active todo as failed.",
+            parameters={
+                "type": "object",
+                "properties": {
+                    "error": {"type": "string", "description": "Error details for the active todo"},
+                },
+                "required": ["error"],
+            },
+        )
+
+        async def execute(tool_call_id, params, cancel_event=None, on_update=None):
+            if self._task_manager is None:
+                return AgentToolResult(content=[TextContent(text="task manager is not configured")])
+            todo = self._task_manager.error_todo(params["error"])
+            return AgentToolResult(content=[TextContent(text=f"errored todo {todo.id}")])
+
         tool.execute = execute
         return tool
 
