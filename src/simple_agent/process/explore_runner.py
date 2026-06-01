@@ -6,7 +6,8 @@ from typing import TYPE_CHECKING
 
 from simple_agent.process.agent_process import AgentProcess, AgentState
 from simple_agent.process.runners import BaseRunner, RunnerResult
-from simple_agent.tool.tool_mgr import ToolMgr
+from simple_agent.tool.common_tools import create_all_coding_tools
+from simple_agent.tool.execution_logger import ToolExecutionLogger
 from simple_agent.db.db import Database
 if TYPE_CHECKING:
     from simple_agent.state.state import Task
@@ -41,9 +42,9 @@ class ExploreRunner(BaseRunner):
 
     type = "explore"
 
-    def __init__(self, db: Database, tools_mgr: ToolMgr, agent_process: AgentProcess):
+    def __init__(self, db: Database, execution_logger: ToolExecutionLogger, agent_process: AgentProcess):
         self._db = db
-        self._tools_mgr = tools_mgr
+        self._execution_logger = execution_logger
         self._agent_process = agent_process
 
     async def run(self, task: "Task") -> RunnerResult:
@@ -59,9 +60,10 @@ class ExploreRunner(BaseRunner):
         state = AgentState()
         state.stop_condition = lambda s: "determine_state" in s.tool_results
         tools: list = [
-            state.bind_tool(self._tools_mgr.create_determine_state_tool()),
-            *self._tools_mgr.create_all_tools(task.repo_path),
+            state.create_determine_state_tool(),
+            *create_all_coding_tools(task.repo_path),
         ]
+        tools = self._execution_logger.wrap_tools(tools)
         await self._agent_process.run(
             system_prompt=EXECUTE_SYSTEM_PROMPT,
             messages=task.metadata["context_msgs"],
@@ -85,14 +87,15 @@ class ExploreRunner(BaseRunner):
     async def _collect(self, task: "Task") -> RunnerResult:
         collect_state = AgentState()
         collect_tools: list = [
-            collect_state.bind_tool(self._tools_mgr.create_record_textresult_tool()),
+            collect_state.create_record_textresult_tool(),
         ]
         if task.start_snapshot and task.end_snapshot:
             watcher = task.metadata["repo_watcher"]
             collect_tools.append(
-                self._tools_mgr.create_diff_tool(watcher, task.start_snapshot, task.end_snapshot)
+                watcher.create_diff_tool(task.start_snapshot, task.end_snapshot)
             )
-        collect_tools.extend(self._tools_mgr.create_all_tools(task.repo_path))
+        collect_tools.extend(create_all_coding_tools(task.repo_path))
+        collect_tools = self._execution_logger.wrap_tools(collect_tools)
 
         await self._agent_process.run(
             system_prompt=COLLECT_SYSTEM_PROMPT,
@@ -111,4 +114,3 @@ class ExploreRunner(BaseRunner):
         task.result_msg = list(task.messages)
         task.state = "FINISHED"
         return RunnerResult(kind="finished")
-

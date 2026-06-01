@@ -7,7 +7,7 @@ import tempfile
 
 from simple_agent.db.db import Database
 from simple_agent.task_manager import TaskManager
-from simple_agent.tool.tool_mgr import ToolMgr
+from simple_agent.tool.execution_logger import ToolExecutionLogger
 
 
 def _make_db() -> Database:
@@ -19,8 +19,8 @@ def test_create_todo_tool_creates_active_todo():
     db = _make_db()
     manager = TaskManager(db)
     manager.create_user_task("Build feature")
-    tools = ToolMgr(db, task_manager=manager)
-    tool = tools.create_create_todo_tool()
+    logger = ToolExecutionLogger(db, task_manager=manager)
+    tool = logger.wrap_tool(manager.create_create_todo_tool())
 
     async def run():
         return await tool.execute("call_1", {"title": "Inspect files"})
@@ -36,8 +36,8 @@ def test_finish_todo_tool_finishes_active_todo():
     manager = TaskManager(db)
     manager.create_user_task("Build feature")
     todo = manager.create_todo("Inspect files")
-    tools = ToolMgr(db, task_manager=manager)
-    tool = tools.create_finish_todo_tool()
+    logger = ToolExecutionLogger(db, task_manager=manager)
+    tool = logger.wrap_tool(manager.create_finish_todo_tool())
 
     async def run():
         return await tool.execute("call_1", {"result": "Inspected files"})
@@ -55,7 +55,7 @@ def test_normal_tool_call_records_under_active_todo():
     manager = TaskManager(db)
     manager.create_user_task("Build feature")
     todo = manager.create_todo("Inspect files")
-    tools = ToolMgr(db, task_manager=manager)
+    logger = ToolExecutionLogger(db, task_manager=manager)
 
     from pi.agent import AgentTool, AgentToolResult
     from pi.ai.types import TextContent
@@ -69,7 +69,7 @@ def test_normal_tool_call_records_under_active_todo():
         parameters={"type": "object", "properties": {}},
         execute=execute,
     )
-    wrapped = tools.wrap_tools(tool)
+    wrapped = logger.wrap_tool(tool)
 
     async def run():
         return await wrapped.execute("call_1", {})

@@ -1,5 +1,7 @@
 import os
 from git import Repo, GitCommandError
+from pi.agent import AgentTool, AgentToolResult
+from pi.ai.types import TextContent
 
 class RepoWatcher:
     def __init__(self, project_root, metadata_dir):
@@ -103,3 +105,30 @@ class RepoWatcher:
                 return True
         except GitCommandError:
             return False
+
+    def create_diff_tool(self, start_hash: str, end_hash: str) -> AgentTool:
+        tool = AgentTool(
+            name="diff",
+            description="Show changes between the start and end of the task. Use optional 'path' to diff a single file.",
+            parameters={
+                "type": "object",
+                "properties": {
+                    "path": {"type": "string", "description": "Optional file path to diff a single file"},
+                },
+                "required": [],
+            },
+        )
+
+        async def execute(tool_call_id: str, params: dict, cancel_event=None, on_update=None) -> AgentToolResult:
+            path = params.get("path")
+            try:
+                if path:
+                    output = self.get_file_diff(start_hash, end_hash, path)
+                else:
+                    output = self.get_diff(start_hash, end_hash)
+                return AgentToolResult(content=[TextContent(text=output or "(no changes)")])
+            except Exception as exc:
+                return AgentToolResult(content=[TextContent(text=f"diff failed: {exc}")])
+
+        tool.execute = execute
+        return tool

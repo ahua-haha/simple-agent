@@ -7,7 +7,7 @@ from dataclasses import dataclass
 from typing import Literal, TYPE_CHECKING
 
 from simple_agent.process.agent_process import AgentProcess
-from simple_agent.tool.tool_mgr import ToolMgr
+from simple_agent.tool.execution_logger import ToolExecutionLogger
 from simple_agent.db.db import Database
 
 if TYPE_CHECKING:
@@ -43,9 +43,9 @@ class CollectRunner(BaseRunner):
 
     type = "collect"
 
-    def __init__(self, db: Database, tools_mgr: ToolMgr, agent_process: AgentProcess):
+    def __init__(self, db: Database, execution_logger: ToolExecutionLogger, agent_process: AgentProcess):
         self._db = db
-        self._tools_mgr = tools_mgr
+        self._execution_logger = execution_logger
         self._agent_process = agent_process
 
     async def run(self, task: "Task") -> RunnerResult:
@@ -58,9 +58,9 @@ class SingleRunRunner(BaseRunner):
 
     type = "single_run"
 
-    def __init__(self, db: Database, tools_mgr: ToolMgr, agent_process: AgentProcess):
+    def __init__(self, db: Database, execution_logger: ToolExecutionLogger, agent_process: AgentProcess):
         self._db = db
-        self._tools_mgr = tools_mgr
+        self._execution_logger = execution_logger
         self._agent_process = agent_process
 
     async def run(self, task: "Task") -> RunnerResult:

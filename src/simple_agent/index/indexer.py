@@ -8,6 +8,8 @@ import time
 from collections.abc import Callable
 from pathlib import Path
 
+from pi.agent import AgentTool, AgentToolResult
+from pi.ai.types import TextContent
 from sqlmodel import SQLModel, Field, Session, create_engine, select
 
 from simple_agent.snapshot.ghost_indexer import RepoWatcher
@@ -51,6 +53,70 @@ class AgentIndex:
 
     def _get_session(self) -> Session:
         return Session(self._engine)
+
+    def create_index_tools(self) -> list[AgentTool]:
+        tree_tool = AgentTool(
+            name="index_tree",
+            description="Render the project index as a tree with # descriptions. Use to review what's known about the codebase structure.",
+            parameters={
+                "type": "object",
+                "properties": {
+                    "path": {"type": "string", "description": "Subtree path to render (default: root)"},
+                    "depth": {"type": "integer", "description": "Max depth to render (default: unlimited)"},
+                },
+                "required": [],
+            },
+        )
+
+        async def tree_execute(tool_call_id: str, params: dict, cancel_event=None, on_update=None) -> AgentToolResult:
+            output = self.tree(path=params.get("path", ""), depth=params.get("depth"))
+            return AgentToolResult(content=[TextContent(text=output)])
+
+        tree_tool.execute = tree_execute
+
+        update_tool = AgentTool(
+            name="index_update",
+            description="Add or update an entry in the project index. Use after discovering a new file, class, function, or module.",
+            parameters={
+                "type": "object",
+                "properties": {
+                    "path": {"type": "string", "description": "Entry path, e.g. 'src/main.py' or 'src/main.py:main()'"},
+                    "type": {"type": "string", "description": "Entry type: folder, file, class, function, method"},
+                    "description": {"type": "string", "description": "Text description of what this entry does"},
+                },
+                "required": ["path", "type", "description"],
+            },
+        )
+
+        async def update_execute(tool_call_id: str, params: dict, cancel_event=None, on_update=None) -> AgentToolResult:
+            self.update(
+                path=params["path"],
+                type=params.get("type", "file"),
+                description=params.get("description", ""),
+            )
+            return AgentToolResult(content=[TextContent(text="ok")])
+
+        update_tool.execute = update_execute
+
+        remove_tool = AgentTool(
+            name="index_remove",
+            description="Remove an entry and all its children from the project index.",
+            parameters={
+                "type": "object",
+                "properties": {
+                    "path": {"type": "string", "description": "Path to remove, e.g. 'src/old_module/'"},
+                },
+                "required": ["path"],
+            },
+        )
+
+        async def remove_execute(tool_call_id: str, params: dict, cancel_event=None, on_update=None) -> AgentToolResult:
+            self.remove(path=params["path"])
+            return AgentToolResult(content=[TextContent(text="ok")])
+
+        remove_tool.execute = remove_execute
+
+        return [tree_tool, update_tool, remove_tool]
 
     def _get_hash(self, _session: Session | None = None) -> str | None:
         sess = _session or self._get_session()

@@ -5,11 +5,11 @@ from pi.ai.types import AssistantMessage, TextContent
 from pi.ai import ToolResultMessage
 
 from simple_agent.state.state import Task, ToolExecMessage
-from simple_agent.tool.tool_mgr import ToolMgr
+from simple_agent.tool.execution_logger import ToolExecutionLogger
 
 
 def format_results(
-    tools_mgr: ToolMgr,
+    execution_logger: ToolExecutionLogger,
     task: Task,
     status: str = "finished",
     label: str | None = None,
@@ -23,7 +23,7 @@ def format_results(
     tool_log_ids: list[int] = []
     for tr in text_results:
         tool_log_ids.extend(tr.toolCallLogID)
-    records: list[ToolExecMessage] = tools_mgr.get_all_messages(tool_log_ids)
+    records: list[ToolExecMessage] = execution_logger.get_all_messages(tool_log_ids)
 
     # 1. One single AssistantMessage with all recorded tool calls
     tool_calls = [r.tool_call for r in records]

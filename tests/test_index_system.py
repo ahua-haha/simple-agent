@@ -1,4 +1,4 @@
-"""Tests for AgentIndex and ToolMgr.create_index_tools."""
+"""Tests for AgentIndex."""
 
 from __future__ import annotations
 
@@ -8,7 +8,6 @@ import tempfile
 import pytest
 
 from simple_agent.index.indexer import AgentIndex, IndexEntry
-from simple_agent.tool.tool_mgr import ToolMgr
 
 
 class TestAgentIndexCRUD:
@@ -223,7 +222,7 @@ class TestAgentIndexRealSrc:
 
             # Depth 2 files
             assert "indexer.py" in output
-            assert "tool_mgr.py" in output
+            assert "execution_logger.py" in output or "common_tools.py" in output
             assert "agent_process.py" in output
 
             # Depth 3 directories (grandchildren of root)

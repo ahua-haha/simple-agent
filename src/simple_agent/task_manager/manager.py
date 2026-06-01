@@ -4,6 +4,9 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
+from pi.agent import AgentTool, AgentToolResult
+from pi.ai.types import TextContent
+
 from simple_agent.task_manager.models import ManagedTask, TaskItem
 
 if TYPE_CHECKING:
@@ -29,6 +32,66 @@ class TaskManager:
         task.id = self._db.upsert_managed_task(task)
         self.active_user_task_id = task.id
         return task
+
+    def create_create_todo_tool(self) -> AgentTool:
+        tool = AgentTool(
+            name="create_todo",
+            description="Create a todo for the next coherent unit of work.",
+            parameters={
+                "type": "object",
+                "properties": {
+                    "title": {"type": "string", "description": "Short title for the todo"},
+                },
+                "required": ["title"],
+            },
+        )
+
+        async def execute(tool_call_id, params, cancel_event=None, on_update=None):
+            todo = self.create_todo(params["title"])
+            return AgentToolResult(content=[TextContent(text=f"created todo {todo.id}")])
+
+        tool.execute = execute
+        return tool
+
+    def create_finish_todo_tool(self) -> AgentTool:
+        tool = AgentTool(
+            name="finish_todo",
+            description="Mark the active todo as done.",
+            parameters={
+                "type": "object",
+                "properties": {
+                    "result": {"type": "string", "description": "Optional concise result for this todo"},
+                },
+                "required": [],
+            },
+        )
+
+        async def execute(tool_call_id, params, cancel_event=None, on_update=None):
+            todo = self.finish_todo(params.get("result"))
+            return AgentToolResult(content=[TextContent(text=f"finished todo {todo.id}")])
+
+        tool.execute = execute
+        return tool
+
+    def create_error_todo_tool(self) -> AgentTool:
+        tool = AgentTool(
+            name="error_todo",
+            description="Mark the active todo as failed.",
+            parameters={
+                "type": "object",
+                "properties": {
+                    "error": {"type": "string", "description": "Error details for the active todo"},
+                },
+                "required": ["error"],
+            },
+        )
+
+        async def execute(tool_call_id, params, cancel_event=None, on_update=None):
+            todo = self.error_todo(params["error"])
+            return AgentToolResult(content=[TextContent(text=f"errored todo {todo.id}")])
+
+        tool.execute = execute
+        return tool
 
     def create_todo(self, title: str) -> ManagedTask:
         user_task = self._require_user_task()

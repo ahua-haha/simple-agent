@@ -13,7 +13,8 @@ from pi.ai import get_model
 from simple_agent.log import logged
 from simple_agent.process.agent_process import AgentProcess, AgentState
 from simple_agent.task_manager import TaskManager
-from simple_agent.tool.tool_mgr import ToolMgr
+from simple_agent.tool.common_tools import create_all_coding_tools
+from simple_agent.tool.execution_logger import ToolExecutionLogger
 from simple_agent.db.db import Database
 from simple_agent.models import register_custom_models
 
@@ -49,7 +50,7 @@ class Session:
         self._db_path = os.path.join(base_dir, f"{self._id}.db")
         self._db = Database(self._db_path)
         self._task_manager = TaskManager(self._db)
-        self._tools_mgr = ToolMgr(self._db, task_manager=self._task_manager)
+        self._execution_logger = ToolExecutionLogger(self._db, task_manager=self._task_manager)
         register_custom_models()
         self._agent_process = AgentProcess(get_model("deepseek", "deepseek-v4-pro"))
         self._cancel_event = asyncio.Event()
@@ -94,11 +95,12 @@ class Session:
 
         state = AgentState()
         tools = [
-            self._tools_mgr.create_create_todo_tool(),
-            self._tools_mgr.create_finish_todo_tool(),
-            self._tools_mgr.create_error_todo_tool(),
-            *self._tools_mgr.create_all_tools("."),
+            self._task_manager.create_create_todo_tool(),
+            self._task_manager.create_finish_todo_tool(),
+            self._task_manager.create_error_todo_tool(),
+            *create_all_coding_tools("."),
         ]
+        tools = self._execution_logger.wrap_tools(tools)
 
         try:
             await self._agent_process.run(

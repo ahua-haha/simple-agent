@@ -1,4 +1,4 @@
-"""Tests for diff tool — RepoWatcher and ToolMgr.create_diff_tool."""
+"""Tests for diff tool helpers."""
 
 from __future__ import annotations
 
@@ -9,7 +9,6 @@ import pytest
 from git import Repo
 
 from simple_agent.snapshot.ghost_indexer import RepoWatcher
-from simple_agent.tool.tool_mgr import ToolMgr
 
 
 class TestRepoWatcherGetFileDiff:
@@ -59,8 +58,8 @@ class TestRepoWatcherGetFileDiff:
             assert diff_output == "" or diff_output is not None
 
 
-class TestToolMgrCreateDiffTool:
-    """Tests for ToolMgr.create_diff_tool()."""
+class TestCreateDiffTool:
+    """Tests for RepoWatcher.create_diff_tool()."""
 
     @pytest.mark.asyncio
     async def test_diff_tool_full_repo_diff(self):
@@ -83,10 +82,9 @@ class TestToolMgrCreateDiffTool:
 
             end = watcher.take_snapshot()
 
-            mgr = ToolMgr()
-            diff_tool = mgr.create_diff_tool(watcher)
+            diff_tool = watcher.create_diff_tool(start, end)
 
-            result = await diff_tool.execute("call_1", {"start": start, "end": end})
+            result = await diff_tool.execute("call_1", {})
             output = result.content[0].text
 
             assert "test.py" in output
@@ -115,10 +113,9 @@ class TestToolMgrCreateDiffTool:
 
             end = watcher.take_snapshot()
 
-            mgr = ToolMgr()
-            diff_tool = mgr.create_diff_tool(watcher)
+            diff_tool = watcher.create_diff_tool(start, end)
 
-            result = await diff_tool.execute("call_1", {"start": start, "end": end, "path": "a.py"})
+            result = await diff_tool.execute("call_1", {"path": "a.py"})
             output = result.content[0].text
 
             assert "a.py" in output

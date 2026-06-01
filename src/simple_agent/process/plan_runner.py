@@ -6,7 +6,7 @@ from typing import TYPE_CHECKING
 
 from simple_agent.process.agent_process import AgentProcess, AgentState
 from simple_agent.process.runners import BaseRunner, RunnerResult
-from simple_agent.tool.tool_mgr import ToolMgr
+from simple_agent.tool.execution_logger import ToolExecutionLogger
 from simple_agent.db.db import Database
 
 if TYPE_CHECKING:
@@ -35,16 +35,16 @@ class PlanRunner(BaseRunner):
 
     type = "plan"
 
-    def __init__(self, db: Database, tools_mgr: ToolMgr, agent_process: AgentProcess):
+    def __init__(self, db: Database, execution_logger: ToolExecutionLogger, agent_process: AgentProcess):
         self._db = db
-        self._tools_mgr = tools_mgr
+        self._execution_logger = execution_logger
         self._agent_process = agent_process
 
     async def run(self, task: "Task") -> RunnerResult:
         state = AgentState()
         state.stop_condition = lambda s: "define_task" in s.tool_results
         tools: list = [
-            state.bind_tool(self._tools_mgr.create_define_task_tool()),
+            state.create_define_task_tool(self._execution_logger),
         ]
 
         await self._agent_process.run(
@@ -69,4 +69,3 @@ class PlanRunner(BaseRunner):
 
         task.result_msg = list(task.messages)
         return RunnerResult(kind="finished")
-

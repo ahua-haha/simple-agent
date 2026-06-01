@@ -5,7 +5,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import time
-from typing import Any, Callable
+from typing import Any, Callable, TYPE_CHECKING
 
 from pi.agent import AgentTool, AgentToolResult, AgentToolUpdateCallback
 from pi.agent.loop import agent_loop
@@ -16,6 +16,9 @@ from simple_agent.log import logged
 from simple_agent.models import register_custom_models, get_api_key
 
 _log = logging.getLogger(__name__)
+
+if TYPE_CHECKING:
+    from simple_agent.tool.execution_logger import ToolExecutionLogger
 
 
 class AgentState(asyncio.Event):
@@ -53,7 +56,7 @@ class AgentState(asyncio.Event):
         """Wrap *tool* so its result is recorded into ``tool_results``.
 
         After each execution, if ``tool.result`` is set (e.g. by a
-        ``ToolMgr.create_record_tool`` tool), it is appended to
+        record tool created by ``AgentState.create_record_tool``), it is appended to
         ``state.tool_results[tool.name]``.
 
         Does NOT set ``finish_reason`` or call ``set()`` — stop behavior
@@ -76,6 +79,82 @@ class AgentState(asyncio.Event):
 
         tool.execute = _wrapped
         return tool
+
+    def create_record_tool(
+        self,
+        model_class: type,
+        name: str,
+        description: str,
+        parameters: dict[str, Any],
+        execution_logger: "ToolExecutionLogger | None" = None,
+    ) -> AgentTool:
+        tool = AgentTool(name=name, description=description, parameters=parameters)
+
+        async def execute(
+            tool_call_id: str,
+            params: dict[str, Any],
+            cancel_event: asyncio.Event | None = None,
+            on_update: AgentToolUpdateCallback | None = None,
+        ) -> AgentToolResult:
+            try:
+                item = model_class.model_validate(params)
+                tool.result = item
+                return AgentToolResult(content=[TextContent(text="ok")])
+            except Exception as exc:
+                return AgentToolResult(content=[TextContent(text=f"validation failed: {exc}")])
+
+        tool.execute = execute
+        tool.result = None
+        wrapped = self.bind_tool(tool)
+        if execution_logger is not None:
+            wrapped = execution_logger.wrap_tool(wrapped)
+        return wrapped
+
+    def create_determine_state_tool(self, execution_logger: "ToolExecutionLogger | None" = None) -> AgentTool:
+        from simple_agent.state.state import StateClarification
+
+        return self.create_record_tool(
+            model_class=StateClarification,
+            name="determine_state",
+            description="Determine the current state based on context.",
+            parameters={
+                "type": "object",
+                "properties": {
+                    "state": {"type": "string", "enum": ["finished", "error"]},
+                    "reason": {"type": "string", "description": "Reason for choosing this state"},
+                },
+                "required": ["state", "reason"],
+            },
+            execution_logger=execution_logger,
+        )
+
+    def create_define_task_tool(self, execution_logger: "ToolExecutionLogger | None" = None) -> AgentTool:
+        from simple_agent.state.state import Task
+
+        return self.create_record_tool(
+            model_class=Task,
+            name="define_task",
+            description="Define a sub-task to be executed. Include all necessary context.",
+            parameters={
+                "type": "object",
+                "properties": {
+                    "input": {"type": "string", "description": "The full input for this sub-task"},
+                },
+                "required": ["input"],
+            },
+            execution_logger=execution_logger,
+        )
+
+    def create_record_textresult_tool(self, execution_logger: "ToolExecutionLogger | None" = None) -> AgentTool:
+        from simple_agent.state.state import TEXT_RESULT_JSON_SCHEMA, TextResult
+
+        return self.create_record_tool(
+            model_class=TextResult,
+            name="record_textresult",
+            description="Record a TextResult instance capturing a final outcome.",
+            parameters=TEXT_RESULT_JSON_SCHEMA,
+            execution_logger=execution_logger,
+        )
 
 
 class AgentProcess:
