@@ -64,6 +64,9 @@ class SessionRunner:
     def subscribe(self, callback: Callable) -> None:
         self._agent_process.subscribe(callback)
 
+    def unsubscribe(self, callback: Callable) -> None:
+        self._agent_process.unsubscribe(callback)
+
     def pause(self) -> None:
         self._cancel_event.set()
 

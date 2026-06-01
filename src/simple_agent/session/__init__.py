@@ -1,6 +1,6 @@
-"""Session module for task tree execution with checkpointing."""
+"""Session module for task tree execution."""
 
 from simple_agent.session.session import Session
-from simple_agent.session.session_manager import SessionManager, SessionBusyError, DEFAULT_COOLDOWN_SECONDS
+from simple_agent.session.session_manager import SessionManager, SessionBusyError
 
-__all__ = ["Session", "SessionManager", "SessionBusyError", "DEFAULT_COOLDOWN_SECONDS"]
+__all__ = ["Session", "SessionManager", "SessionBusyError"]

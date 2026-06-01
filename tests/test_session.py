@@ -62,49 +62,42 @@ class TestSessionEventQueue:
     @pytest.mark.asyncio
     async def test_queue_created_in_run(self, tmp_path):
         session = Session(base_dir=str(tmp_path))
-        assert session.event_queue is None
 
-        # Start run and cancel immediately to avoid actual agent execution
-        session._running = True
-        session.event_queue = __import__("asyncio").Queue()
-        session.event_queue.put_nowait(None)
+        async def fake_run(user_input):
+            return None
 
-        assert session.event_queue is not None
+        session._runner.run = fake_run
+
+        queue = session.run("hello")
+
+        assert session._run_task is not None
+        await queue.get()
+        assert session._run_task is None
 
     @pytest.mark.asyncio
     async def test_queue_none_after_run(self, tmp_path):
         session = Session(base_dir=str(tmp_path))
-        session.event_queue = __import__("asyncio").Queue()
-        session.event_queue.put_nowait(None)
-        session.event_queue = None
 
-        assert session.event_queue is None
+        assert session._run_task is None
 
     @pytest.mark.asyncio
     async def test_agent_event_pushed_to_queue(self, tmp_path):
         import asyncio
         session = Session(base_dir=str(tmp_path))
-        session.event_queue = asyncio.Queue()
 
-        from pi.agent.types import AgentEndEvent
-        from pi.ai.types import AssistantMessage, TextContent
-        msg = AssistantMessage(role="assistant", content=[TextContent(text="hello")])
-        event = AgentEndEvent(messages=[msg])
-        session._on_agent_event(event)
-        received = session.event_queue.get_nowait()
-        assert received is event
+        async def fake_run(user_input):
+            from pi.agent.types import AgentEndEvent
+            from pi.ai.types import AssistantMessage, TextContent
+            msg = AssistantMessage(role="assistant", content=[TextContent(text="hello")])
+            event = AgentEndEvent(messages=[msg])
+            session._agent_process._emit(event)
 
-    @pytest.mark.asyncio
-    async def test_no_push_when_queue_is_none(self, tmp_path):
-        session = Session(base_dir=str(tmp_path))
-        assert session.event_queue is None
+        session._runner.run = fake_run
 
-        # Should not raise
-        from pi.agent.types import AgentEndEvent
-        from pi.ai.types import AssistantMessage, TextContent
-        msg = AssistantMessage(role="assistant", content=[TextContent(text="hello")])
-        event = AgentEndEvent(messages=[msg])
-        session._on_agent_event(event)
+        queue = session.run("hello")
+        received = await queue.get()
+
+        assert received is not None
 
 
 def test_session_pause_delegates_to_runner(tmp_path):
@@ -126,7 +119,7 @@ def test_session_initializes_task_manager(tmp_path):
 
 
 @pytest.mark.asyncio
-async def test_session_run_creates_user_task_and_calls_agent_once(tmp_path, monkeypatch):
+async def test_session_run_creates_queue_and_runs_agent_once(tmp_path, monkeypatch):
     from simple_agent.session.session import Session
 
     calls = []
@@ -147,11 +140,11 @@ async def test_session_run_creates_user_task_and_calls_agent_once(tmp_path, monk
     monkeypatch.setattr("simple_agent.process.agent_process.AgentProcess.run", fake_run)
 
     session = Session(base_dir=str(tmp_path))
-    result = await session.run("Build feature")
+    queue = session.run("Build feature")
+    assert isinstance(queue, __import__("asyncio").Queue)
 
-    assert result is not None
-    assert result.kind == "user_task"
-    assert result.title == "Build feature"
+    await queue.get()
+
     assert len(calls) == 1
     assert "create_todo" in calls[0]["tools"]
     assert "finish_todo" in calls[0]["tools"]

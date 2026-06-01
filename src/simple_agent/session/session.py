@@ -30,7 +30,7 @@ class Session:
     Usage::
 
         session = Session()                         # new session, auto ID
-        task = await session.run("build a test suite")
+        queue = session.run("build a test suite")
 
         session2 = Session(session_id=s._id)        # reload existing
     """
@@ -58,42 +58,44 @@ class Session:
             cancel_event=asyncio.Event(),
         )
         self._running = False
-        self.event_queue: asyncio.Queue | None = None
-
-        self._runner.subscribe(self._on_agent_event)
-
-    def _on_agent_event(self, event) -> None:
-        """Push agent events into the event queue if one is active."""
-        _log.debug("agent event: %s", type(event).__name__)
-        if self.event_queue is not None:
-            self.event_queue.put_nowait(event)
+        self._run_task: asyncio.Task | None = None
 
     @property
     def is_running(self) -> bool:
         return self._running
 
     @logged(_log)
-    async def run(self, user_input: str):
-        """Run the persisted session runner for one user task."""
+    def run(self, user_input: str) -> asyncio.Queue:
+        """Start the persisted runner and return the event queue."""
+        if self._running:
+            raise RuntimeError("Session is already running")
         self._running = True
-        if self.event_queue is None:
-            self.event_queue = asyncio.Queue()
+        queue: asyncio.Queue = asyncio.Queue()
 
+        def on_agent_event(event) -> None:
+            _log.debug("agent event: %s", type(event).__name__)
+            queue.put_nowait(event)
+
+        self._runner.subscribe(on_agent_event)
+        self._run_task = asyncio.create_task(self._run(user_input, queue, on_agent_event))
+        return queue
+
+    async def _run(self, user_input: str, queue: asyncio.Queue, on_agent_event) -> None:
+        """Execute the runner and close the event queue when complete."""
+        user_task = None
         try:
             user_task = await self._runner.run(user_input)
         except Exception:
             _log.exception("run: session=%s failed", self._id)
-            if self.event_queue is not None:
-                self.event_queue.put_nowait({"type": "error"})
+            queue.put_nowait({"type": "error"})
             raise
         finally:
             self._running = False
-            if self.event_queue is not None:
-                self.event_queue.put_nowait(None)
-                self.event_queue = None
+            self._run_task = None
+            queue.put_nowait(None)
+            self._runner.unsubscribe(on_agent_event)
 
         _log.info("run: session=%s done, result=%s", self._id, user_task.id if user_task else None)
-        return user_task
 
     def pause(self) -> None:
         """Signal the run loop to stop at the next safe point.

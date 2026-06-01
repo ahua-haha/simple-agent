@@ -1,11 +1,9 @@
 """FastAPI app for browsing the task tree and serving the session API."""
 
-import os
-
 from fastapi import FastAPI
 
 from simple_agent.db.db import Database
-from simple_agent.session.session_manager import DEFAULT_COOLDOWN_SECONDS, SessionManager
+from simple_agent.session.session_manager import SessionManager
 from simple_agent.web.session_api import create_session_router
 from simple_agent.web.task_api import router as task_router
 
@@ -22,17 +20,13 @@ def get_db() -> Database:
 def create_app(
     db_path: str,
     sessions_dir: str = "./sessions",
-    cooldown_seconds: int = DEFAULT_COOLDOWN_SECONDS,
 ) -> FastAPI:
     global _db
     _db = Database(db_path)
 
     app = FastAPI(title="Simple Agent Web")
 
-    session_manager = SessionManager(
-        sessions_dir=sessions_dir,
-        cooldown_seconds=cooldown_seconds,
-    )
+    session_manager = SessionManager(sessions_dir=sessions_dir)
     app.state.session_manager = session_manager
     app.state.get_db = get_db
 
@@ -61,12 +55,6 @@ def main() -> None:
     parser.add_argument("--host", default="0.0.0.0", help="Host to bind (default: 0.0.0.0)")
     parser.add_argument("--db", default="./data/tool_log.db", help="Path to SQLite database (default: ./data/tool_log.db)")
     parser.add_argument(
-        "--cooldown-seconds",
-        type=int,
-        default=int(os.environ.get("SESSION_COOLDOWN_SECONDS", str(DEFAULT_COOLDOWN_SECONDS))),
-        help=f"Seconds before an idle session parks to disk (default: {DEFAULT_COOLDOWN_SECONDS})",
-    )
-    parser.add_argument(
         "--sessions-dir",
         default="./sessions",
         help="Directory for session persistence (default: ./sessions)",
@@ -76,7 +64,6 @@ def main() -> None:
     app = create_app(
         db_path=args.db,
         sessions_dir=args.sessions_dir,
-        cooldown_seconds=args.cooldown_seconds,
     )
 
     uvicorn.run(app, host=args.host, port=args.port)

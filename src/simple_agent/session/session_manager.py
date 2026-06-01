@@ -1,8 +1,7 @@
-"""SessionManager — manages multiple Session instances with background task tracking."""
+"""SessionManager — manages multiple Session instances."""
 
 from __future__ import annotations
 
-import asyncio
 import logging
 import os
 
@@ -10,9 +9,6 @@ from simple_agent.log import logged
 from simple_agent.session.session import Session
 
 _log = logging.getLogger(__name__)
-
-
-DEFAULT_COOLDOWN_SECONDS = 300
 
 
 class SessionBusyError(Exception):
@@ -23,9 +19,6 @@ class SessionBusyError(Exception):
 class SessionManager:
     """Manages multiple Session instances with lifecycle operations.
 
-    Tracks background asyncio tasks per session and implements an idle
-    cooldown mechanism that parks sessions to disk after inactivity.
-
     Usage::
 
         sm = SessionManager(sessions_dir="./sessions")
@@ -34,13 +27,9 @@ class SessionManager:
         # read events from queue for SSE streaming
     """
 
-    def __init__(self, sessions_dir: str = "./sessions",
-                 cooldown_seconds: int = DEFAULT_COOLDOWN_SECONDS):
+    def __init__(self, sessions_dir: str = "./sessions"):
         self._sessions_dir = sessions_dir
-        self._cooldown_seconds = cooldown_seconds
         self._sessions: dict[str, Session] = {}
-        self._run_tasks: dict[str, asyncio.Task] = {}
-        self._cooldown_timers: dict[str, asyncio.Task] = {}
 
     # ------------------------------------------------------------------
     # create / get / list / remove
@@ -73,7 +62,7 @@ class SessionManager:
         """Return all known sessions with derived status.
 
         Status is derived, not stored:
-        - "running": active asyncio task in _run_tasks
+        - "running": session.is_running is true
         - "idle": in _sessions but not running
         - "parked": on disk but not in _sessions
         """
@@ -84,7 +73,7 @@ class SessionManager:
             seen.add(sid)
             result.append({
                 "id": sid,
-                "status": "running" if sid in self._run_tasks else "idle",
+                "status": "running" if session.is_running else "idle",
             })
 
         # Add parked sessions (on disk, not in memory)
@@ -103,18 +92,9 @@ class SessionManager:
 
     def remove(self, session_id: str) -> None:
         """Pause if running, remove from memory, and delete the DB file."""
-        # Pause if running
-        if session_id in self._run_tasks:
-            session = self._sessions.get(session_id)
-            if session is not None:
-                session.pause()
-            self._run_tasks[session_id].cancel()
-            del self._run_tasks[session_id]
-
-        # Cancel any pending cooldown timer
-        if session_id in self._cooldown_timers:
-            self._cooldown_timers[session_id].cancel()
-            del self._cooldown_timers[session_id]
+        session = self._sessions.get(session_id)
+        if session is not None and session.is_running:
+            session.pause()
 
         if session_id in self._sessions:
             self._sessions.pop(session_id)
@@ -125,7 +105,7 @@ class SessionManager:
             os.remove(db_path)
 
     # ------------------------------------------------------------------
-    # run / pause / cooldown
+    # run / pause
     # ------------------------------------------------------------------
 
     @logged(_log)
@@ -135,63 +115,16 @@ class SessionManager:
         Returns the session's event queue for SSE streaming.
         Raises SessionBusyError if the session is already running.
         """
-        if session_id in self._run_tasks:
-            raise SessionBusyError(f"Session {session_id} is already running")
-
         session = self.get(session_id)
         if session is None:
             raise LookupError(f"Session {session_id} not found")
+        if session.is_running:
+            raise SessionBusyError(f"Session {session_id} is already running")
 
-        # Cancel cooldown if one is active
-        if session_id in self._cooldown_timers:
-            self._cooldown_timers[session_id].cancel()
-            del self._cooldown_timers[session_id]
-
-        # Create queue before spawning task so the caller can read from it immediately
-        queue: asyncio.Queue = asyncio.Queue()
-        session.event_queue = queue
-
-        task = asyncio.create_task(
-            self._run_task_wrapper(session_id, session, user_input)
-        )
-        self._run_tasks[session_id] = task
-
-        return queue
+        return session.run(user_input)
 
     def pause(self, session_id: str) -> None:
         """Signal the session's run loop to stop at the next safe point."""
         session = self._sessions.get(session_id)
         if session is not None:
             session.pause()
-
-    # ------------------------------------------------------------------
-    # internal helpers
-    # ------------------------------------------------------------------
-
-    async def _run_task_wrapper(self, session_id: str, session: Session,
-                                  user_input: str) -> None:
-        """Wrap session.run() with cleanup on completion."""
-        try:
-            await session.run(user_input)
-        except asyncio.CancelledError:
-            pass
-        except Exception:
-            pass
-        finally:
-            # Clean up run task tracking
-            self._run_tasks.pop(session_id, None)
-
-            # Start cooldown timer if session is still in memory
-            if session_id in self._sessions and self._cooldown_seconds > 0:
-                self._start_cooldown(session_id, session)
-
-    def _start_cooldown(self, session_id: str, session: Session) -> None:
-        """Start an idle cooldown timer that parks the session on expiry."""
-
-        async def _cooldown():
-            await asyncio.sleep(self._cooldown_seconds)
-            if session_id in self._sessions:
-                self._sessions.pop(session_id)
-            self._cooldown_timers.pop(session_id, None)
-
-        self._cooldown_timers[session_id] = asyncio.create_task(_cooldown())

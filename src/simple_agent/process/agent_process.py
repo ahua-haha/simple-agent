@@ -81,6 +81,10 @@ class AgentProcess:
     def subscribe(self, callback: Callable) -> None:
         self._listeners.append(callback)
 
+    def unsubscribe(self, callback: Callable) -> None:
+        if callback in self._listeners:
+            self._listeners.remove(callback)
+
     def _emit(self, event) -> None:
         for listener in self._listeners:
             listener(event)

@@ -34,6 +34,10 @@ class FakeAgentProcess:
     def subscribe(self, callback):
         self.subscribers.append(callback)
 
+    def unsubscribe(self, callback):
+        if callback in self.subscribers:
+            self.subscribers.remove(callback)
+
 
 @pytest.mark.asyncio
 async def test_session_runner_creates_task_runs_agent_and_persists_messages(tmp_path):
@@ -97,6 +101,10 @@ def test_session_runner_subscribe_delegates_to_agent_process(tmp_path):
     runner.subscribe(callback)
 
     assert agent_process.subscribers == [callback]
+
+    runner.unsubscribe(callback)
+
+    assert agent_process.subscribers == []
 
 
 def test_session_runner_pause_controls_cancel_event(tmp_path):

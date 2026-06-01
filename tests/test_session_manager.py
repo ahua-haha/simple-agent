@@ -64,7 +64,7 @@ class TestSessionManager:
 
 
 class TestSessionManagerRunPause:
-    """SessionManager run, pause, and cooldown."""
+    """SessionManager run and pause."""
 
     @pytest.mark.asyncio
     async def test_run_returns_event_queue(self, tmp_path, monkeypatch):
@@ -72,9 +72,10 @@ class TestSessionManagerRunPause:
         s = sm.create()
 
         # Mock Session.run to avoid actual LLM calls
-        async def mock_run(self, user_input):
-            from simple_agent.task_manager.models import ManagedTask
-            return ManagedTask(id=1, kind="user_task", title=user_input, status="done")
+        def mock_run(self, user_input):
+            queue = asyncio.Queue()
+            self._run_task = asyncio.create_task(asyncio.sleep(0))
+            return queue
 
         monkeypatch.setattr(
             "simple_agent.session.session.Session.run", mock_run
@@ -88,12 +89,10 @@ class TestSessionManagerRunPause:
     async def test_run_on_running_raises_busy_error(self, tmp_path):
         sm = SessionManager(sessions_dir=str(tmp_path))
         s = sm.create()
-        sm._run_tasks[s.id] = asyncio.create_task(asyncio.sleep(1))
+        s._running = True
 
         with pytest.raises(SessionBusyError):
             sm.run(s.id, "another input")
-        # Clean up
-        sm._run_tasks[s.id].cancel()
 
     @pytest.mark.asyncio
     async def test_pause_signals_session(self, tmp_path):
@@ -109,35 +108,6 @@ class TestSessionManagerRunPause:
         # Should not raise
         sm.pause(s.id)
 
-    @pytest.mark.asyncio
-    async def test_cooldown_parks_session(self, tmp_path):
-        sm = SessionManager(sessions_dir=str(tmp_path), cooldown_seconds=0)
-        s = sm.create()
-        s._running = False
-        sm._start_cooldown(s.id, s)
-        # With cooldown_seconds=0, the timer fires immediately
-        await asyncio.sleep(0.05)
-        assert s.id not in sm._sessions
-
-    @pytest.mark.asyncio
-    async def test_run_cancels_cooldown(self, tmp_path, monkeypatch):
-        sm = SessionManager(sessions_dir=str(tmp_path), cooldown_seconds=10)
-        s = sm.create()
-        sm._start_cooldown(s.id, s)
-        assert s.id in sm._cooldown_timers
-
-        # Mock Session.run to avoid actual LLM calls
-        async def mock_run(self, user_input):
-            from simple_agent.task_manager.models import ManagedTask
-            return ManagedTask(id=1, kind="user_task", title=user_input, status="done")
-
-        monkeypatch.setattr(
-            "simple_agent.session.session.Session.run", mock_run
-        )
-
-        sm.run(s.id, "test")
-        assert s.id not in sm._cooldown_timers
-
 class TestAPIEndpoints:
     """Session API endpoints (via TestClient)."""
 
@@ -150,7 +120,6 @@ class TestAPIEndpoints:
         app = create_app(
             db_path=":memory:",
             sessions_dir=str(tmp_path),
-            cooldown_seconds=60,
         )
         return TestClient(app)
 
@@ -206,17 +175,14 @@ class TestAPIEndpoints:
         assert resp.status_code == 404
 
     def test_run_session(self, client, monkeypatch):
-        import asyncio as _asyncio
-
         created = client.post("/api/sessions", json={})
         sid = created.json()["id"]
 
         # Mock Session.run to avoid actual LLM calls
-        async def mock_run(self, user_input):
-            from simple_agent.task_manager.models import ManagedTask
-            if self.event_queue is not None:
-                self.event_queue.put_nowait(None)
-            return ManagedTask(id=1, kind="user_task", title=user_input, status="done")
+        def mock_run(self, user_input):
+            queue = asyncio.Queue()
+            queue.put_nowait(None)
+            return queue
 
         monkeypatch.setattr(
             "simple_agent.session.session.Session.run", mock_run
@@ -246,7 +212,6 @@ class TestSessionRunStream:
         app = create_app(
             db_path=":memory:",
             sessions_dir=str(tmp_path),
-            cooldown_seconds=60,
         )
 
         config = uvicorn.Config(app, host="127.0.0.1", port=unused_tcp_port, log_level="error")
