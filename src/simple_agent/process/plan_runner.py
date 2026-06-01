@@ -10,7 +10,6 @@ from pi.ai.types import TextContent
 
 from simple_agent.process.agent_process import AgentProcess
 from simple_agent.process.runners import BaseRunner, RunnerResult
-from simple_agent.tool.execution_logger import ToolExecutionLogger
 from simple_agent.db.db import Database
 
 if TYPE_CHECKING:
@@ -82,9 +81,8 @@ class PlanRunner(BaseRunner):
 
     type = "plan"
 
-    def __init__(self, db: Database, execution_logger: ToolExecutionLogger, agent_process: AgentProcess):
+    def __init__(self, db: Database, agent_process: AgentProcess):
         self._db = db
-        self._execution_logger = execution_logger
         self._agent_process = agent_process
 
     async def run(self, task: "Task") -> RunnerResult:
@@ -93,8 +91,6 @@ class PlanRunner(BaseRunner):
         tools: list = [
             state.create_define_task_tool(),
         ]
-        tools = self._execution_logger.wrap_tools(tools)
-
         new_messages = await self._agent_process.run(
             system_prompt=SYSTEM_PROMPT,
             messages=task.metadata["context_msgs"],

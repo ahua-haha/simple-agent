@@ -8,21 +8,11 @@ import time
 from pydantic import BaseModel, TypeAdapter
 from sqlmodel import SQLModel, Field
 
-from pi.agent.types import AgentMessage, AgentToolResult
-from pi.ai.types import ToolCall
+from pi.agent.types import AgentMessage
 from simple_agent.task_manager.models import ManagedTask, TaskItem
 
 
 # ── DB record classes ────────────────────────────────────────────────
-
-
-class ToolCallRecord(SQLModel, table=True):
-    """SQLite model for tool call executions."""
-
-    id: int | None = Field(default=None, primary_key=True)
-    tool: str = Field(index=True)
-    content: str | None = Field(default=None)  # JSON serialized ToolExecMessage
-    created_at: int = Field(default_factory=lambda: int(time.time()), index=True)
 
 
 class SessionRecord(SQLModel, table=True):
@@ -113,12 +103,6 @@ class RunnerToolCallRecord(SQLModel, table=True):
 
 
 # ── Domain models ────────────────────────────────────────────────────
-
-
-class ToolExecMessage(BaseModel):
-    tool_call: ToolCall
-    raw_output: str
-    tool_result: AgentToolResult
 
 
 class TextResult(BaseModel):

@@ -18,8 +18,6 @@ from simple_agent.state.state import (
     RunnerToolCallRecord,
     SessionRecord,
     TaskRecord,
-    ToolCallRecord,
-    ToolExecMessage,
     agent_message_from_json,
     agent_message_to_json,
     managed_task_from_record,
@@ -58,7 +56,7 @@ class Database:
       the transaction boundary.
     """
 
-    def __init__(self, db_path: str = "./data/tool_log.db"):
+    def __init__(self, db_path: str):
         self._db_path = db_path
         self._engine = None
         self._init_db()
@@ -76,55 +74,6 @@ class Database:
     def _get_session(self) -> Session:
         """Get a new sqlmodel Session."""
         return Session(self._engine)
-
-    # ------------------------------------------------------------------
-    # ToolCall operations
-    # ------------------------------------------------------------------
-
-    @standalone_or_compose
-    def next_tool_call_id(self, *, session: Session | None = None) -> int:
-        max_record = session.exec(select(ToolCallRecord).order_by(ToolCallRecord.id.desc())).first()
-        return (max_record.id + 1) if max_record else 0
-
-    @standalone_or_compose
-    def insert_tool_call(self, tool_exec: ToolExecMessage, *,
-                         session: Session | None = None) -> int:
-        """Insert a tool call record and return its ID."""
-        next_id = self.next_tool_call_id(session=session)
-        record = ToolCallRecord(
-            id=next_id,
-            tool=tool_exec.tool_call.name,
-            content=json.dumps(tool_exec.model_dump()),
-        )
-        session.add(record)
-        return next_id
-
-    @standalone_or_compose
-    def get_tool_call(self, id: int, *, session: Session | None = None) -> ToolExecMessage | None:
-        """Get a tool call record by ID."""
-        record = session.exec(select(ToolCallRecord).where(ToolCallRecord.id == id)).first()
-        if not record:
-            return None
-        return ToolExecMessage.model_validate_json(record.content)
-
-    @standalone_or_compose
-    def get_tool_calls_by_ids(self, ids: list[int], *,
-                              session: Session | None = None) -> list[ToolExecMessage]:
-        """Get multiple tool call records by IDs, sorted by ID."""
-        if not ids:
-            return []
-        records = session.exec(select(ToolCallRecord).where(ToolCallRecord.id.in_(ids))).all()
-        records = sorted(records, key=lambda r: r.id)
-        return [ToolExecMessage.model_validate_json(r.content) for r in records]
-
-    @standalone_or_compose
-    def list_tool_calls(self, limit: int = 10, *,
-                        session: Session | None = None) -> list[ToolCallRecord]:
-        """List recent tool call records."""
-        records = list(session.exec(select(ToolCallRecord).order_by(ToolCallRecord.id.desc()).limit(limit)).all())
-        for r in records:
-            session.expunge(r)
-        return records
 
     # ------------------------------------------------------------------
     # Task operations

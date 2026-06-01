@@ -1,1 +1,1 @@
-"""Web UI for debugging task messages."""
+"""Web API for session management and streaming runs."""

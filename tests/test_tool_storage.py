@@ -5,13 +5,8 @@ from __future__ import annotations
 import os
 import tempfile
 
-import pytest
-from sqlmodel import SQLModel
-
 from simple_agent.db.db import Database
-from simple_agent.state.state import ToolCallRecord, TaskRecord
-from simple_agent.state.state import Task, ToolExecMessage
-from pi.ai import ToolCall
+from simple_agent.state.state import Task
 
 
 class TestDatabaseInit:
@@ -33,7 +28,7 @@ class TestDatabaseInit:
             tables = [row[0] for row in cursor.fetchall()]
             conn.close()
 
-            assert "toolcallrecord" in tables
+            assert "runnertoolcallrecord" in tables
             assert "taskrecord" in tables
         finally:
             os.unlink(db_path)
@@ -53,89 +48,6 @@ class TestDatabaseInit:
             conn.close()
 
             assert mode == "wal"
-        finally:
-            os.unlink(db_path)
-
-
-class TestDatabaseToolCalls:
-    """Tests for Database tool call operations."""
-
-    def test_insert_tool_call(self):
-        """insert_tool_call() should insert and return ID."""
-        from pi.ai.types import TextContent
-        from pi.agent import AgentToolResult
-
-        with tempfile.NamedTemporaryFile(suffix=".db", delete=False) as f:
-            db_path = f.name
-
-        try:
-            db = Database(db_path)
-
-            tool_exec = ToolExecMessage(
-                tool_call=ToolCall(id="call_1", arguments={"arg": "value"}, name="test_tool"),
-                raw_output="test output",
-                tool_result=AgentToolResult(content=[TextContent(text="test output")])
-            )
-            id = db.insert_tool_call(tool_exec)
-
-            assert id == 0
-            record = db.get_tool_call(0)
-            assert record is not None
-            assert record.tool_call.name == "test_tool"
-        finally:
-            os.unlink(db_path)
-
-    def test_get_tool_calls_by_ids(self):
-        """get_tool_calls_by_ids() should return records sorted by ID."""
-        from pi.ai.types import TextContent
-        from pi.agent import AgentToolResult
-
-        with tempfile.NamedTemporaryFile(suffix=".db", delete=False) as f:
-            db_path = f.name
-
-        try:
-            db = Database(db_path)
-
-            for i in range(3):
-                tool_exec = ToolExecMessage(
-                    tool_call=ToolCall(id=f"call_{i}", arguments={"index": i}, name=f"tool_{i}"),
-                    raw_output=f"output_{i}",
-                    tool_result=AgentToolResult(content=[TextContent(text=f"output_{i}")])
-                )
-                db.insert_tool_call(tool_exec)
-
-            records = db.get_tool_calls_by_ids([2, 0])
-
-            assert len(records) == 2
-            assert records[0].tool_call.name == "tool_0"
-            assert records[1].tool_call.name == "tool_2"
-        finally:
-            os.unlink(db_path)
-
-    def test_insert_tool_call_with_shared_session(self):
-        """insert_tool_call with explicit session — caller controls commit."""
-        from pi.ai.types import TextContent
-        from pi.agent import AgentToolResult
-
-        with tempfile.NamedTemporaryFile(suffix=".db", delete=False) as f:
-            db_path = f.name
-
-        try:
-            db = Database(db_path)
-
-            tool_exec = ToolExecMessage(
-                tool_call=ToolCall(id="call_1", arguments={"arg": "value"}, name="test_tool"),
-                raw_output="test output",
-                tool_result=AgentToolResult(content=[TextContent(text="test output")])
-            )
-            with db._get_session() as s:
-                id = db.insert_tool_call(tool_exec, session=s)
-                s.commit()
-
-            assert id == 0
-            record = db.get_tool_call(0)
-            assert record is not None
-            assert record.tool_call.name == "test_tool"
         finally:
             os.unlink(db_path)
 

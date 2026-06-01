@@ -118,7 +118,6 @@ class TestAPIEndpoints:
         from simple_agent.web.app import create_app
 
         app = create_app(
-            db_path=":memory:",
             sessions_dir=str(tmp_path),
         )
         return TestClient(app)
@@ -210,7 +209,6 @@ class TestSessionRunStream:
         from simple_agent.web.app import create_app
 
         app = create_app(
-            db_path=":memory:",
             sessions_dir=str(tmp_path),
         )
 

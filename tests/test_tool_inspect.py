@@ -1,4 +1,4 @@
-"""Tests for tool-inspect CLI with SQLite."""
+"""Tests for tool-inspect CLI with runner tool call logs."""
 
 from __future__ import annotations
 
@@ -6,10 +6,9 @@ import os
 import subprocess
 import tempfile
 
-import pytest
 from sqlmodel import Session, create_engine
 
-from simple_agent.db.db import ToolCallRecord
+from simple_agent.state.state import RunnerToolCallRecord
 
 
 class TestToolInspect:
@@ -26,23 +25,28 @@ class TestToolInspect:
             SQLModel.metadata.create_all(engine)
 
             with Session(engine) as session:
-                record = ToolCallRecord(
+                record = RunnerToolCallRecord(
                     id=0,
-                    tool="test",
-                    params="{}",
-                    content="hello world",
+                    session_id="session_a",
+                    tool_call_id="call_1",
+                    tool_name="test",
+                    params_json="{}",
+                    result_json='{"content": "hello world"}',
+                    status="success",
+                    started_at=1.0,
+                    finished_at=2.0,
                 )
                 session.add(record)
                 session.commit()
 
             result = subprocess.run(
-                ["python", "-m", "simple_agent.tool.tool_inspect", "0", "--path", db_path],
+                ["python", "-m", "simple_agent.cli.tool_inspect", "0", "--path", db_path],
                 capture_output=True,
                 text=True
             )
 
             assert result.returncode == 0
-            assert result.stdout == "hello world"
+            assert result.stdout == '{"content": "hello world"}'
         finally:
             os.unlink(db_path)
 
@@ -57,7 +61,7 @@ class TestToolInspect:
             SQLModel.metadata.create_all(engine)
 
             result = subprocess.run(
-                ["python", "-m", "simple_agent.tool.tool_inspect", "999", "--path", db_path],
+                ["python", "-m", "simple_agent.cli.tool_inspect", "999", "--path", db_path],
                 capture_output=True,
                 text=True
             )
@@ -78,17 +82,22 @@ class TestToolInspect:
 
             with Session(engine) as session:
                 for i in range(3):
-                    record = ToolCallRecord(
+                    record = RunnerToolCallRecord(
                         id=i,
-                        tool=f"tool_{i}",
-                        params="{}",
-                        content=f"result_{i}",
+                        session_id="session_a",
+                        tool_call_id=f"call_{i}",
+                        tool_name=f"tool_{i}",
+                        params_json="{}",
+                        result_json=f'{{"content": "result_{i}"}}',
+                        status="success",
+                        started_at=float(i),
+                        finished_at=float(i + 1),
                     )
                     session.add(record)
                 session.commit()
 
             result = subprocess.run(
-                ["python", "-m", "simple_agent.tool.tool_inspect", "--list", "--limit", "2", "--path", db_path],
+                ["python", "-m", "simple_agent.cli.tool_inspect", "--list", "--limit", "2", "--path", db_path],
                 capture_output=True,
                 text=True
             )

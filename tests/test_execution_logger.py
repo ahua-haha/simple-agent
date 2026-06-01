@@ -1,6 +1,8 @@
-"""Tests for ToolExecutionLogger."""
+"""Tests for SessionRunner tool execution wrapping."""
 
 from __future__ import annotations
+
+import asyncio
 
 import pytest
 
@@ -8,7 +10,28 @@ from pi.agent import AgentTool, AgentToolResult
 from pi.ai.types import TextContent
 
 from simple_agent.db.db import Database
-from simple_agent.tool.execution_logger import ToolExecutionLogger
+from simple_agent.session.runner import SessionRunner
+from simple_agent.task_manager import TaskManager
+
+
+class _FakeAgentProcess:
+    def subscribe(self, callback):
+        pass
+
+    def unsubscribe(self, callback):
+        pass
+
+
+def _make_runner(db: Database) -> SessionRunner:
+    manager = TaskManager(db)
+    manager.create_user_task("Build feature")
+    return SessionRunner(
+        session_id="session_a",
+        db=db,
+        task_manager=manager,
+        agent_process=_FakeAgentProcess(),
+        cancel_event=asyncio.Event(),
+    )
 
 
 @pytest.mark.asyncio
@@ -20,8 +43,8 @@ async def test_wrap_tool_records_runner_tool_call_success(tmp_path):
         return AgentToolResult(content=[TextContent(text="hello")])
 
     tool.execute = execute
-    logger = ToolExecutionLogger(db, session_id="session_a")
-    wrapped = logger.wrap_tool(tool)
+    runner = _make_runner(db)
+    wrapped = runner.wrap_tool(tool)
 
     await wrapped.execute("call_1", {"name": "Ada"})
 
@@ -43,8 +66,8 @@ async def test_wrap_tool_records_runner_tool_call_error_and_reraises(tmp_path):
         raise RuntimeError("boom")
 
     tool.execute = execute
-    logger = ToolExecutionLogger(db, session_id="session_a")
-    wrapped = logger.wrap_tool(tool)
+    runner = _make_runner(db)
+    wrapped = runner.wrap_tool(tool)
 
     with pytest.raises(RuntimeError, match="boom"):
         await wrapped.execute("call_2", {"x": 1})

@@ -222,11 +222,8 @@ class TestAgentIndexRealSrc:
 
             # Depth 2 files
             assert "indexer.py" in output
-            assert "execution_logger.py" in output or "common_tools.py" in output
+            assert "common_tools.py" in output
             assert "agent_process.py" in output
-
-            # Depth 3 directories (grandchildren of root)
-            assert "templates/" in output
 
             # Render result for inspection
             print("\n===== tree output (max depth 3) =====")

@@ -1,10 +1,13 @@
 #!/usr/bin/env python3
-"""tool-inspect - CLI to inspect tool call results by ID from SQLite database."""
+"""tool-inspect - CLI to inspect runner tool call results by ID."""
 
 import argparse
 import sys
 
+from sqlmodel import Session, select
+
 from simple_agent.db.db import Database
+from simple_agent.state.state import RunnerToolCallRecord
 
 
 def main():
@@ -15,12 +18,12 @@ def main():
         "id",
         type=int,
         nargs="?",
-        help="Tool call ID to inspect (required if not using --list)",
+        help="Runner tool call log ID to inspect (required if not using --list)",
     )
     parser.add_argument(
         "--path",
-        default="./data/tool_log.db",
-        help="Path to SQLite database file (default: ./data/tool_log.db)",
+        required=True,
+        help="Path to SQLite database file",
     )
     parser.add_argument(
         "--list",
@@ -39,12 +42,18 @@ def main():
     db = Database(args.path)
 
     if args.list:
-        records = db.list_tool_calls(args.limit)
+        with Session(db._engine) as session:
+            records = session.exec(
+                select(RunnerToolCallRecord)
+                .order_by(RunnerToolCallRecord.id.desc())
+                .limit(args.limit)
+            ).all()
         for record in records:
-            content_preview = (record.content or "")[:50]
-            if len(record.content or "") > 50:
+            content = record.result_json or record.error or ""
+            content_preview = content[:50]
+            if len(content) > 50:
                 content_preview += "..."
-            print(f"[{record.id}] {record.tool}: {content_preview}")
+            print(f"[{record.id}] {record.tool_name}: {content_preview}")
         return
 
     # Require ID for non-list mode
@@ -52,10 +61,11 @@ def main():
         parser.error("id is required when not using --list")
 
     # Find and print content for specific ID
-    record = db.get_tool_call(args.id)
+    with Session(db._engine) as session:
+        record = session.get(RunnerToolCallRecord, args.id)
 
     if record:
-        sys.stdout.write(record.raw_output or "")
+        sys.stdout.write(record.result_json or record.error or "")
         sys.exit(0)
 
     # ID not found

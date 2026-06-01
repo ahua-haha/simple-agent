@@ -114,7 +114,6 @@ def test_session_initializes_task_manager(tmp_path):
     session = Session(base_dir=str(tmp_path))
 
     assert session._task_manager is not None
-    assert session._execution_logger is not None
     assert session._runner is not None
 
 

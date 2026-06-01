@@ -4,15 +4,16 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from typing import TYPE_CHECKING, Callable, Literal
+import time
+from typing import TYPE_CHECKING, Any, Callable, Literal
 
+from pi.agent import AgentTool, AgentToolResult, AgentToolUpdateCallback
 from simple_agent.tool.common_tools import create_all_coding_tools
 
 if TYPE_CHECKING:
     from simple_agent.db.db import Database
     from simple_agent.process.agent_process import AgentProcess
     from simple_agent.task_manager import TaskManager
-    from simple_agent.tool.execution_logger import ToolExecutionLogger
     from pi.agent.types import AgentMessage
 
 _log = logging.getLogger(__name__)
@@ -28,13 +29,22 @@ Keep responses concise and use available tools to do the work.
 """
 
 
+def _tool_result_payload(result: AgentToolResult) -> dict[str, Any]:
+    return {
+        "content": [
+            item.model_dump(mode="json") if hasattr(item, "model_dump") else dict(item.__dict__)
+            for item in result.content
+        ],
+        "details": result.details,
+    }
+
+
 class SessionRunner:
     """Persisted runner for one Session.run invocation at a time."""
 
     _session_id: str
     _db: Database
     _task_manager: TaskManager
-    _execution_logger: ToolExecutionLogger
     _agent_process: AgentProcess
     _cancel_event: asyncio.Event
     _phase: RunnerPhase
@@ -47,14 +57,12 @@ class SessionRunner:
         session_id: str,
         db: Database,
         task_manager: TaskManager,
-        execution_logger: ToolExecutionLogger,
         agent_process: AgentProcess,
         cancel_event: asyncio.Event,
     ):
         self._session_id = session_id
         self._db = db
         self._task_manager = task_manager
-        self._execution_logger = execution_logger
         self._agent_process = agent_process
         self._cancel_event = cancel_event
         self._phase = "idle"
@@ -97,7 +105,53 @@ class SessionRunner:
             self._task_manager.create_error_todo_tool(),
             *create_all_coding_tools("."),
         ]
-        return self._execution_logger.wrap_tools(tools)
+        return self.wrap_tools(tools)
+
+    def wrap_tool(self, tool: AgentTool) -> AgentTool:
+        original = tool.execute
+
+        async def execute(
+            tool_call_id: str,
+            params: dict[str, Any],
+            cancel_event: asyncio.Event | None = None,
+            on_update: AgentToolUpdateCallback | None = None,
+        ) -> AgentToolResult:
+            started_at = time.time()
+            try:
+                result = await original(tool_call_id, params, cancel_event, on_update)
+            except Exception as exc:
+                self._db.insert_runner_tool_call(
+                    session_id=self._session_id,
+                    tool_call_id=tool_call_id,
+                    tool_name=tool.name,
+                    params=params,
+                    result=None,
+                    status="error",
+                    started_at=started_at,
+                    finished_at=time.time(),
+                    error=str(exc),
+                )
+                raise
+
+            log_id = self._db.insert_runner_tool_call(
+                session_id=self._session_id,
+                tool_call_id=tool_call_id,
+                tool_name=tool.name,
+                params=params,
+                result=_tool_result_payload(result),
+                status="success",
+                started_at=started_at,
+                finished_at=time.time(),
+                error=None,
+            )
+            self._task_manager.record_tool_call(log_id)
+            return result
+
+        tool.execute = execute
+        return tool
+
+    def wrap_tools(self, tools: list[AgentTool]) -> list[AgentTool]:
+        return [self.wrap_tool(tool) for tool in tools]
 
     async def run(self, user_input: str):
         self.load()

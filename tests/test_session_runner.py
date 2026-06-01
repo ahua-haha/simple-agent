@@ -11,7 +11,6 @@ from pi.ai.types import AssistantMessage, TextContent
 from simple_agent.db.db import Database
 from simple_agent.session.runner import SessionRunner
 from simple_agent.task_manager import TaskManager
-from simple_agent.tool.execution_logger import ToolExecutionLogger
 
 
 class FakeAgentProcess:
@@ -43,14 +42,12 @@ class FakeAgentProcess:
 async def test_session_runner_creates_task_runs_agent_and_persists_messages(tmp_path):
     db = Database(str(tmp_path / "session.db"))
     task_manager = TaskManager(db)
-    execution_logger = ToolExecutionLogger(db, task_manager=task_manager, session_id="session_a")
     agent_process = FakeAgentProcess()
     cancel_event = asyncio.Event()
     runner = SessionRunner(
         session_id="session_a",
         db=db,
         task_manager=task_manager,
-        execution_logger=execution_logger,
         agent_process=agent_process,
         cancel_event=cancel_event,
     )
@@ -90,7 +87,6 @@ def test_session_runner_subscribe_delegates_to_agent_process(tmp_path):
         session_id="session_a",
         db=db,
         task_manager=TaskManager(db),
-        execution_logger=ToolExecutionLogger(db, session_id="session_a"),
         agent_process=agent_process,
         cancel_event=asyncio.Event(),
     )
@@ -114,7 +110,6 @@ def test_session_runner_pause_controls_cancel_event(tmp_path):
         session_id="session_a",
         db=db,
         task_manager=TaskManager(db),
-        execution_logger=ToolExecutionLogger(db, session_id="session_a"),
         agent_process=FakeAgentProcess(),
         cancel_event=cancel_event,
     )
@@ -127,12 +122,10 @@ def test_session_runner_pause_controls_cancel_event(tmp_path):
 async def test_session_runner_persists_error_and_reraises(tmp_path):
     db = Database(str(tmp_path / "session.db"))
     task_manager = TaskManager(db)
-    execution_logger = ToolExecutionLogger(db, task_manager=task_manager, session_id="session_a")
     runner = SessionRunner(
         session_id="session_a",
         db=db,
         task_manager=task_manager,
-        execution_logger=execution_logger,
         agent_process=FailingAgentProcess(),
         cancel_event=asyncio.Event(),
     )

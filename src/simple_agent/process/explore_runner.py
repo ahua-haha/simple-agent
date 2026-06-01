@@ -11,7 +11,6 @@ from pi.ai.types import TextContent
 from simple_agent.process.agent_process import AgentProcess
 from simple_agent.process.runners import BaseRunner, RunnerResult
 from simple_agent.tool.common_tools import create_all_coding_tools
-from simple_agent.tool.execution_logger import ToolExecutionLogger
 from simple_agent.db.db import Database
 if TYPE_CHECKING:
     from simple_agent.state.state import Task
@@ -104,9 +103,8 @@ class ExploreRunner(BaseRunner):
 
     type = "explore"
 
-    def __init__(self, db: Database, execution_logger: ToolExecutionLogger, agent_process: AgentProcess):
+    def __init__(self, db: Database, agent_process: AgentProcess):
         self._db = db
-        self._execution_logger = execution_logger
         self._agent_process = agent_process
 
     async def run(self, task: "Task") -> RunnerResult:
@@ -125,7 +123,6 @@ class ExploreRunner(BaseRunner):
             state.create_determine_state_tool(),
             *create_all_coding_tools(task.repo_path),
         ]
-        tools = self._execution_logger.wrap_tools(tools)
         new_messages = await self._agent_process.run(
             system_prompt=EXECUTE_SYSTEM_PROMPT,
             messages=task.metadata["context_msgs"],
@@ -157,8 +154,6 @@ class ExploreRunner(BaseRunner):
                 watcher.create_diff_tool(task.start_snapshot, task.end_snapshot)
             )
         collect_tools.extend(create_all_coding_tools(task.repo_path))
-        collect_tools = self._execution_logger.wrap_tools(collect_tools)
-
         new_messages = await self._agent_process.run(
             system_prompt=COLLECT_SYSTEM_PROMPT,
             messages=task.metadata["context_msgs"],

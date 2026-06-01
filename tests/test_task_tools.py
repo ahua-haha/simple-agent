@@ -6,8 +6,16 @@ import asyncio
 import tempfile
 
 from simple_agent.db.db import Database
+from simple_agent.session.runner import SessionRunner
 from simple_agent.task_manager import TaskManager
-from simple_agent.tool.execution_logger import ToolExecutionLogger
+
+
+class _FakeAgentProcess:
+    def subscribe(self, callback):
+        pass
+
+    def unsubscribe(self, callback):
+        pass
 
 
 def _make_db() -> Database:
@@ -15,12 +23,22 @@ def _make_db() -> Database:
         return Database(f.name)
 
 
+def _make_runner(db: Database, manager: TaskManager) -> SessionRunner:
+    return SessionRunner(
+        session_id="session_a",
+        db=db,
+        task_manager=manager,
+        agent_process=_FakeAgentProcess(),
+        cancel_event=asyncio.Event(),
+    )
+
+
 def test_create_todo_tool_creates_active_todo():
     db = _make_db()
     manager = TaskManager(db)
     manager.create_user_task("Build feature")
-    logger = ToolExecutionLogger(db, task_manager=manager)
-    tool = logger.wrap_tool(manager.create_create_todo_tool())
+    runner = _make_runner(db, manager)
+    tool = runner.wrap_tool(manager.create_create_todo_tool())
 
     async def run():
         return await tool.execute("call_1", {"title": "Inspect files"})
@@ -36,8 +54,8 @@ def test_finish_todo_tool_finishes_active_todo():
     manager = TaskManager(db)
     manager.create_user_task("Build feature")
     todo = manager.create_todo("Inspect files")
-    logger = ToolExecutionLogger(db, task_manager=manager)
-    tool = logger.wrap_tool(manager.create_finish_todo_tool())
+    runner = _make_runner(db, manager)
+    tool = runner.wrap_tool(manager.create_finish_todo_tool())
 
     async def run():
         return await tool.execute("call_1", {"result": "Inspected files"})
@@ -55,7 +73,7 @@ def test_normal_tool_call_records_under_active_todo():
     manager = TaskManager(db)
     manager.create_user_task("Build feature")
     todo = manager.create_todo("Inspect files")
-    logger = ToolExecutionLogger(db, task_manager=manager)
+    runner = _make_runner(db, manager)
 
     from pi.agent import AgentTool, AgentToolResult
     from pi.ai.types import TextContent
@@ -69,7 +87,7 @@ def test_normal_tool_call_records_under_active_todo():
         parameters={"type": "object", "properties": {}},
         execute=execute,
     )
-    wrapped = logger.wrap_tool(tool)
+    wrapped = runner.wrap_tool(tool)
 
     async def run():
         return await wrapped.execute("call_1", {})
