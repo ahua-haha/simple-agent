@@ -11,13 +11,7 @@ import uuid
 from pi.ai import get_model
 
 from simple_agent.log import logged
-from simple_agent.process.central_control import CentralControl
 from simple_agent.process.agent_process import AgentProcess, AgentState
-from simple_agent.process.runners import CollectRunner, SingleRunRunner
-from simple_agent.process.explore_runner import ExploreRunner
-from simple_agent.process.plan_runner import PlanRunner
-from simple_agent.snapshot.ghost_indexer import RepoWatcher
-from simple_agent.state.state import Task
 from simple_agent.task_manager import TaskManager
 from simple_agent.tool.tool_mgr import ToolMgr
 from simple_agent.db.db import Database
@@ -58,16 +52,6 @@ class Session:
         self._tools_mgr = ToolMgr(self._db, task_manager=self._task_manager)
         register_custom_models()
         self._agent_process = AgentProcess(get_model("deepseek", "deepseek-v4-pro"))
-
-        runners = {
-            "plan": PlanRunner(self._db, self._tools_mgr, self._agent_process),
-            "explore": ExploreRunner(self._db, self._tools_mgr, self._agent_process),
-            "collect": CollectRunner(self._db, self._tools_mgr, self._agent_process),
-            "single_run": SingleRunRunner(self._db, self._tools_mgr, self._agent_process),
-        }
-        self._cc = CentralControl(self._db, runners)
-
-        self._cursor: Task | None = None
         self._cancel_event = asyncio.Event()
         self._running = False
         self.event_queue: asyncio.Queue | None = None
@@ -92,52 +76,6 @@ class Session:
             self._cursor_id: int | None = None
             self._created_at = time.time()
             self._updated_at = self._created_at
-
-    @property
-    def root(self) -> Task | None:
-        rows = self._db.load_all_tasks()
-        if rows:
-            tasks = Task.from_db_rows(rows)
-            for task in tasks.values():
-                if task.parent_id is None:
-                    return task
-        return None
-
-    def _load_cursor(self) -> Task | None:
-        """Load the cursor task from DB by cursor_id."""
-        if self._cursor_id is None:
-            return None
-        record = self._db.get_task(self._cursor_id)
-        if record is None:
-            return None
-        tasks = Task.from_db_rows([record])
-        return tasks.get(self._cursor_id)
-
-    def _ensure_task_metadata(self, task: Task) -> None:
-        """Pre-load all runtime metadata for *task* so runners don't need to.
-
-        Populates ``task.metadata["context_msgs"]`` (ancestor message chain)
-        and, for explore tasks, ``task.metadata["repo_watcher"]``.
-        """
-        if "context_msgs" not in task.metadata:
-            current_id = task.parent_id
-            ancestor_rows: list = []
-            while current_id is not None:
-                record = self._db.get_task(current_id)
-                if record is None:
-                    break
-                ancestor_rows.append(record)
-                current_id = record.parent_id
-            ancestor_rows.reverse()
-            tasks_by_id = Task.from_db_rows(ancestor_rows) if ancestor_rows else {}
-            task.metadata["context_msgs"] = (
-                task.context(tasks_by_id) if tasks_by_id else list(task.messages)
-            )
-
-        if task.type == "explore" and "repo_watcher" not in task.metadata:
-            task.metadata["repo_watcher"] = RepoWatcher(
-                task.repo_path, "./data/snapshots"
-            )
 
     @property
     def is_running(self) -> bool:
@@ -199,17 +137,9 @@ class Session:
         self._cancel_event.clear()
 
     def park(self) -> None:
-        """Free the cursor from memory, keep only persisted metadata.
-
-        Sets ``self._cursor = None`` to release the Task object.  The
-        *cursor_id* stays in the DB checkpoint so ``run()`` can
-        reload it on next call.
-
-        Raises RuntimeError if the session is currently running.
-        """
+        """Clear in-memory signals and keep persisted session metadata."""
         if self._running:
             raise RuntimeError("Cannot park while session is running")
-        self._cursor = None
         self._cancel_event.clear()
         self._checkpoint()
 
