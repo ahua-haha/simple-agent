@@ -174,3 +174,35 @@ def test_session_initializes_task_manager(tmp_path):
 
     assert session._task_manager is not None
     assert session._tools_mgr._task_manager is session._task_manager
+
+
+@pytest.mark.asyncio
+async def test_session_run_creates_user_task_and_calls_agent_once(tmp_path, monkeypatch):
+    from simple_agent.session.session import Session
+
+    calls = []
+
+    async def fake_run(self, system_prompt, messages, tools, state, user_prompt=""):
+        calls.append(
+            {
+                "system_prompt": system_prompt,
+                "messages": messages,
+                "tools": [tool.name for tool in tools],
+                "user_prompt": user_prompt,
+            }
+        )
+        state.new_messages = []
+        return state
+
+    monkeypatch.setattr("simple_agent.process.agent_process.AgentProcess.run", fake_run)
+
+    session = Session(base_dir=str(tmp_path))
+    result = await session.run("Build feature")
+
+    assert result is not None
+    assert result.kind == "user_task"
+    assert result.title == "Build feature"
+    assert len(calls) == 1
+    assert "create_todo" in calls[0]["tools"]
+    assert "finish_todo" in calls[0]["tools"]
+    assert "error_todo" in calls[0]["tools"]

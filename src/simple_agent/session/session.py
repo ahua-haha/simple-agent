@@ -12,7 +12,7 @@ from pi.ai import get_model
 
 from simple_agent.log import logged
 from simple_agent.process.central_control import CentralControl
-from simple_agent.process.agent_process import AgentProcess
+from simple_agent.process.agent_process import AgentProcess, AgentState
 from simple_agent.process.runners import CollectRunner, SingleRunRunner
 from simple_agent.process.explore_runner import ExploreRunner
 from simple_agent.process.plan_runner import PlanRunner
@@ -24,6 +24,14 @@ from simple_agent.db.db import Database
 from simple_agent.models import register_custom_models
 
 _log = logging.getLogger(__name__)
+
+SYSTEM_PROMPT = """You are a helpful coding agent.
+
+Use create_todo before starting a coherent unit of work.
+Call finish_todo when the active todo is complete.
+Call error_todo if the active todo cannot be completed.
+Keep responses concise and use available tools to do the work.
+"""
 
 
 class Session:
@@ -136,43 +144,36 @@ class Session:
         return self._running
 
     @logged(_log)
-    async def run(self, user_input: str) -> Task | None:
-        """Run the task tree until finished, paused, or cancelled.
-
-        Returns the root Task on completion, or None if paused.
-        *step_timeout* caps each ``_cc.run()`` call; None disables the cap.
-        """
-        if self._cursor is None:
-            self._cursor = self._load_cursor()
-
-        if self._cursor is None:
-            self._cursor = Task(input=user_input, state="PENDING", type="explore")
-            self._cursor_id = self._db.upsert_task(self._cursor)
-            self._cursor.id = self._cursor_id
-            self._checkpoint()
-
+    async def run(self, user_input: str):
+        """Run the generic agent runtime for one user task."""
         self._running = True
         if self.event_queue is None:
             self.event_queue = asyncio.Queue()
 
+        user_task = self._task_manager.create_user_task(user_input)
+        self._cursor_id = user_task.id
+        self._checkpoint()
+
+        state = AgentState()
+        tools = [
+            self._tools_mgr.create_create_todo_tool(),
+            self._tools_mgr.create_finish_todo_tool(),
+            self._tools_mgr.create_error_todo_tool(),
+            *self._tools_mgr.create_all_tools("."),
+        ]
+
         try:
-            while self._cursor is not None:
-                if self._cancel_event.is_set():
-                    break
-
-                self._ensure_task_metadata(self._cursor)
-                new_cursor, updates, inserts = await self._cc.run(self._cursor)
-
-                self._cursor = new_cursor
-                self._cursor_id = self._cursor.id if self._cursor else None
-                self._checkpoint(updates=updates, inserts=inserts)
-
-                if self._cancel_event.is_set():
-                    break
+            await self._agent_process.run(
+                system_prompt=SYSTEM_PROMPT,
+                messages=[],
+                tools=tools,
+                state=state,
+                user_prompt=user_input,
+            )
+            if self._task_manager.active_todo_id is None:
+                user_task = self._task_manager.finish_user_task()
         except Exception:
             _log.exception("run: session=%s failed", self._id)
-            import traceback
-            traceback.print_exc()
             if self.event_queue is not None:
                 self.event_queue.put_nowait({"type": "error"})
             raise
@@ -182,13 +183,8 @@ class Session:
                 self.event_queue.put_nowait(None)
                 self.event_queue = None
 
-        if self._cursor is None:
-            result = self.root
-            _log.info("run: session=%s done, result=%s", self._id, result.id if result else None)
-            return result
-
-        _log.info("run: session=%s paused", self._id)
-        return None  # paused
+        _log.info("run: session=%s done, result=%s", self._id, user_task.id if user_task else None)
+        return user_task
 
     def pause(self) -> None:
         """Signal the run loop to stop at the next safe point.
