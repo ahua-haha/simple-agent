@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import os
 
+from dotenv import dotenv_values
 from pi.ai.models import register_models, get_model
 from pi.ai import Model
 
@@ -27,7 +28,7 @@ def get_api_key(provider: str) -> str | None:
     """
     env_var = PROVIDER_API_KEYS.get(provider)
     if env_var:
-        return os.environ.get(env_var)
+        return os.environ.get(env_var) or dotenv_values(".env").get(env_var)
     return None
 
 
