@@ -68,6 +68,66 @@ class TaskManager:
         target.touch()
         self._db.upsert_managed_task(target)
 
+    def compact_items(
+        self,
+        parent_task_id: int,
+        item_refs: list[TaskItem],
+        title: str,
+        result: str,
+        items: list[TaskItem],
+    ) -> ManagedTask:
+        if not item_refs:
+            raise TaskManagerError("Cannot compact an empty item list")
+
+        seen = {(item.kind, item.ref_id) for item in item_refs}
+        if len(seen) != len(item_refs):
+            raise TaskManagerError("Cannot compact duplicate refs")
+
+        parent = self._db.get_managed_task(parent_task_id)
+        if parent is None:
+            raise TaskManagerError("Parent task is missing")
+
+        visible = [(item.kind, item.ref_id) for item in parent.items]
+        selected = [(item.kind, item.ref_id) for item in item_refs]
+        if not all(ref in visible for ref in selected):
+            raise TaskManagerError("Cannot compact refs outside parent visible items")
+
+        for item in item_refs:
+            if item.kind != "task":
+                continue
+            task = self._db.get_managed_task(item.ref_id)
+            if task is None:
+                raise TaskManagerError("Cannot compact missing task")
+            if task.status == "active":
+                raise TaskManagerError("Cannot compact active task")
+
+        aggregate = ManagedTask(
+            kind="aggregate",
+            parent_id=parent.id,
+            title=title,
+            status="done",
+            result=result,
+            items=list(items),
+        )
+        aggregate.id = self._db.upsert_managed_task(aggregate)
+
+        selected_set = set(selected)
+        new_items: list[TaskItem] = []
+        inserted = False
+        for item in parent.items:
+            ref = (item.kind, item.ref_id)
+            if ref in selected_set:
+                if not inserted:
+                    new_items.append(TaskItem(kind="task", ref_id=aggregate.id))
+                    inserted = True
+                continue
+            new_items.append(item)
+
+        parent.items = new_items
+        parent.touch()
+        self._db.upsert_managed_task(parent)
+        return aggregate
+
     def finish_user_task(self, result: str | None = None) -> ManagedTask:
         user_task = self._require_user_task()
         if self.active_todo_id is not None:

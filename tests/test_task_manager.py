@@ -172,3 +172,63 @@ def test_mixed_user_task_order_is_preserved():
         ("task", todo.id),
         ("tool_call", 2),
     ]
+
+
+def test_compact_items_replaces_visible_tasks_with_aggregate_task():
+    db = _make_db()
+    manager = TaskManager(db)
+    user_task = manager.create_user_task("Build feature")
+    first = manager.create_todo("Inspect files")
+    manager.record_tool_call(1)
+    manager.finish_todo("Inspected files")
+    second = manager.create_todo("Edit files")
+    manager.record_tool_call(2)
+    manager.finish_todo("Edited files")
+
+    aggregate = manager.compact_items(
+        parent_task_id=user_task.id,
+        item_refs=[TaskItem(kind="task", ref_id=first.id), TaskItem(kind="task", ref_id=second.id)],
+        title="Inspect and edit files",
+        result="Inspected files and edited them.",
+        items=[TaskItem(kind="tool_call", ref_id=2)],
+    )
+    loaded_user_task = db.get_managed_task(user_task.id)
+
+    assert aggregate.kind == "aggregate"
+    assert aggregate.parent_id == user_task.id
+    assert aggregate.result == "Inspected files and edited them."
+    assert [(item.kind, item.ref_id) for item in aggregate.items] == [("tool_call", 2)]
+    assert [(item.kind, item.ref_id) for item in loaded_user_task.items] == [("task", aggregate.id)]
+
+
+def test_compact_items_rejects_active_todo():
+    db = _make_db()
+    manager = TaskManager(db)
+    user_task = manager.create_user_task("Build feature")
+    todo = manager.create_todo("Inspect files")
+
+    with pytest.raises(TaskManagerError, match="active"):
+        manager.compact_items(
+            parent_task_id=user_task.id,
+            item_refs=[TaskItem(kind="task", ref_id=todo.id)],
+            title="Aggregate",
+            result="Nope",
+            items=[],
+        )
+
+
+def test_compact_items_rejects_duplicate_refs():
+    db = _make_db()
+    manager = TaskManager(db)
+    user_task = manager.create_user_task("Build feature")
+    todo = manager.create_todo("Inspect files")
+    manager.finish_todo()
+
+    with pytest.raises(TaskManagerError, match="duplicate"):
+        manager.compact_items(
+            parent_task_id=user_task.id,
+            item_refs=[TaskItem(kind="task", ref_id=todo.id), TaskItem(kind="task", ref_id=todo.id)],
+            title="Aggregate",
+            result="Nope",
+            items=[],
+        )
