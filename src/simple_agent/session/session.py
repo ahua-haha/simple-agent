@@ -18,6 +18,7 @@ from simple_agent.process.explore_runner import ExploreRunner
 from simple_agent.process.plan_runner import PlanRunner
 from simple_agent.snapshot.ghost_indexer import RepoWatcher
 from simple_agent.state.state import Task
+from simple_agent.task_manager import TaskManager
 from simple_agent.tool.tool_mgr import ToolMgr
 from simple_agent.db.db import Database
 from simple_agent.models import register_custom_models
@@ -45,7 +46,8 @@ class Session:
         self._base_dir = base_dir
         self._db_path = os.path.join(base_dir, f"{self._id}.db")
         self._db = Database(self._db_path)
-        self._tools_mgr = ToolMgr(self._db)
+        self._task_manager = TaskManager(self._db)
+        self._tools_mgr = ToolMgr(self._db, task_manager=self._task_manager)
         register_custom_models()
         self._agent_process = AgentProcess(get_model("deepseek", "deepseek-v4-pro"))
 
@@ -228,4 +230,3 @@ class Session:
                 self._db.upsert_task(task, session=s)
             self._db.upsert_session(self._id, "", self._cursor_id, session=s)
             s.commit()
-

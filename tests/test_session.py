@@ -151,7 +151,6 @@ class TestSessionEventQueue:
         msg = AssistantMessage(role="assistant", content=[TextContent(text="hello")])
         event = AgentEndEvent(messages=[msg])
         session._on_agent_event(event)
-
         received = session.event_queue.get_nowait()
         assert received is event
 
@@ -166,3 +165,12 @@ class TestSessionEventQueue:
         msg = AssistantMessage(role="assistant", content=[TextContent(text="hello")])
         event = AgentEndEvent(messages=[msg])
         session._on_agent_event(event)
+
+
+def test_session_initializes_task_manager(tmp_path):
+    from simple_agent.session.session import Session
+
+    session = Session(base_dir=str(tmp_path))
+
+    assert session._task_manager is not None
+    assert session._tools_mgr._task_manager is session._task_manager
