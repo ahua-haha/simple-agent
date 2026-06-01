@@ -10,6 +10,7 @@ from sqlmodel import SQLModel, Field
 
 from pi.agent.types import AgentMessage, AgentToolResult
 from pi.ai.types import ToolCall
+from simple_agent.task_manager.models import ManagedTask, TaskItem
 
 
 # ── DB record classes ────────────────────────────────────────────────
@@ -56,6 +57,21 @@ class TaskRecord(SQLModel, table=True):
     end_snapshot: str | None = None
 
 
+class ManagedTaskRecord(SQLModel, table=True):
+    """SQLite model for the replacement task manager."""
+
+    id: int | None = Field(default=None, primary_key=True)
+    parent_id: int | None = Field(default=None, index=True)
+    kind: str = Field(index=True)
+    title: str
+    status: str = Field(default="active", index=True)
+    items: str | None = None
+    result: str | None = None
+    error: str | None = None
+    created_at: float = Field(default_factory=time.time)
+    updated_at: float = Field(default_factory=time.time)
+
+
 # ── Domain models ────────────────────────────────────────────────────
 
 
@@ -81,6 +97,37 @@ TEXT_RESULT_JSON_SCHEMA: dict = {
 
 _message_adapter = TypeAdapter(list[AgentMessage])
 _result_adapter = TypeAdapter(list[TextResult])
+_task_item_adapter = TypeAdapter(list[TaskItem])
+
+
+def managed_task_to_record(task: ManagedTask) -> ManagedTaskRecord:
+    return ManagedTaskRecord(
+        id=task.id,
+        parent_id=task.parent_id,
+        kind=task.kind,
+        title=task.title,
+        status=task.status,
+        items=_task_item_adapter.dump_json(task.items).decode("utf-8"),
+        result=task.result,
+        error=task.error,
+        created_at=task.created_at,
+        updated_at=task.updated_at,
+    )
+
+
+def managed_task_from_record(record: ManagedTaskRecord) -> ManagedTask:
+    return ManagedTask(
+        id=record.id,
+        parent_id=record.parent_id,
+        kind=record.kind,
+        title=record.title,
+        status=record.status,
+        items=_task_item_adapter.validate_json(record.items or "[]"),
+        result=record.result,
+        error=record.error,
+        created_at=record.created_at,
+        updated_at=record.updated_at,
+    )
 
 
 class Task(BaseModel):

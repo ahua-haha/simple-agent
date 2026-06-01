@@ -10,10 +10,13 @@ from sqlmodel import SQLModel, Session, create_engine, select
 import sqlite3
 
 from simple_agent.state.state import (
+    ManagedTaskRecord,
     SessionRecord,
     TaskRecord,
     ToolCallRecord,
     ToolExecMessage,
+    managed_task_from_record,
+    managed_task_to_record,
 )
 
 
@@ -152,6 +155,35 @@ class Database:
             session.delete(record)
 
     # ------------------------------------------------------------------
+    # ManagedTask operations
+    # ------------------------------------------------------------------
+
+    @standalone_or_compose
+    def upsert_managed_task(self, task, *, session: Session | None = None) -> int:
+        """Insert or update a replacement task-manager row."""
+        record = session.merge(managed_task_to_record(task))
+        session.flush()
+        task.id = record.id
+        return record.id
+
+    @standalone_or_compose
+    def get_managed_task(self, task_id: int, *, session: Session | None = None):
+        """Return a managed task by ID, or None."""
+        record = session.get(ManagedTaskRecord, task_id)
+        if record is None:
+            return None
+        session.expunge(record)
+        return managed_task_from_record(record)
+
+    @standalone_or_compose
+    def list_managed_tasks(self, *, session: Session | None = None):
+        """Return all managed tasks ordered by ID."""
+        records = list(session.exec(select(ManagedTaskRecord).order_by(ManagedTaskRecord.id)).all())
+        for record in records:
+            session.expunge(record)
+        return [managed_task_from_record(record) for record in records]
+
+    # ------------------------------------------------------------------
     # Session metadata operations
     # ------------------------------------------------------------------
 
@@ -190,4 +222,3 @@ class Database:
         record = session.get(SessionRecord, session_id)
         if record is not None:
             session.delete(record)
-
