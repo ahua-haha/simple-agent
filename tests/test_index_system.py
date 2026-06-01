@@ -755,5 +755,4 @@ class TestTreeRenderPython:
         out = render_tree(node)
         print()
         print(out)
-        assert "AgentState" in out
         assert "AgentProcess" in out

@@ -2,9 +2,13 @@
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING
+import asyncio
+from typing import TYPE_CHECKING, Any
 
-from simple_agent.process.agent_process import AgentProcess, AgentState
+from pi.agent import AgentTool, AgentToolResult, AgentToolUpdateCallback
+from pi.ai.types import TextContent
+
+from simple_agent.process.agent_process import AgentProcess
 from simple_agent.process.runners import BaseRunner, RunnerResult
 from simple_agent.tool.common_tools import create_all_coding_tools
 from simple_agent.tool.execution_logger import ToolExecutionLogger
@@ -33,6 +37,64 @@ When done, respond with only FINISH. Do NOT generate verbose output.
 """
 
 
+class _RecordState(asyncio.Event):
+    def __init__(self):
+        super().__init__()
+        self.tool_results: dict[str, list] = {}
+        self.stop_on_tool: str | None = None
+
+    def is_set(self) -> bool:
+        if self.stop_on_tool is not None and self.stop_on_tool in self.tool_results:
+            return True
+        return super().is_set()
+
+    def create_record_tool(self, model_class: type, name: str, description: str, parameters: dict[str, Any]) -> AgentTool:
+        tool = AgentTool(name=name, description=description, parameters=parameters)
+
+        async def execute(
+            tool_call_id: str,
+            params: dict[str, Any],
+            cancel_event: asyncio.Event | None = None,
+            on_update: AgentToolUpdateCallback | None = None,
+        ) -> AgentToolResult:
+            try:
+                item = model_class.model_validate(params)
+                self.tool_results.setdefault(name, []).append(item)
+                return AgentToolResult(content=[TextContent(text="ok")])
+            except Exception as exc:
+                return AgentToolResult(content=[TextContent(text=f"validation failed: {exc}")])
+
+        tool.execute = execute
+        return tool
+
+    def create_determine_state_tool(self) -> AgentTool:
+        from simple_agent.state.state import StateClarification
+
+        return self.create_record_tool(
+            model_class=StateClarification,
+            name="determine_state",
+            description="Determine the current state based on context.",
+            parameters={
+                "type": "object",
+                "properties": {
+                    "state": {"type": "string", "enum": ["finished", "error"]},
+                    "reason": {"type": "string", "description": "Reason for choosing this state"},
+                },
+                "required": ["state", "reason"],
+            },
+        )
+
+    def create_record_textresult_tool(self) -> AgentTool:
+        from simple_agent.state.state import TEXT_RESULT_JSON_SCHEMA, TextResult
+
+        return self.create_record_tool(
+            model_class=TextResult,
+            name="record_textresult",
+            description="Record a TextResult instance capturing a final outcome.",
+            parameters=TEXT_RESULT_JSON_SCHEMA,
+        )
+
+
 class ExploreRunner(BaseRunner):
     """Runner for explore tasks — two phases: execute then collect.
 
@@ -57,21 +119,21 @@ class ExploreRunner(BaseRunner):
         watcher = task.metadata["repo_watcher"]
         task.start_snapshot = task.start_snapshot or watcher.take_snapshot()
 
-        state = AgentState()
-        state.stop_condition = lambda s: "determine_state" in s.tool_results
+        state = _RecordState()
+        state.stop_on_tool = "determine_state"
         tools: list = [
             state.create_determine_state_tool(),
             *create_all_coding_tools(task.repo_path),
         ]
         tools = self._execution_logger.wrap_tools(tools)
-        await self._agent_process.run(
+        new_messages = await self._agent_process.run(
             system_prompt=EXECUTE_SYSTEM_PROMPT,
             messages=task.metadata["context_msgs"],
             tools=tools,
-            state=state,
             user_prompt=task.input,
+            cancel_event=state,
         )
-        task.messages.extend(state.new_messages)
+        task.messages.extend(new_messages)
 
         if "determine_state" in state.tool_results:
             from simple_agent.state.state import StateClarification
@@ -85,7 +147,7 @@ class ExploreRunner(BaseRunner):
         return RunnerResult(kind="continue")
 
     async def _collect(self, task: "Task") -> RunnerResult:
-        collect_state = AgentState()
+        collect_state = _RecordState()
         collect_tools: list = [
             collect_state.create_record_textresult_tool(),
         ]
@@ -97,14 +159,14 @@ class ExploreRunner(BaseRunner):
         collect_tools.extend(create_all_coding_tools(task.repo_path))
         collect_tools = self._execution_logger.wrap_tools(collect_tools)
 
-        await self._agent_process.run(
+        new_messages = await self._agent_process.run(
             system_prompt=COLLECT_SYSTEM_PROMPT,
             messages=task.metadata["context_msgs"],
             tools=collect_tools,
-            state=collect_state,
+            cancel_event=collect_state,
         )
-        task.metadata["context_msgs"].extend(collect_state.new_messages)
-        task.messages.extend(collect_state.new_messages)
+        task.metadata["context_msgs"].extend(new_messages)
+        task.messages.extend(new_messages)
 
         for tr in collect_state.tool_results.get("record_textresult", []):
             from simple_agent.state.state import TextResult

@@ -9,12 +9,19 @@ from functools import wraps
 from sqlmodel import SQLModel, Session, create_engine, select
 import sqlite3
 
+from pi.agent.types import AgentMessage
+
 from simple_agent.state.state import (
     ManagedTaskRecord,
+    RunnerMessageRecord,
+    RunnerStateMetadataRecord,
+    RunnerToolCallRecord,
     SessionRecord,
     TaskRecord,
     ToolCallRecord,
     ToolExecMessage,
+    agent_message_from_json,
+    agent_message_to_json,
     managed_task_from_record,
     managed_task_to_record,
 )
@@ -182,6 +189,157 @@ class Database:
         for record in records:
             session.expunge(record)
         return [managed_task_from_record(record) for record in records]
+
+    # ------------------------------------------------------------------
+    # Runner state operations
+    # ------------------------------------------------------------------
+
+    @standalone_or_compose
+    def upsert_runner_state_metadata(
+        self,
+        session_id: str,
+        *,
+        phase: str,
+        status: str,
+        active_user_task_id: int | None = None,
+        last_error: str | None = None,
+        session: Session | None = None,
+    ) -> None:
+        record = session.get(RunnerStateMetadataRecord, session_id)
+        now = time.time()
+        if record is None:
+            record = RunnerStateMetadataRecord(session_id=session_id, created_at=now)
+            session.add(record)
+        record.phase = phase
+        record.status = status
+        record.active_user_task_id = active_user_task_id
+        record.last_error = last_error
+        record.updated_at = now
+
+    @standalone_or_compose
+    def get_runner_state_metadata(
+        self,
+        session_id: str,
+        *,
+        session: Session | None = None,
+    ) -> RunnerStateMetadataRecord | None:
+        record = session.get(RunnerStateMetadataRecord, session_id)
+        if record is not None:
+            session.expunge(record)
+        return record
+
+    @standalone_or_compose
+    def next_runner_message_seq(
+        self,
+        session_id: str,
+        *,
+        session: Session | None = None,
+    ) -> int:
+        record = session.exec(
+            select(RunnerMessageRecord)
+            .where(RunnerMessageRecord.session_id == session_id)
+            .order_by(RunnerMessageRecord.seq.desc())
+        ).first()
+        return (record.seq + 1) if record else 0
+
+    @standalone_or_compose
+    def append_runner_messages(
+        self,
+        session_id: str,
+        messages: list[AgentMessage],
+        *,
+        session: Session | None = None,
+    ) -> None:
+        seq = self.next_runner_message_seq(session_id, session=session)
+        for message in messages:
+            record = RunnerMessageRecord(
+                session_id=session_id,
+                seq=seq,
+                role=message.role,
+                content_json=agent_message_to_json(message),
+                timestamp_ms=getattr(message, "timestamp", None),
+            )
+            session.add(record)
+            seq += 1
+
+    @standalone_or_compose
+    def list_runner_messages(
+        self,
+        session_id: str,
+        *,
+        session: Session | None = None,
+    ) -> list[AgentMessage]:
+        records = list(
+            session.exec(
+                select(RunnerMessageRecord)
+                .where(RunnerMessageRecord.session_id == session_id)
+                .order_by(RunnerMessageRecord.seq)
+            ).all()
+        )
+        return [agent_message_from_json(record.content_json) for record in records]
+
+    @standalone_or_compose
+    def next_runner_tool_call_id(
+        self,
+        session_id: str,
+        *,
+        session: Session | None = None,
+    ) -> int:
+        record = session.exec(
+            select(RunnerToolCallRecord)
+            .where(RunnerToolCallRecord.session_id == session_id)
+            .order_by(RunnerToolCallRecord.id.desc())
+        ).first()
+        return (record.id + 1) if record else 0
+
+    @standalone_or_compose
+    def insert_runner_tool_call(
+        self,
+        *,
+        session_id: str,
+        tool_call_id: str,
+        tool_name: str,
+        params: dict,
+        result: dict | None,
+        status: str,
+        started_at: float,
+        finished_at: float | None,
+        error: str | None,
+        session: Session | None = None,
+    ) -> int:
+        next_id = self.next_runner_tool_call_id(session_id, session=session)
+        record = RunnerToolCallRecord(
+            id=next_id,
+            session_id=session_id,
+            tool_call_id=tool_call_id,
+            tool_name=tool_name,
+            params_json=json.dumps(params, sort_keys=True),
+            result_json=json.dumps(result, sort_keys=True) if result is not None else None,
+            status=status,
+            started_at=started_at,
+            finished_at=finished_at,
+            error=error,
+        )
+        session.add(record)
+        return next_id
+
+    @standalone_or_compose
+    def list_runner_tool_calls(
+        self,
+        session_id: str,
+        *,
+        session: Session | None = None,
+    ) -> list[RunnerToolCallRecord]:
+        records = list(
+            session.exec(
+                select(RunnerToolCallRecord)
+                .where(RunnerToolCallRecord.session_id == session_id)
+                .order_by(RunnerToolCallRecord.id)
+            ).all()
+        )
+        for record in records:
+            session.expunge(record)
+        return records
 
     # ------------------------------------------------------------------
     # Session metadata operations

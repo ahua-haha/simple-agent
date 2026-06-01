@@ -173,17 +173,18 @@ async def test_session_run_creates_user_task_and_calls_agent_once(tmp_path, monk
 
     calls = []
 
-    async def fake_run(self, system_prompt, messages, tools, state, user_prompt=""):
+    async def fake_run(self, system_prompt, messages, tools, user_prompt="", cancel_event=None):
         calls.append(
             {
                 "system_prompt": system_prompt,
                 "messages": messages,
                 "tools": [tool.name for tool in tools],
                 "user_prompt": user_prompt,
+                "cancel_event": cancel_event,
             }
         )
-        state.new_messages = []
-        return state
+        from pi.ai.types import AssistantMessage, TextContent
+        return [AssistantMessage(role="assistant", content=[TextContent(text="done")])]
 
     monkeypatch.setattr("simple_agent.process.agent_process.AgentProcess.run", fake_run)
 
@@ -197,3 +198,4 @@ async def test_session_run_creates_user_task_and_calls_agent_once(tmp_path, monk
     assert "create_todo" in calls[0]["tools"]
     assert "finish_todo" in calls[0]["tools"]
     assert "error_todo" in calls[0]["tools"]
+    assert calls[0]["cancel_event"] is session._cancel_event

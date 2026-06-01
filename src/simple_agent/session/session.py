@@ -11,9 +11,9 @@ import uuid
 from pi.ai import get_model
 
 from simple_agent.log import logged
-from simple_agent.process.agent_process import AgentProcess, AgentState
+from simple_agent.process.agent_process import AgentProcess
+from simple_agent.session.runner import SessionRunner
 from simple_agent.task_manager import TaskManager
-from simple_agent.tool.common_tools import create_all_coding_tools
 from simple_agent.tool.execution_logger import ToolExecutionLogger
 from simple_agent.db.db import Database
 from simple_agent.models import register_custom_models
@@ -50,7 +50,11 @@ class Session:
         self._db_path = os.path.join(base_dir, f"{self._id}.db")
         self._db = Database(self._db_path)
         self._task_manager = TaskManager(self._db)
-        self._execution_logger = ToolExecutionLogger(self._db, task_manager=self._task_manager)
+        self._execution_logger = ToolExecutionLogger(
+            self._db,
+            task_manager=self._task_manager,
+            session_id=self._id,
+        )
         register_custom_models()
         self._agent_process = AgentProcess(get_model("deepseek", "deepseek-v4-pro"))
         self._cancel_event = asyncio.Event()
@@ -84,34 +88,16 @@ class Session:
 
     @logged(_log)
     async def run(self, user_input: str):
-        """Run the generic agent runtime for one user task."""
+        """Run the persisted session runner for one user task."""
         self._running = True
         if self.event_queue is None:
             self.event_queue = asyncio.Queue()
 
-        user_task = self._task_manager.create_user_task(user_input)
-        self._cursor_id = user_task.id
-        self._checkpoint()
-
-        state = AgentState()
-        tools = [
-            self._task_manager.create_create_todo_tool(),
-            self._task_manager.create_finish_todo_tool(),
-            self._task_manager.create_error_todo_tool(),
-            *create_all_coding_tools("."),
-        ]
-        tools = self._execution_logger.wrap_tools(tools)
-
         try:
-            await self._agent_process.run(
-                system_prompt=SYSTEM_PROMPT,
-                messages=[],
-                tools=tools,
-                state=state,
-                user_prompt=user_input,
-            )
-            if self._task_manager.active_todo_id is None:
-                user_task = self._task_manager.finish_user_task()
+            runner = self._create_runner()
+            user_task = await runner.run(user_input)
+            self._cursor_id = user_task.id if user_task is not None else None
+            self._checkpoint()
         except Exception:
             _log.exception("run: session=%s failed", self._id)
             if self.event_queue is not None:
@@ -123,8 +109,18 @@ class Session:
                 self.event_queue.put_nowait(None)
                 self.event_queue = None
 
-        _log.info("run: session=%s done, result=%s", self._id, user_task.id if user_task else None)
+        _log.info("run: session=%s done, result=%s", self._id, self._cursor_id)
         return user_task
+
+    def _create_runner(self) -> SessionRunner:
+        return SessionRunner(
+            session_id=self._id,
+            db=self._db,
+            task_manager=self._task_manager,
+            execution_logger=self._execution_logger,
+            agent_process=self._agent_process,
+            cancel_event=self._cancel_event,
+        )
 
     def pause(self) -> None:
         """Signal the run loop to stop at the next safe point.

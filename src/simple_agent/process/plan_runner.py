@@ -2,9 +2,13 @@
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING
+import asyncio
+from typing import TYPE_CHECKING, Any
 
-from simple_agent.process.agent_process import AgentProcess, AgentState
+from pi.agent import AgentTool, AgentToolResult, AgentToolUpdateCallback
+from pi.ai.types import TextContent
+
+from simple_agent.process.agent_process import AgentProcess
 from simple_agent.process.runners import BaseRunner, RunnerResult
 from simple_agent.tool.execution_logger import ToolExecutionLogger
 from simple_agent.db.db import Database
@@ -25,6 +29,49 @@ to repeat information the sub-task can already see — just describe what to do.
 """
 
 
+class _RecordState(asyncio.Event):
+    def __init__(self):
+        super().__init__()
+        self.tool_results: dict[str, list] = {}
+        self.stop_on_tool: str | None = None
+
+    def is_set(self) -> bool:
+        if self.stop_on_tool is not None and self.stop_on_tool in self.tool_results:
+            return True
+        return super().is_set()
+
+    def create_define_task_tool(self) -> AgentTool:
+        from simple_agent.state.state import Task
+
+        tool = AgentTool(
+            name="define_task",
+            description="Define a sub-task to be executed. Include all necessary context.",
+            parameters={
+                "type": "object",
+                "properties": {
+                    "input": {"type": "string", "description": "The full input for this sub-task"},
+                },
+                "required": ["input"],
+            },
+        )
+
+        async def execute(
+            tool_call_id: str,
+            params: dict[str, Any],
+            cancel_event: asyncio.Event | None = None,
+            on_update: AgentToolUpdateCallback | None = None,
+        ) -> AgentToolResult:
+            try:
+                item = Task.model_validate(params)
+                self.tool_results.setdefault("define_task", []).append(item)
+                return AgentToolResult(content=[TextContent(text="ok")])
+            except Exception as exc:
+                return AgentToolResult(content=[TextContent(text=f"validation failed: {exc}")])
+
+        tool.execute = execute
+        return tool
+
+
 class PlanRunner(BaseRunner):
     """Runner for plan tasks — create sub-tasks or finish.
 
@@ -41,21 +88,22 @@ class PlanRunner(BaseRunner):
         self._agent_process = agent_process
 
     async def run(self, task: "Task") -> RunnerResult:
-        state = AgentState()
-        state.stop_condition = lambda s: "define_task" in s.tool_results
+        state = _RecordState()
+        state.stop_on_tool = "define_task"
         tools: list = [
-            state.create_define_task_tool(self._execution_logger),
+            state.create_define_task_tool(),
         ]
+        tools = self._execution_logger.wrap_tools(tools)
 
-        await self._agent_process.run(
+        new_messages = await self._agent_process.run(
             system_prompt=SYSTEM_PROMPT,
             messages=task.metadata["context_msgs"],
             tools=tools,
-            state=state,
             user_prompt=task.input,
+            cancel_event=state,
         )
-        task.metadata["context_msgs"].extend(state.new_messages)
-        task.messages.extend(state.new_messages)
+        task.metadata["context_msgs"].extend(new_messages)
+        task.messages.extend(new_messages)
 
         if "define_task" in state.tool_results:
             from simple_agent.state.state import Task as TaskModel

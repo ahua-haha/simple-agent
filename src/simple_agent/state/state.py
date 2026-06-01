@@ -72,6 +72,46 @@ class ManagedTaskRecord(SQLModel, table=True):
     updated_at: float = Field(default_factory=time.time)
 
 
+class RunnerStateMetadataRecord(SQLModel, table=True):
+    """SQLite model for session-runner lifecycle metadata."""
+
+    session_id: str = Field(primary_key=True)
+    phase: str = Field(default="idle", index=True)
+    status: str = Field(default="idle", index=True)
+    active_user_task_id: int | None = Field(default=None, index=True)
+    last_error: str | None = None
+    version: int = Field(default=1)
+    created_at: float = Field(default_factory=time.time)
+    updated_at: float = Field(default_factory=time.time)
+
+
+class RunnerMessageRecord(SQLModel, table=True):
+    """SQLite model for ordered session-runner messages."""
+
+    id: int | None = Field(default=None, primary_key=True)
+    session_id: str = Field(index=True)
+    seq: int = Field(index=True)
+    role: str = Field(index=True)
+    content_json: str
+    timestamp_ms: int | None = Field(default=None)
+    created_at: float = Field(default_factory=time.time)
+
+
+class RunnerToolCallRecord(SQLModel, table=True):
+    """SQLite model for structured session-runner tool execution logs."""
+
+    id: int | None = Field(default=None, primary_key=True)
+    session_id: str = Field(index=True)
+    tool_call_id: str = Field(index=True)
+    tool_name: str = Field(index=True)
+    params_json: str
+    result_json: str | None = None
+    status: str = Field(index=True)
+    started_at: float
+    finished_at: float | None = None
+    error: str | None = None
+
+
 # ── Domain models ────────────────────────────────────────────────────
 
 
@@ -96,8 +136,17 @@ TEXT_RESULT_JSON_SCHEMA: dict = {
 }
 
 _message_adapter = TypeAdapter(list[AgentMessage])
+_single_message_adapter = TypeAdapter(AgentMessage)
 _result_adapter = TypeAdapter(list[TextResult])
 _task_item_adapter = TypeAdapter(list[TaskItem])
+
+
+def agent_message_to_json(message: AgentMessage) -> str:
+    return _single_message_adapter.dump_json(message).decode("utf-8")
+
+
+def agent_message_from_json(payload: str) -> AgentMessage:
+    return _single_message_adapter.validate_json(payload)
 
 
 def managed_task_to_record(task: ManagedTask) -> ManagedTaskRecord:
