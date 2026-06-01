@@ -127,3 +127,48 @@ def test_finish_todo_rejects_missing_active_todo():
 
     with pytest.raises(TaskManagerError, match="No active todo"):
         manager.finish_todo()
+
+
+def test_record_tool_call_without_active_todo_attaches_to_user_task():
+    db = _make_db()
+    manager = TaskManager(db)
+    user_task = manager.create_user_task("Build feature")
+
+    manager.record_tool_call(7)
+    loaded_user_task = db.get_managed_task(user_task.id)
+
+    assert [(item.kind, item.ref_id) for item in loaded_user_task.items] == [
+        ("tool_call", 7),
+    ]
+
+
+def test_record_tool_call_with_active_todo_attaches_to_todo():
+    db = _make_db()
+    manager = TaskManager(db)
+    manager.create_user_task("Build feature")
+    todo = manager.create_todo("Inspect files")
+
+    manager.record_tool_call(8)
+    loaded_todo = db.get_managed_task(todo.id)
+
+    assert [(item.kind, item.ref_id) for item in loaded_todo.items] == [
+        ("tool_call", 8),
+    ]
+
+
+def test_mixed_user_task_order_is_preserved():
+    db = _make_db()
+    manager = TaskManager(db)
+    user_task = manager.create_user_task("Build feature")
+
+    manager.record_tool_call(1)
+    todo = manager.create_todo("Inspect files")
+    manager.finish_todo()
+    manager.record_tool_call(2)
+
+    loaded_user_task = db.get_managed_task(user_task.id)
+    assert [(item.kind, item.ref_id) for item in loaded_user_task.items] == [
+        ("tool_call", 1),
+        ("task", todo.id),
+        ("tool_call", 2),
+    ]

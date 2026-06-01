@@ -62,6 +62,12 @@ class TaskManager:
         self.active_todo_id = None
         return todo
 
+    def record_tool_call(self, tool_call_id: int) -> None:
+        target = self._require_active_todo() if self.active_todo_id is not None else self._require_user_task()
+        target.items.append(TaskItem(kind="tool_call", ref_id=tool_call_id))
+        target.touch()
+        self._db.upsert_managed_task(target)
+
     def finish_user_task(self, result: str | None = None) -> ManagedTask:
         user_task = self._require_user_task()
         if self.active_todo_id is not None:
