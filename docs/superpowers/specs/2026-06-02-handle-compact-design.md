@@ -99,13 +99,17 @@ Messages use tail replacement:
 4. Insert compact message or messages starting at `start_seq`.
 5. Insert messages after `end_seq` after the compact messages.
 
-Tasks use scoped replacement under the existing user task:
+Tasks use one replacement function under the existing user task:
 
-1. Delete todo tasks in the compact scope.
-2. Insert the compacted todo task.
-3. Preserve active or unfinished todos after the compact scope.
-4. Update `user_task.items` to contain the compacted todo plus preserved todos
-   in order.
+1. `TaskManager.replace_compact_scope()` computes the current compact scope
+   from the task tree and consumes the generated compacted todo from the
+   compact buffer.
+2. It rebuilds the in-memory user-task tree so `user_task.items` contains the
+   compacted todo plus preserved todos in order.
+3. In the caller's DB session, it deletes the currently persisted managed-task
+   tree rows.
+4. It saves the rebuilt tree rows, including the compacted todo and any
+   preserved todos.
 
 Runner metadata is saved in the same transaction:
 

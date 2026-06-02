@@ -287,14 +287,11 @@ class SessionRunner:
             cancel_event=self._cancel_event,
             hooks={},
         )
-        compacted_todo = self._task_manager.consume_compact_buffer()
-        compact_messages = [self.format_compacted_todo_message(compacted_todo)]
-        replacement_messages = [*compact_messages, *preserved_messages]
 
         with self._db.create_session() as session:
-            delete_task_ids = self._task_manager.replace_compact_scope(scope, compacted_todo)
-            self._db.delete_managed_tasks(delete_task_ids, session=session)
-            self._task_manager.save(session=session)
+            compacted_todo = self._task_manager.replace_compact_scope(session=session)
+            compact_messages = [self.format_compacted_todo_message(compacted_todo)]
+            replacement_messages = [*compact_messages, *preserved_messages]
             self._db.replace_runner_messages_from(
                 self._session_id,
                 start_seq,

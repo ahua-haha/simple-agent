@@ -27,6 +27,10 @@ end tool-call ID.
 - [x] Add `SessionRunner.find_tool_result_message_seq_for_tool_call()`.
 - [x] Make `handle_compact()` derive message replacement ranges from
   `create_tool_call_id` and `end_tool_call_id` lookup.
+- [x] Make `TaskManager.replace_compact_scope()` delete the persisted task tree
+  and save the rebuilt tree in one function.
+- [x] Make `TaskManager.replace_compact_scope()` compute scope and consume the
+  compact buffer itself instead of receiving arguments.
 - [x] Update focused task-manager and session-runner tests.
 
 ## Verification

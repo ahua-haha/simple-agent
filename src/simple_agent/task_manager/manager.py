@@ -315,13 +315,24 @@ class TaskManager:
         finish_tool.execute = finish_execute
         return [create_tool, record_tool, finish_tool]
 
-    def replace_compact_scope(self, scope: CompactScope, compacted_todo: ManagedTask) -> list[int]:
+    def replace_compact_scope(self, *, session=None) -> ManagedTask:
+        if session is None:
+            with self._db.create_session() as session:
+                compacted_todo = self.replace_compact_scope(session=session)
+                session.commit()
+                return compacted_todo
+
         if self.active_user_task_id is None:
             raise TaskManagerError("No active user task")
         user_task = self._get_task(self.active_user_task_id)
         if user_task is None:
             raise TaskManagerError("Active user task is missing")
-        delete_ids = [todo.id for todo in scope.compact_todos if todo.id is not None]
+
+        scope = self.compact_scope()
+        if scope is None:
+            raise TaskManagerError("No compact scope")
+        current_tree_ids = [task_id for task_id in self._tasks if task_id is not None]
+        compacted_todo = self.consume_compact_buffer()
         compacted_todo.parent_id = user_task.id
         self._tasks[compacted_todo.id] = compacted_todo
         user_task.items = [
@@ -329,9 +340,14 @@ class TaskManager:
             *[TaskItem(kind="task", ref_id=todo.id) for todo in scope.preserved_todos],
         ]
         user_task.touch()
-        for task_id in delete_ids:
-            self._tasks.pop(task_id, None)
-        return delete_ids
+        for todo in scope.compact_todos:
+            if todo.id is not None:
+                self._tasks.pop(todo.id, None)
+
+        self._db.delete_managed_tasks(current_tree_ids, session=session)
+        session.flush()
+        self.save(session=session)
+        return compacted_todo
 
     def _require_active_todo(self) -> ManagedTask:
         if self.active_todo_id is None:

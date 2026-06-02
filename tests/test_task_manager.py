@@ -278,6 +278,39 @@ def test_compact_tools_create_one_finished_compacted_todo():
     assert [(item.kind, item.ref_id) for item in result.items] == [("tool_call", 5)]
 
 
+def test_replace_compact_scope_persists_rebuilt_task_tree():
+    db = _make_db()
+    manager = TaskManager(db)
+    manager.load(None)
+    user_task = manager.create_user_task("Build feature")
+    first = manager.create_todo("One")
+    manager.finish_task("done", tool_call_id="call_finish_1")
+    second = manager.create_todo("Two")
+    manager.finish_task("done", tool_call_id="call_finish_2")
+    active = manager.create_todo("Three")
+    manager.save()
+    manager.begin_compact_buffer()
+    compacted = manager.create_compacted_todo("Summary")
+    manager.finish_compacted_todo()
+
+    with db.create_session() as session:
+        compacted = manager.replace_compact_scope(session=session)
+        session.commit()
+
+    loaded_user_task = db.get_managed_task(user_task.id)
+    loaded_compacted = db.get_managed_task(compacted.id)
+    loaded_active = db.get_managed_task(active.id)
+
+    assert db.get_managed_task(first.id) is None
+    assert db.get_managed_task(second.id) is None
+    assert loaded_compacted.parent_id == user_task.id
+    assert loaded_active.id == active.id
+    assert [(item.kind, item.ref_id) for item in loaded_user_task.items] == [
+        ("task", compacted.id),
+        ("task", active.id),
+    ]
+
+
 def test_load_loads_children_and_active_todo():
     db = _make_db()
     manager = TaskManager(db)
