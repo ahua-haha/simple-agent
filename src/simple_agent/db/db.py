@@ -75,6 +75,10 @@ class Database:
         """Get a new sqlmodel Session."""
         return Session(self._engine)
 
+    def create_session(self) -> Session:
+        """Create a database session for composing multiple writes."""
+        return self._get_session()
+
     # ------------------------------------------------------------------
     # Task operations
     # ------------------------------------------------------------------

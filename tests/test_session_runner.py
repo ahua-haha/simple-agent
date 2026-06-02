@@ -103,6 +103,18 @@ class FailingAgentProcess:
         pass
 
 
+class FailingSaveTaskManager(TaskManager):
+    def __init__(self, db):
+        super().__init__(db)
+        self.save_calls = 0
+
+    def save(self, session=None):
+        self.save_calls += 1
+        if self.save_calls > 1:
+            raise RuntimeError("task save failed")
+        return super().save(session=session)
+
+
 def test_session_runner_subscribe_delegates_to_agent_process(tmp_path):
     db = Database(str(tmp_path / "session.db"))
     agent_process = FakeAgentProcess()
@@ -160,3 +172,22 @@ async def test_session_runner_persists_error_and_reraises(tmp_path):
     assert metadata.phase == "error"
     assert metadata.status == "error"
     assert metadata.last_error == "agent failed"
+
+
+@pytest.mark.asyncio
+async def test_turn_end_save_rolls_back_messages_when_task_save_fails(tmp_path):
+    db = Database(str(tmp_path / "session.db"))
+    task_manager = FailingSaveTaskManager(db)
+    agent_process = FakeAgentProcess()
+    runner = SessionRunner(
+        session_id="session_a",
+        db=db,
+        task_manager=task_manager,
+        agent_process=agent_process,
+        cancel_event=asyncio.Event(),
+    )
+
+    with pytest.raises(RuntimeError, match="task save failed"):
+        await runner.run("Build feature")
+
+    assert db.list_runner_messages("session_a") == []

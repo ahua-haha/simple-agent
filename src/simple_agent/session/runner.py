@@ -91,14 +91,33 @@ class SessionRunner:
         self._active_user_task_id = metadata.active_user_task_id
         self._task_manager.load(metadata.active_user_task_id)
 
-    def checkpoint(self, *, status: str | None = None, last_error: str | None = None) -> None:
+    def save_metadata(self, *, status: str | None = None, last_error: str | None = None, session=None) -> None:
         self._db.upsert_runner_state_metadata(
             self._session_id,
             phase=self._phase,
             status=status or self._phase,
             active_user_task_id=self._active_user_task_id,
             last_error=last_error,
+            session=session,
         )
+
+    def save_current_data(
+        self,
+        messages: list[AgentMessage] | None = None,
+        *,
+        status: str | None = None,
+        last_error: str | None = None,
+        save_tasks: bool = True,
+    ) -> None:
+        messages = messages or []
+        with self._db.create_session() as session:
+            if messages:
+                self._db.append_runner_messages(self._session_id, messages, session=session)
+            if save_tasks:
+                self._task_manager.save(session=session)
+            self.save_metadata(status=status or self._phase, last_error=last_error, session=session)
+            session.commit()
+        self._messages.extend(messages)
 
     def _create_tools(self):
         tools = [
@@ -178,16 +197,12 @@ class SessionRunner:
         user_task = self._task_manager.create_user_task(user_input)
         self._active_user_task_id = user_task.id
         self._phase = "running"
-        self._task_manager.save()
-        self.checkpoint(status="running")
+        self.save_current_data(status="running")
 
     async def handle_running(self, user_input: str) -> None:
         def save_current_data(event: AgentEvent) -> None:
             messages = [event.message, *event.tool_results]
-            self._db.append_runner_messages(self._session_id, messages)
-            self._messages.extend(messages)
-            self._task_manager.save()
-            self.checkpoint(status=self._phase)
+            self.save_current_data(messages, status=self._phase)
 
         hooks = {
             "turn_end": [save_current_data],
@@ -203,11 +218,10 @@ class SessionRunner:
         )
         if self._task_manager.active_todo_id is None:
             self._task_manager.finish_user_task()
-            self._task_manager.save()
         self._phase = "done"
-        self.checkpoint(status="done")
+        self.save_current_data(status="done")
 
     def handle_error(self, exc: Exception) -> None:
         _log.exception("session runner failed: session=%s", self._session_id)
         self._phase = "error"
-        self.checkpoint(status="error", last_error=str(exc))
+        self.save_current_data(status="error", last_error=str(exc), save_tasks=False)

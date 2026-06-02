@@ -42,10 +42,16 @@ class TaskManager:
                 self.active_todo_id = task.id
                 break
 
-    def save(self) -> None:
+    def save(self, session=None) -> None:
+        if session is None:
+            with self._db.create_session() as session:
+                self.save(session=session)
+                session.commit()
+            return
+
         for task_id in sorted(self._tasks):
             task = self._tasks[task_id]
-            self._db.upsert_managed_task(task)
+            self._db.upsert_managed_task(task, session=session)
 
     def create_user_task(self, input: str) -> ManagedTask:
         if self.active_user_task_id is not None:
