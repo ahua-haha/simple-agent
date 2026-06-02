@@ -180,36 +180,24 @@ class SessionRunner:
         self.checkpoint(status="running")
 
     async def handle_running(self, user_input: str) -> None:
-        def stop_if_runner_left_running(event: AgentEvent) -> None:
-            if self._phase != "running":
-                self._cancel_event.set()
+        def save_current_data(event: AgentEvent) -> None:
+            messages = [event.message, *event.tool_results]
+            self._db.append_runner_messages(self._session_id, messages)
+            self._messages.extend(messages)
+            self.checkpoint(status=self._phase)
 
-        cancel_hooks = {
-            event_type: [stop_if_runner_left_running]
-            for event_type in (
-                "agent_start",
-                "agent_end",
-                "turn_start",
-                "turn_end",
-                "message_start",
-                "message_update",
-                "message_end",
-                "tool_execution_start",
-                "tool_execution_update",
-                "tool_execution_end",
-            )
+        hooks = {
+            "turn_end": [save_current_data],
         }
 
-        new_messages = await self._agent_process.run(
+        await self._agent_process.run(
             system_prompt=SYSTEM_PROMPT,
             messages=list(self._messages),
             tools=self._create_tools(),
             user_prompt=user_input,
             cancel_event=self._cancel_event,
-            hooks=cancel_hooks,
+            hooks=hooks,
         )
-        self._db.append_runner_messages(self._session_id, new_messages)
-        self._messages.extend(new_messages)
         if self._task_manager.active_todo_id is None:
             self._task_manager.finish_user_task()
         self._phase = "done"

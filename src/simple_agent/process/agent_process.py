@@ -34,7 +34,6 @@ class AgentProcess:
         self._model = model
         self._api_key = get_api_key
         self._listeners: list[Callable] = []
-        self._hooks: AgentProcessHooks = {}
 
     @logged(_log)
     async def run(
@@ -60,7 +59,8 @@ class AgentProcess:
         new_messages: list[AgentMessage] = []
 
         def on_loop_event(event: AgentEvent) -> None:
-            self._run_hooks(event, hooks)
+            for hook in (hooks or {}).get(event.type, []):
+                hook(event)
 
         loop_config = AgentLoopConfig(
             model=self._model,
@@ -94,17 +94,6 @@ class AgentProcess:
     def unsubscribe(self, callback: Callable) -> None:
         if callback in self._listeners:
             self._listeners.remove(callback)
-
-    def add_hook(self, event_type: str, hook: AgentProcessHook) -> None:
-        self._hooks.setdefault(event_type, []).append(hook)
-
-    def remove_hook(self, event_type: str, hook: AgentProcessHook) -> None:
-        if event_type in self._hooks and hook in self._hooks[event_type]:
-            self._hooks[event_type].remove(hook)
-
-    def _run_hooks(self, event: AgentEvent, hooks: AgentProcessHooks | None = None) -> None:
-        for hook in [*self._hooks.get(event.type, []), *((hooks or {}).get(event.type, []))]:
-            hook(event)
 
     def _emit(self, event) -> None:
         for listener in self._listeners:

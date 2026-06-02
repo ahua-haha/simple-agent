@@ -150,5 +150,4 @@ async def test_session_run_creates_queue_and_runs_agent_once(tmp_path, monkeypat
     assert "finish_todo" in calls[0]["tools"]
     assert "error_todo" in calls[0]["tools"]
     assert calls[0]["cancel_event"] is session._runner._cancel_event
-    assert "agent_start" in calls[0]["hooks"]
-    assert "message_update" in calls[0]["hooks"]
+    assert set(calls[0]["hooks"]) == {"turn_end"}

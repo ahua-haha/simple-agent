@@ -6,7 +6,7 @@ import asyncio
 
 import pytest
 
-from pi.ai.types import AssistantMessage, TextContent
+from pi.ai.types import AssistantMessage, TextContent, ToolResultMessage
 
 from simple_agent.db.db import Database
 from simple_agent.session.runner import SessionRunner
@@ -17,8 +17,17 @@ class FakeAgentProcess:
     def __init__(self):
         self.calls = []
         self.subscribers = []
+        self.count_persisted = None
+        self.persisted_after_turn = None
 
     async def run(self, system_prompt, messages, tools, user_prompt="", cancel_event=None, hooks=None):
+        message = AssistantMessage(role="assistant", content=[TextContent(text="done")])
+        tool_result = ToolResultMessage(
+            toolCallId="tool_1",
+            toolName="example_tool",
+            content=[TextContent(text="tool done")],
+            timestamp=1,
+        )
         self.calls.append(
             {
                 "system_prompt": system_prompt,
@@ -29,7 +38,13 @@ class FakeAgentProcess:
                 "hooks": hooks,
             }
         )
-        return [AssistantMessage(role="assistant", content=[TextContent(text="done")])]
+        from pi.agent.types import TurnEndEvent
+
+        for hook in hooks["turn_end"]:
+            hook(TurnEndEvent(message=message, tool_results=[tool_result]))
+        if self.count_persisted is not None:
+            self.persisted_after_turn = self.count_persisted()
+        return [message, tool_result]
 
     def subscribe(self, callback):
         self.subscribers.append(callback)
@@ -52,6 +67,7 @@ async def test_session_runner_creates_task_runs_agent_and_persists_messages(tmp_
         agent_process=agent_process,
         cancel_event=cancel_event,
     )
+    agent_process.count_persisted = lambda: len(db.list_runner_messages("session_a"))
 
     result = await runner.run("Build feature")
 
@@ -63,9 +79,7 @@ async def test_session_runner_creates_task_runs_agent_and_persists_messages(tmp_
     assert agent_process.calls[0]["messages"] is not runner._messages
     assert agent_process.calls[0]["user_prompt"] == "Build feature"
     assert agent_process.calls[0]["cancel_event"] is cancel_event
-    assert "agent_start" in agent_process.calls[0]["hooks"]
-    assert "message_update" in agent_process.calls[0]["hooks"]
-    assert "tool_execution_end" in agent_process.calls[0]["hooks"]
+    assert set(agent_process.calls[0]["hooks"]) == {"turn_end"}
     assert "create_todo" in agent_process.calls[0]["tools"]
     assert "finish_todo" in agent_process.calls[0]["tools"]
     assert "error_todo" in agent_process.calls[0]["tools"]
@@ -74,7 +88,11 @@ async def test_session_runner_creates_task_runs_agent_and_persists_messages(tmp_
     assert metadata.phase == "done"
     assert metadata.status == "done"
     assert metadata.active_user_task_id == result.id
-    assert db.list_runner_messages("session_a")[0].content[0].text == "done"
+    persisted_messages = db.list_runner_messages("session_a")
+    assert agent_process.persisted_after_turn == 2
+    assert len(persisted_messages) == 2
+    assert persisted_messages[0].content[0].text == "done"
+    assert persisted_messages[1].content[0].text == "tool done"
 
 
 class FailingAgentProcess:
