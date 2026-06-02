@@ -8,6 +8,7 @@ import time
 from typing import TYPE_CHECKING, Any, Callable, Literal
 
 from pi.agent import AgentTool, AgentToolResult, AgentToolUpdateCallback
+from simple_agent.token_estimation import estimate_messages_tokens
 from simple_agent.tool.common_tools import create_all_coding_tools
 
 if TYPE_CHECKING:
@@ -19,7 +20,7 @@ if TYPE_CHECKING:
 
 _log = logging.getLogger(__name__)
 
-RunnerPhase = Literal["idle", "running", "done", "error"]
+RunnerPhase = Literal["idle", "running", "compact", "done", "error"]
 
 SYSTEM_PROMPT = """You are a helpful coding agent.
 
@@ -28,6 +29,9 @@ Call finish_todo when the active todo is complete.
 Call error_todo if the active todo cannot be completed.
 Keep responses concise and use available tools to do the work.
 """
+
+DEFAULT_CONTEXT_TOKEN_THRESHOLD = 120_000
+DEFAULT_TOOL_CALL_THRESHOLD = 200
 
 
 def _tool_result_payload(result: AgentToolResult) -> dict[str, Any]:
@@ -51,6 +55,8 @@ class SessionRunner:
     _phase: RunnerPhase
     _active_user_task_id: int | None
     _messages: list[AgentMessage]
+    _context_token_threshold: int
+    _tool_call_threshold: int
 
     def __init__(
         self,
@@ -60,6 +66,8 @@ class SessionRunner:
         task_manager: TaskManager,
         agent_process: AgentProcess,
         cancel_event: asyncio.Event,
+        context_token_threshold: int = DEFAULT_CONTEXT_TOKEN_THRESHOLD,
+        tool_call_threshold: int = DEFAULT_TOOL_CALL_THRESHOLD,
     ):
         self._session_id = session_id
         self._db = db
@@ -69,6 +77,8 @@ class SessionRunner:
         self._phase = "idle"
         self._active_user_task_id = None
         self._messages = []
+        self._context_token_threshold = context_token_threshold
+        self._tool_call_threshold = tool_call_threshold
 
     def subscribe(self, callback: Callable) -> None:
         self._agent_process.subscribe(callback)
@@ -184,6 +194,9 @@ class SessionRunner:
                 if self._phase == "running":
                     await self.handle_running(user_input)
                     continue
+                if self._phase == "compact":
+                    await self.handle_compact(user_input)
+                    continue
                 raise RuntimeError(f"Unknown runner phase: {self._phase}")
         except Exception as exc:
             self.handle_error(exc)
@@ -203,6 +216,7 @@ class SessionRunner:
         def save_current_data(event: AgentEvent) -> None:
             messages = [event.message, *event.tool_results]
             self.save_current_data(messages, status=self._phase)
+            self.pause_for_compaction_if_needed()
 
         hooks = {
             "turn_end": [save_current_data],
@@ -216,10 +230,29 @@ class SessionRunner:
             cancel_event=self._cancel_event,
             hooks=hooks,
         )
+        if self._phase == "compact":
+            return
         if self._task_manager.active_todo_id is None:
             self._task_manager.finish_user_task()
         self._phase = "done"
         self.save_current_data(status="done")
+
+    def pause_for_compaction_if_needed(self) -> None:
+        context_tokens = estimate_messages_tokens(self._messages)
+        tool_calls = len(self._db.list_runner_tool_calls(self._session_id))
+        if (
+            context_tokens <= self._context_token_threshold
+            and tool_calls <= self._tool_call_threshold
+        ):
+            return
+
+        self._phase = "compact"
+        self.save_current_data(messages=[], status="compact", save_tasks=False)
+        self._cancel_event.set()
+
+    async def handle_compact(self, user_input: str) -> None:
+        # TODO: implement compact handling.
+        raise NotImplementedError("compact handling is not implemented yet")
 
     def handle_error(self, exc: Exception) -> None:
         _log.exception("session runner failed: session=%s", self._session_id)

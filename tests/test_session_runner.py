@@ -154,6 +154,88 @@ def test_session_runner_pause_controls_cancel_event(tmp_path):
 
 
 @pytest.mark.asyncio
+async def test_turn_end_token_threshold_persists_compact_and_sets_cancel(tmp_path):
+    db = Database(str(tmp_path / "session.db"))
+    cancel_event = asyncio.Event()
+    task_manager = TaskManager(db)
+    runner = SessionRunner(
+        session_id="session_a",
+        db=db,
+        task_manager=task_manager,
+        agent_process=FakeAgentProcess(),
+        cancel_event=cancel_event,
+        context_token_threshold=0,
+        tool_call_threshold=100,
+    )
+    task_manager.load(None)
+    user_task = task_manager.create_user_task("Build feature")
+    runner._active_user_task_id = user_task.id
+    runner._phase = "running"
+
+    await runner.handle_running("Build feature")
+
+    metadata = db.get_runner_state_metadata("session_a")
+    assert metadata.phase == "compact"
+    assert metadata.status == "compact"
+    assert cancel_event.is_set() is True
+    assert runner._phase == "compact"
+
+
+@pytest.mark.asyncio
+async def test_turn_end_tool_call_threshold_persists_compact_and_sets_cancel(tmp_path):
+    db = Database(str(tmp_path / "session.db"))
+    cancel_event = asyncio.Event()
+    task_manager = TaskManager(db)
+    runner = SessionRunner(
+        session_id="session_a",
+        db=db,
+        task_manager=task_manager,
+        agent_process=FakeAgentProcess(),
+        cancel_event=cancel_event,
+        context_token_threshold=1000,
+        tool_call_threshold=0,
+    )
+    task_manager.load(None)
+    user_task = task_manager.create_user_task("Build feature")
+    db.insert_runner_tool_call(
+        session_id="session_a",
+        tool_call_id="call_99",
+        tool_name="example_tool",
+        params={},
+        result={"content": []},
+        status="success",
+        started_at=1.0,
+        finished_at=2.0,
+        error=None,
+    )
+    runner._active_user_task_id = user_task.id
+    runner._phase = "running"
+
+    await runner.handle_running("Build feature")
+
+    metadata = db.get_runner_state_metadata("session_a")
+    assert metadata.phase == "compact"
+    assert metadata.status == "compact"
+    assert cancel_event.is_set() is True
+    assert runner._phase == "compact"
+
+
+@pytest.mark.asyncio
+async def test_handle_compact_is_todo(tmp_path):
+    db = Database(str(tmp_path / "session.db"))
+    runner = SessionRunner(
+        session_id="session_a",
+        db=db,
+        task_manager=TaskManager(db),
+        agent_process=FakeAgentProcess(),
+        cancel_event=asyncio.Event(),
+    )
+
+    with pytest.raises(NotImplementedError, match="compact handling"):
+        await runner.handle_compact("Build feature")
+
+
+@pytest.mark.asyncio
 async def test_session_runner_persists_error_and_reraises(tmp_path):
     db = Database(str(tmp_path / "session.db"))
     task_manager = TaskManager(db)
