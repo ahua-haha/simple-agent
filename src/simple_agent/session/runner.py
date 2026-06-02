@@ -8,6 +8,7 @@ import time
 from typing import TYPE_CHECKING, Any, Callable, Literal
 
 from pi.agent import AgentTool, AgentToolResult, AgentToolUpdateCallback
+from pi.ai.types import AssistantMessage, TextContent, ToolCall, ToolResultMessage
 from simple_agent.token_estimation import estimate_messages_tokens
 from simple_agent.tool.common_tools import create_all_coding_tools
 
@@ -32,6 +33,10 @@ Keep responses concise and use available tools to do the work.
 
 DEFAULT_CONTEXT_TOKEN_THRESHOLD = 120_000
 DEFAULT_TOOL_CALL_THRESHOLD = 200
+
+COMPACT_SYSTEM_PROMPT = """Compact finished todos into one compacted todo.
+Use only the compact tools. Create exactly one compacted todo, record useful
+tool-call log IDs, then finish the compacted todo."""
 
 
 def _tool_result_payload(result: AgentToolResult) -> dict[str, Any]:
@@ -251,8 +256,80 @@ class SessionRunner:
         self._cancel_event.set()
 
     async def handle_compact(self, user_input: str) -> None:
-        # TODO: implement compact handling.
-        raise NotImplementedError("compact handling is not implemented yet")
+        scope = self._task_manager.compact_scope()
+        if scope is None:
+            self._phase = "running"
+            self._cancel_event.clear()
+            self.save_current_data(messages=[], status="running", save_tasks=False)
+            return
+
+        start_tool_call_id = scope.compact_todos[0].create_tool_call_id
+        if start_tool_call_id is None:
+            raise RuntimeError("Compact start todo is missing create_tool_call_id")
+        start_seq = self.find_assistant_message_seq_for_tool_call(start_tool_call_id)
+
+        end_tool_call_id = scope.compact_todos[-1].end_tool_call_id
+        if end_tool_call_id is None:
+            raise RuntimeError("Compact end todo is missing end_tool_call_id")
+        end_seq = self.find_tool_result_message_seq_for_tool_call(end_tool_call_id)
+        if end_seq < start_seq:
+            raise RuntimeError("Compact end message is before start message")
+
+        messages_before_start = self._messages[:start_seq]
+        preserved_messages = self._messages[end_seq + 1:]
+
+        self._task_manager.begin_compact_buffer()
+        await self._agent_process.run(
+            system_prompt=COMPACT_SYSTEM_PROMPT,
+            messages=self._messages[start_seq:end_seq + 1],
+            tools=self._task_manager.create_compact_tools(),
+            user_prompt=user_input,
+            cancel_event=self._cancel_event,
+            hooks={},
+        )
+        compacted_todo = self._task_manager.consume_compact_buffer()
+        compact_messages = [self.format_compacted_todo_message(compacted_todo)]
+        replacement_messages = [*compact_messages, *preserved_messages]
+
+        with self._db.create_session() as session:
+            delete_task_ids = self._task_manager.replace_compact_scope(scope, compacted_todo)
+            self._db.delete_managed_tasks(delete_task_ids, session=session)
+            self._task_manager.save(session=session)
+            self._db.replace_runner_messages_from(
+                self._session_id,
+                start_seq,
+                replacement_messages,
+                session=session,
+            )
+            self._phase = "running"
+            self.save_metadata(status="running", session=session)
+            session.commit()
+
+        self._messages = [*messages_before_start, *replacement_messages]
+        self._cancel_event.clear()
+
+    def find_assistant_message_seq_for_tool_call(self, tool_call_id: str) -> int:
+        for seq, message in enumerate(self._messages):
+            if not isinstance(message, AssistantMessage):
+                continue
+            for content in message.content:
+                if isinstance(content, ToolCall) and content.id == tool_call_id:
+                    return seq
+        raise RuntimeError(f"Could not find assistant message for tool call {tool_call_id}")
+
+    def find_tool_result_message_seq_for_tool_call(self, tool_call_id: str) -> int:
+        for seq, message in enumerate(self._messages):
+            if isinstance(message, ToolResultMessage) and message.tool_call_id == tool_call_id:
+                return seq
+        raise RuntimeError(f"Could not find tool result message for tool call {tool_call_id}")
+
+    def format_compacted_todo_message(self, compacted_todo) -> AgentMessage:
+        tool_refs = [item.ref_id for item in compacted_todo.items if item.kind == "tool_call"]
+        text = (
+            f"Compacted todo: {compacted_todo.result or compacted_todo.title}\n"
+            f"Useful tool calls: {tool_refs}"
+        )
+        return AssistantMessage(role="assistant", content=[TextContent(text=text)])
 
     def handle_error(self, exc: Exception) -> None:
         _log.exception("session runner failed: session=%s", self._session_id)

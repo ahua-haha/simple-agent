@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
 from pi.agent import AgentTool, AgentToolResult
@@ -11,6 +12,17 @@ from simple_agent.task_manager.models import ManagedTask, TaskItem
 
 if TYPE_CHECKING:
     from simple_agent.db.db import Database
+
+
+@dataclass(frozen=True)
+class CompactScope:
+    compact_todos: list[ManagedTask]
+    preserved_todos: list[ManagedTask]
+
+
+@dataclass
+class CompactBuffer:
+    todo: ManagedTask | None = None
 
 
 class TaskManagerError(RuntimeError):
@@ -26,12 +38,14 @@ class TaskManager:
         self.active_todo_id: int | None = None
         self._tasks: dict[int, ManagedTask] = {}
         self._next_task_id: int | None = None
+        self._compact_buffer: CompactBuffer | None = None
 
     def load(self, active_user_task_id: int | None) -> None:
         self._tasks = {}
         self.active_user_task_id = active_user_task_id
         self.active_todo_id = None
         self._next_task_id = self._db.next_managed_task_id()
+        self._compact_buffer = None
         if active_user_task_id is None:
             return
         user_task = self._load_task_tree(active_user_task_id)
@@ -76,7 +90,7 @@ class TaskManager:
         )
 
         async def execute(tool_call_id, params, cancel_event=None, on_update=None):
-            todo = self.create_todo(params["title"])
+            todo = self.create_todo(params["title"], tool_call_id=tool_call_id)
             return AgentToolResult(content=[TextContent(text=f"created todo {todo.id}")])
 
         tool.execute = execute
@@ -96,7 +110,7 @@ class TaskManager:
         )
 
         async def execute(tool_call_id, params, cancel_event=None, on_update=None):
-            todo = self.finish_task(params.get("result"))
+            todo = self.finish_task(params.get("result"), tool_call_id=tool_call_id)
             return AgentToolResult(content=[TextContent(text=f"finished todo {todo.id}")])
 
         tool.execute = execute
@@ -116,13 +130,13 @@ class TaskManager:
         )
 
         async def execute(tool_call_id, params, cancel_event=None, on_update=None):
-            todo = self.error_task(params["error"])
+            todo = self.error_task(params["error"], tool_call_id=tool_call_id)
             return AgentToolResult(content=[TextContent(text=f"errored todo {todo.id}")])
 
         tool.execute = execute
         return tool
 
-    def create_todo(self, title: str) -> ManagedTask:
+    def create_todo(self, title: str, tool_call_id: str | None = None) -> ManagedTask:
         if self.active_user_task_id is None:
             raise TaskManagerError("No active user task")
         user_task = self._get_task(self.active_user_task_id)
@@ -131,7 +145,12 @@ class TaskManager:
         if self.active_todo_id is not None:
             raise TaskManagerError("Cannot create todo while another active todo exists")
 
-        todo = ManagedTask(kind="todo", title=title, parent_id=user_task.id)
+        todo = ManagedTask(
+            kind="todo",
+            title=title,
+            parent_id=user_task.id,
+            create_tool_call_id=tool_call_id,
+        )
         todo.id = self._allocate_task_id()
         self._tasks[todo.id] = todo
 
@@ -140,18 +159,20 @@ class TaskManager:
         self.active_todo_id = todo.id
         return todo
 
-    def finish_task(self, result: str | None = None) -> ManagedTask:
+    def finish_task(self, result: str | None = None, tool_call_id: str | None = None) -> ManagedTask:
         todo = self._require_active_todo()
         todo.status = "done"
         todo.result = result
+        todo.end_tool_call_id = tool_call_id
         todo.touch()
         self.active_todo_id = None
         return todo
 
-    def error_task(self, error: str) -> ManagedTask:
+    def error_task(self, error: str, tool_call_id: str | None = None) -> ManagedTask:
         todo = self._require_active_todo()
         todo.status = "error"
         todo.error = error
+        todo.end_tool_call_id = tool_call_id
         todo.touch()
         self.active_todo_id = None
         return todo
@@ -186,6 +207,131 @@ class TaskManager:
         user_task.touch()
         self.active_user_task_id = None
         return user_task
+
+    def compact_scope(self) -> CompactScope | None:
+        if self.active_user_task_id is None:
+            raise TaskManagerError("No active user task")
+        user_task = self._get_task(self.active_user_task_id)
+        if user_task is None:
+            raise TaskManagerError("Active user task is missing")
+
+        todos = [
+            self._get_task(item.ref_id)
+            for item in user_task.items
+            if item.kind == "task"
+        ]
+        todos = [todo for todo in todos if todo is not None and todo.kind == "todo"]
+        finished = [todo for todo in todos if todo.status == "done"]
+        if not finished:
+            return None
+
+        latest_finished = finished[-1]
+        end_index = todos.index(latest_finished)
+        compact_todos = todos[: end_index + 1]
+        preserved_todos = todos[end_index + 1:]
+        return CompactScope(compact_todos, preserved_todos)
+
+    def begin_compact_buffer(self) -> None:
+        self._compact_buffer = CompactBuffer()
+
+    def create_compacted_todo(self, description: str) -> ManagedTask:
+        if self._compact_buffer is None:
+            raise TaskManagerError("Compact buffer is not active")
+        if self._compact_buffer.todo is not None:
+            raise TaskManagerError("Compacted todo already exists")
+        todo = ManagedTask(kind="todo", title="Compacted work", status="active", result=description)
+        todo.id = self._allocate_task_id()
+        self._compact_buffer.todo = todo
+        return todo
+
+    def record_compacted_tool_call(self, tool_call_log_id: int) -> None:
+        if self._compact_buffer is None or self._compact_buffer.todo is None:
+            raise TaskManagerError("No compacted todo")
+        self._compact_buffer.todo.items.append(TaskItem(kind="tool_call", ref_id=tool_call_log_id))
+
+    def finish_compacted_todo(self) -> ManagedTask:
+        if self._compact_buffer is None or self._compact_buffer.todo is None:
+            raise TaskManagerError("No compacted todo")
+        self._compact_buffer.todo.status = "done"
+        return self._compact_buffer.todo
+
+    def consume_compact_buffer(self) -> ManagedTask:
+        if self._compact_buffer is None or self._compact_buffer.todo is None:
+            raise TaskManagerError("No compacted todo")
+        todo = self._compact_buffer.todo
+        if todo.status != "done":
+            raise TaskManagerError("Compacted todo is not finished")
+        self._compact_buffer = None
+        self._tasks[todo.id] = todo
+        return todo
+
+    def create_compact_tools(self) -> list[AgentTool]:
+        create_tool = AgentTool(
+            name="create_compacted_todo",
+            description="Create the single compacted todo with a concise summary.",
+            parameters={
+                "type": "object",
+                "properties": {
+                    "description": {"type": "string", "description": "Compacted todo summary"},
+                },
+                "required": ["description"],
+            },
+        )
+
+        async def create_execute(tool_call_id, params, cancel_event=None, on_update=None):
+            todo = self.create_compacted_todo(params["description"])
+            return AgentToolResult(content=[TextContent(text=f"created compacted todo {todo.id}")])
+
+        create_tool.execute = create_execute
+
+        record_tool = AgentTool(
+            name="record_compacted_tool_call",
+            description="Keep one useful runner tool-call log ID in the compacted todo.",
+            parameters={
+                "type": "object",
+                "properties": {
+                    "tool_call_log_id": {"type": "integer", "description": "Runner tool-call log ID"},
+                },
+                "required": ["tool_call_log_id"],
+            },
+        )
+
+        async def record_execute(tool_call_id, params, cancel_event=None, on_update=None):
+            self.record_compacted_tool_call(params["tool_call_log_id"])
+            return AgentToolResult(content=[TextContent(text="recorded compacted tool call")])
+
+        record_tool.execute = record_execute
+
+        finish_tool = AgentTool(
+            name="finish_compacted_todo",
+            description="Finish the compacted todo after selecting useful tool calls.",
+            parameters={"type": "object", "properties": {}, "required": []},
+        )
+
+        async def finish_execute(tool_call_id, params, cancel_event=None, on_update=None):
+            todo = self.finish_compacted_todo()
+            return AgentToolResult(content=[TextContent(text=f"finished compacted todo {todo.id}")])
+
+        finish_tool.execute = finish_execute
+        return [create_tool, record_tool, finish_tool]
+
+    def replace_compact_scope(self, scope: CompactScope, compacted_todo: ManagedTask) -> list[int]:
+        if self.active_user_task_id is None:
+            raise TaskManagerError("No active user task")
+        user_task = self._get_task(self.active_user_task_id)
+        if user_task is None:
+            raise TaskManagerError("Active user task is missing")
+        delete_ids = [todo.id for todo in scope.compact_todos if todo.id is not None]
+        compacted_todo.parent_id = user_task.id
+        self._tasks[compacted_todo.id] = compacted_todo
+        user_task.items = [
+            TaskItem(kind="task", ref_id=compacted_todo.id),
+            *[TaskItem(kind="task", ref_id=todo.id) for todo in scope.preserved_todos],
+        ]
+        user_task.touch()
+        for task_id in delete_ids:
+            self._tasks.pop(task_id, None)
+        return delete_ids
 
     def _require_active_todo(self) -> ManagedTask:
         if self.active_todo_id is None:

@@ -30,6 +30,8 @@ class ManagedTask(BaseModel):
     items: list[TaskItem] = Field(default_factory=list)
     result: str | None = None
     error: str | None = None
+    create_tool_call_id: str | None = None
+    end_tool_call_id: str | None = None
     created_at: float = Field(default_factory=time.time)
     updated_at: float = Field(default_factory=time.time)
 

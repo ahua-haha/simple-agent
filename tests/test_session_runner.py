@@ -6,7 +6,7 @@ import asyncio
 
 import pytest
 
-from pi.ai.types import AssistantMessage, TextContent, ToolResultMessage
+from pi.ai.types import AssistantMessage, TextContent, ToolCall, ToolResultMessage, UserMessage
 
 from simple_agent.db.db import Database
 from simple_agent.session.runner import SessionRunner
@@ -52,6 +52,16 @@ class FakeAgentProcess:
     def unsubscribe(self, callback):
         if callback in self.subscribers:
             self.subscribers.remove(callback)
+
+
+class FakeCompactAgentProcess(FakeAgentProcess):
+    async def run(self, system_prompt, messages, tools, user_prompt="", cancel_event=None, hooks=None):
+        self.calls.append({"tools": [tool.name for tool in tools], "messages": messages})
+        by_name = {tool.name: tool for tool in tools}
+        await by_name["create_compacted_todo"].execute("compact_create", {"description": "Compact summary"})
+        await by_name["record_compacted_tool_call"].execute("compact_record", {"tool_call_log_id": 1})
+        await by_name["finish_compacted_todo"].execute("compact_finish", {})
+        return []
 
 
 @pytest.mark.asyncio
@@ -221,7 +231,118 @@ async def test_turn_end_tool_call_threshold_persists_compact_and_sets_cancel(tmp
 
 
 @pytest.mark.asyncio
-async def test_handle_compact_is_todo(tmp_path):
+async def test_handle_compact_without_finished_todo_returns_running(tmp_path):
+    db = Database(str(tmp_path / "session.db"))
+    cancel_event = asyncio.Event()
+    runner = SessionRunner(
+        session_id="session_a",
+        db=db,
+        task_manager=TaskManager(db),
+        agent_process=FakeAgentProcess(),
+        cancel_event=cancel_event,
+    )
+    runner._task_manager.load(None)
+    user_task = runner._task_manager.create_user_task("Build feature")
+    runner._task_manager.create_todo("Still active", tool_call_id="call_active")
+    runner._active_user_task_id = user_task.id
+    runner._phase = "compact"
+    cancel_event.set()
+
+    await runner.handle_compact("Build feature")
+
+    metadata = db.get_runner_state_metadata("session_a")
+    assert runner._phase == "running"
+    assert metadata.phase == "running"
+    assert cancel_event.is_set() is False
+
+
+@pytest.mark.asyncio
+async def test_handle_compact_replaces_messages_and_tasks(tmp_path):
+    db = Database(str(tmp_path / "session.db"))
+    task_manager = TaskManager(db)
+    compact_agent = FakeCompactAgentProcess()
+    runner = SessionRunner(
+        session_id="session_a",
+        db=db,
+        task_manager=task_manager,
+        agent_process=compact_agent,
+        cancel_event=asyncio.Event(),
+    )
+    task_manager.load(None)
+    user_task = task_manager.create_user_task("Build feature")
+    todo = task_manager.create_todo("Inspect files", tool_call_id="call_create")
+    task_manager.finish_task("Done", tool_call_id="call_finish")
+    active = task_manager.create_todo("Continue work")
+    runner._active_user_task_id = user_task.id
+    runner._phase = "compact"
+    runner._messages = [
+        UserMessage(content=[TextContent(text="original request")], timestamp=1),
+        AssistantMessage(
+            role="assistant",
+            content=[
+                TextContent(text="old todo"),
+                ToolCall(id="call_create", name="create_todo", arguments={"title": todo.title}),
+            ],
+        ),
+        ToolResultMessage(
+            toolCallId="call_create",
+            toolName="create_todo",
+            content=[TextContent(text="created")],
+        ),
+        AssistantMessage(
+            role="assistant",
+            content=[
+                TextContent(text="finish todo"),
+                ToolCall(id="call_finish", name="finish_todo", arguments={"result": "Done"}),
+            ],
+        ),
+        ToolResultMessage(
+            toolCallId="call_finish",
+            toolName="finish_todo",
+            content=[TextContent(text="finished")],
+        ),
+        AssistantMessage(
+            role="assistant",
+            content=[
+                TextContent(text="active todo"),
+                ToolCall(id="call_active", name="create_todo", arguments={"title": active.title}),
+            ],
+        ),
+    ]
+    db.append_runner_messages("session_a", runner._messages)
+    db.insert_runner_tool_call(
+        session_id="session_a",
+        tool_call_id="tool_1",
+        tool_name="read",
+        params={},
+        result={"content": []},
+        status="success",
+        started_at=1.0,
+        finished_at=2.0,
+        error=None,
+    )
+
+    await runner.handle_compact("Build feature")
+
+    messages = db.list_runner_messages("session_a")
+    loaded_user_task = db.get_managed_task(user_task.id)
+    assert compact_agent.calls[0]["tools"] == [
+        "create_compacted_todo",
+        "record_compacted_tool_call",
+        "finish_compacted_todo",
+    ]
+    assert len(compact_agent.calls[0]["messages"]) == 4
+    assert compact_agent.calls[0]["messages"][0].content[1].id == "call_create"
+    assert compact_agent.calls[0]["messages"][-1].tool_call_id == "call_finish"
+    assert messages[0].content[0].text == "original request"
+    assert "Compact summary" in messages[1].content[0].text
+    assert "active todo" in messages[2].content[0].text
+    assert len(loaded_user_task.items) == 2
+    assert db.get_runner_state_metadata("session_a").phase == "running"
+
+
+@pytest.mark.asyncio
+async def test_session_runner_finds_assistant_message_for_tool_call_id(tmp_path):
     db = Database(str(tmp_path / "session.db"))
     runner = SessionRunner(
         session_id="session_a",
@@ -230,9 +351,48 @@ async def test_handle_compact_is_todo(tmp_path):
         agent_process=FakeAgentProcess(),
         cancel_event=asyncio.Event(),
     )
+    runner._messages = [
+        UserMessage(content=[TextContent(text="request")], timestamp=1),
+        AssistantMessage(role="assistant", content=[TextContent(text="thinking")]),
+        AssistantMessage(
+            role="assistant",
+            content=[
+                TextContent(text="create todo"),
+                ToolCall(id="call_create", name="create_todo", arguments={"title": "Inspect files"}),
+            ],
+        ),
+    ]
 
-    with pytest.raises(NotImplementedError, match="compact handling"):
-        await runner.handle_compact("Build feature")
+    assert runner.find_assistant_message_seq_for_tool_call("call_create") == 2
+
+
+@pytest.mark.asyncio
+async def test_session_runner_finds_tool_result_message_for_tool_call_id(tmp_path):
+    db = Database(str(tmp_path / "session.db"))
+    runner = SessionRunner(
+        session_id="session_a",
+        db=db,
+        task_manager=TaskManager(db),
+        agent_process=FakeAgentProcess(),
+        cancel_event=asyncio.Event(),
+    )
+    runner._messages = [
+        UserMessage(content=[TextContent(text="request")], timestamp=1),
+        AssistantMessage(
+            role="assistant",
+            content=[
+                TextContent(text="finish todo"),
+                ToolCall(id="call_finish", name="finish_todo", arguments={}),
+            ],
+        ),
+        ToolResultMessage(
+            toolCallId="call_finish",
+            toolName="finish_todo",
+            content=[TextContent(text="finished")],
+        ),
+    ]
+
+    assert runner.find_tool_result_message_seq_for_tool_call("call_finish") == 2
 
 
 @pytest.mark.asyncio

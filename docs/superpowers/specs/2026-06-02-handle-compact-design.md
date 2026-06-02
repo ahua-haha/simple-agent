@@ -11,35 +11,31 @@ one compacted todo task with a description and selected useful tool-call
 references. The runner then replaces the scoped todo tasks and corresponding
 runner messages in one transaction.
 
-## Message Boundary Tracking
+## Message Boundary Lookup
 
-Each todo task owns an inclusive message range:
+Each todo task stores the tool-call IDs that open and close its message range:
 
-- `message_start_seq: int | None`
-- `message_end_seq: int | None`
+- `create_tool_call_id: str | None`
+- `end_tool_call_id: str | None`
 
-Task tool calls cannot assign these values immediately because runner messages
-are persisted at `turn_end`. Instead, task tools record pending task-boundary
-events in memory:
+`create_tool_call_id` comes from the assistant `create_todo` call that created
+the todo. `end_tool_call_id` comes from the `finish_todo` or `error_todo` call
+that completed the todo.
 
-- `create_todo` records a pending `start` boundary for the created todo and its
-  tool call ID.
-- `finish_todo` records a pending `end` boundary for the finished todo and its
-  tool call ID.
-- `error_todo` records a pending `end` boundary for the errored todo and its
-  tool call ID.
+The task manager does not store runner-message sequence numbers and does not
+resolve message boundaries at `turn_end`. It only mutates in-memory task data.
 
-At `turn_end`, the runner appends the assistant message and tool-result
-messages. After those messages receive DB sequence numbers, the runner resolves
-pending boundaries:
+When compaction starts, `SessionRunner` owns the message list and derives the
+message range by scanning assistant messages for `ToolCall` content:
 
-- start boundary: set `message_start_seq` to the assistant message seq that
-  contains the task tool call
-- end boundary: set `message_end_seq` to the tool-result message seq for the
-  finishing or erroring task tool call
+- compact start: assistant message containing the first compacted todo's
+  `create_tool_call_id`
+- compact end: tool-result message with the latest compacted todo's
+  `end_tool_call_id`
+- preserved tail: messages after the compact end
 
-This makes task/message ownership explicit and avoids later inference from
-message content.
+This keeps message sequencing in the runner, where messages are stored, and
+keeps the task manager focused on task state.
 
 ## Compact Scope
 
@@ -95,10 +91,13 @@ database transaction.
 
 Messages use tail replacement:
 
-1. Compute `start_seq = start_todo.message_start_seq`.
-2. Delete all runner messages where `seq >= start_seq`.
-3. Insert compact message or messages starting at `start_seq`.
-4. Insert preserved active/uncompacted messages after the compact messages.
+1. Compute `start_seq` by finding the assistant message with the first compact
+   todo's `create_tool_call_id`.
+2. Compute `end_seq` by finding the tool-result message with the latest compact
+   todo's `end_tool_call_id`.
+3. Delete all runner messages where `seq >= start_seq`.
+4. Insert compact message or messages starting at `start_seq`.
+5. Insert messages after `end_seq` after the compact messages.
 
 Tasks use scoped replacement under the existing user task:
 
@@ -124,8 +123,10 @@ The runner must not update in-memory data before the DB transaction commits.
 
 ## Error Handling
 
-If a todo in the compact scope lacks `message_start_seq` or `message_end_seq`,
-compact fails clearly and the runner error path persists the failure.
+If the first compact todo lacks `create_tool_call_id`, if the latest compact
+todo lacks `end_tool_call_id`, or if the runner cannot find the corresponding
+assistant/tool-result message, compact fails clearly and the runner error path
+persists the failure.
 
 If DB replacement fails, the transaction rolls back and in-memory runner/task
 state remains unchanged.
@@ -137,7 +138,7 @@ todo, compact fails clearly.
 
 Focused tests should cover:
 
-- task tool calls record todo `message_start_seq` and `message_end_seq`
+- task tool calls store todo `create_tool_call_id` and `end_tool_call_id`
 - compact scope selects first todo through latest finished todo
 - active todo after latest finished todo is preserved
 - compact agent receives only compact task tools
@@ -150,5 +151,4 @@ Focused tests should cover:
 
 This design does not add coding tools to the compacting agent.
 
-This design does not use inference from message content to discover task
-boundaries.
+This design does not store message sequence boundaries on task records.

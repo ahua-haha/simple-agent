@@ -42,6 +42,22 @@ def test_runner_messages_append_and_load_in_order(tmp_path):
     assert [m.content[0].text for m in messages] == ["one", "two"]
 
 
+def test_replace_runner_messages_from_deletes_tail_and_inserts_dense_seq(tmp_path):
+    db = Database(str(tmp_path / "session.db"))
+    old = [
+        AssistantMessage(role="assistant", content=[TextContent(text="zero")]),
+        AssistantMessage(role="assistant", content=[TextContent(text="one")]),
+        AssistantMessage(role="assistant", content=[TextContent(text="two")]),
+    ]
+    new = [AssistantMessage(role="assistant", content=[TextContent(text="compact")])]
+
+    db.append_runner_messages("session_a", old)
+    db.replace_runner_messages_from("session_a", 1, new)
+
+    messages = db.list_runner_messages("session_a")
+    assert [m.content[0].text for m in messages] == ["zero", "compact"]
+
+
 def test_next_managed_task_id_uses_highest_existing_id(tmp_path):
     db = Database(str(tmp_path / "session.db"))
 

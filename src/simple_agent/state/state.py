@@ -58,6 +58,8 @@ class ManagedTaskRecord(SQLModel, table=True):
     items: str | None = None
     result: str | None = None
     error: str | None = None
+    create_tool_call_id: str | None = Field(default=None, index=True)
+    end_tool_call_id: str | None = Field(default=None, index=True)
     created_at: float = Field(default_factory=time.time)
     updated_at: float = Field(default_factory=time.time)
 
@@ -143,6 +145,8 @@ def managed_task_to_record(task: ManagedTask) -> ManagedTaskRecord:
         items=_task_item_adapter.dump_json(task.items).decode("utf-8"),
         result=task.result,
         error=task.error,
+        create_tool_call_id=task.create_tool_call_id,
+        end_tool_call_id=task.end_tool_call_id,
         created_at=task.created_at,
         updated_at=task.updated_at,
     )
@@ -158,6 +162,8 @@ def managed_task_from_record(record: ManagedTaskRecord) -> ManagedTask:
         items=_task_item_adapter.validate_json(record.items or "[]"),
         result=record.result,
         error=record.error,
+        create_tool_call_id=record.create_tool_call_id,
+        end_tool_call_id=record.end_tool_call_id,
         created_at=record.created_at,
         updated_at=record.updated_at,
     )

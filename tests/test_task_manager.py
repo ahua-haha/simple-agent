@@ -69,6 +69,22 @@ def test_managed_task_roundtrip_preserves_items():
     ]
 
 
+def test_managed_task_roundtrip_preserves_create_tool_call_id():
+    db = _make_db()
+    task = ManagedTask(
+        kind="todo",
+        title="Inspect files",
+        create_tool_call_id="call_create",
+        end_tool_call_id="call_finish",
+    )
+
+    task.id = db.upsert_managed_task(task)
+    loaded = db.get_managed_task(task.id)
+
+    assert loaded.create_tool_call_id == "call_create"
+    assert loaded.end_tool_call_id == "call_finish"
+
+
 def test_create_user_task_sets_active_user_task():
     db = _make_db()
     manager = TaskManager(db)
@@ -121,11 +137,12 @@ def test_finish_todo_marks_done_and_clears_active_todo():
     manager.create_user_task("Build feature")
     todo = manager.create_todo("Inspect files")
 
-    finished = manager.finish_task("Found app.py")
+    finished = manager.finish_task("Found app.py", tool_call_id="call_finish")
 
     assert finished.id == todo.id
     assert finished.status == "done"
     assert finished.result == "Found app.py"
+    assert finished.end_tool_call_id == "call_finish"
     assert manager.active_todo_id is None
 
 
@@ -137,6 +154,31 @@ def test_finish_todo_rejects_missing_active_todo():
 
     with pytest.raises(TaskManagerError, match="No active todo"):
         manager.finish_task()
+
+
+def test_create_todo_stores_create_tool_call_id():
+    db = _make_db()
+    manager = TaskManager(db)
+    manager.load(None)
+    manager.create_user_task("Build feature")
+
+    todo = manager.create_todo("Inspect files", tool_call_id="call_create")
+
+    assert todo.create_tool_call_id == "call_create"
+
+
+def test_error_todo_stores_end_tool_call_id():
+    db = _make_db()
+    manager = TaskManager(db)
+    manager.load(None)
+    manager.create_user_task("Build feature")
+    todo = manager.create_todo("Inspect files")
+
+    errored = manager.error_task("failed", tool_call_id="call_error")
+
+    assert errored.id == todo.id
+    assert errored.status == "error"
+    assert errored.end_tool_call_id == "call_error"
 
 
 def test_record_tool_call_without_active_todo_attaches_to_user_task():
@@ -188,6 +230,52 @@ def test_mixed_user_task_order_is_preserved():
         ("task", todo.id),
         ("tool_call", 2),
     ]
+
+
+def test_compact_scope_selects_first_todo_through_latest_finished_todo():
+    db = _make_db()
+    manager = TaskManager(db)
+    manager.load(None)
+    manager.create_user_task("Build feature")
+    first = manager.create_todo("One")
+    manager.finish_task("done")
+    second = manager.create_todo("Two")
+    manager.finish_task("done")
+    manager.create_todo("Three")
+
+    scope = manager.compact_scope()
+
+    assert [task.id for task in scope.compact_todos] == [first.id, second.id]
+    assert [task.title for task in scope.preserved_todos] == ["Three"]
+
+
+def test_compact_scope_returns_none_without_finished_todo():
+    db = _make_db()
+    manager = TaskManager(db)
+    manager.load(None)
+    manager.create_user_task("Build feature")
+    manager.create_todo("Still active")
+
+    assert manager.compact_scope() is None
+
+
+def test_compact_tools_create_one_finished_compacted_todo():
+    db = _make_db()
+    manager = TaskManager(db)
+    manager.load(None)
+    manager.create_user_task("Build feature")
+    manager.begin_compact_buffer()
+
+    compacted = manager.create_compacted_todo("Summary")
+    manager.record_compacted_tool_call(5)
+    manager.finish_compacted_todo()
+
+    result = manager.consume_compact_buffer()
+
+    assert result.id == compacted.id
+    assert result.status == "done"
+    assert result.result == "Summary"
+    assert [(item.kind, item.ref_id) for item in result.items] == [("tool_call", 5)]
 
 
 def test_load_loads_children_and_active_todo():

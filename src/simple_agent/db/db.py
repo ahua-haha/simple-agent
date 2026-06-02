@@ -148,6 +148,13 @@ class Database:
         record = session.exec(select(ManagedTaskRecord).order_by(ManagedTaskRecord.id.desc())).first()
         return (record.id + 1) if record and record.id is not None else 1
 
+    @standalone_or_compose
+    def delete_managed_tasks(self, task_ids: list[int], *, session: Session | None = None) -> None:
+        for task_id in task_ids:
+            record = session.get(ManagedTaskRecord, task_id)
+            if record is not None:
+                session.delete(record)
+
     # ------------------------------------------------------------------
     # Runner state operations
     # ------------------------------------------------------------------
@@ -218,6 +225,39 @@ class Database:
                 timestamp_ms=getattr(message, "timestamp", None),
             )
             session.add(record)
+            seq += 1
+
+    @standalone_or_compose
+    def replace_runner_messages_from(
+        self,
+        session_id: str,
+        start_seq: int,
+        messages: list[AgentMessage],
+        *,
+        session: Session | None = None,
+    ) -> None:
+        records = list(
+            session.exec(
+                select(RunnerMessageRecord)
+                .where(RunnerMessageRecord.session_id == session_id)
+                .where(RunnerMessageRecord.seq >= start_seq)
+            ).all()
+        )
+        for record in records:
+            session.delete(record)
+        session.flush()
+
+        seq = start_seq
+        for message in messages:
+            session.add(
+                RunnerMessageRecord(
+                    session_id=session_id,
+                    seq=seq,
+                    role=message.role,
+                    content_json=agent_message_to_json(message),
+                    timestamp_ms=getattr(message, "timestamp", None),
+                )
+            )
             seq += 1
 
     @standalone_or_compose
