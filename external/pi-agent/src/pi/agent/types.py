@@ -91,6 +91,7 @@ class AgentLoopConfig:
     get_api_key: Callable[[str], Awaitable[str | None] | str | None] | None = None
     get_steering_messages: Callable[[], Awaitable[list[AgentMessage]]] | None = None
     get_follow_up_messages: Callable[[], Awaitable[list[AgentMessage]]] | None = None
+    on_event: Callable[[Any], None] | None = None
 
 
 # --- Agent Events ---

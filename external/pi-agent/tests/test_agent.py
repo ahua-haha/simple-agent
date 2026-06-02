@@ -1,5 +1,7 @@
 """Tests for the Agent class."""
 
+import pytest
+
 from pi.agent.agent import Agent
 
 
@@ -57,3 +59,48 @@ def test_agent_subscribe():
     unsub()
     # No error calling unsub twice
     unsub()
+
+
+@pytest.mark.asyncio
+async def test_agent_loop_runs_on_event_hook_synchronously():
+    import asyncio
+
+    from pi.agent.loop import agent_loop
+    from pi.agent.types import AgentContext, AgentLoopConfig
+    from pi.ai.events import AssistantMessageEventStream
+    from pi.ai.types import AssistantMessage, DoneEvent, Model, TextContent, UserMessage
+
+    assistant_message = AssistantMessage(content=[TextContent(text="done")])
+    hook_events = []
+    yielded_events = []
+
+    def stream_fn(model, context, options):
+        stream = AssistantMessageEventStream()
+        stream.push(DoneEvent(reason="stop", message=assistant_message))
+        return stream
+
+    config = AgentLoopConfig(
+        model=Model(
+            id="fake",
+            name="Fake",
+            api="fake-api",
+            provider="fake-provider",
+            baseUrl="",
+        ),
+        convert_to_llm=lambda messages: messages,
+        on_event=lambda event: hook_events.append(event),
+    )
+    messages = []
+    stream = agent_loop(
+        [UserMessage(content="hello", timestamp=1)],
+        AgentContext(messages=messages),
+        config,
+        cancel_event=asyncio.Event(),
+        stream_fn=stream_fn,
+    )
+
+    async for event in stream:
+        yielded_events.append(event)
+
+    assert hook_events == yielded_events
+    assert messages == []

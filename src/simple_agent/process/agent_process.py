@@ -9,13 +9,16 @@ from typing import Callable
 
 from pi.agent import AgentTool
 from pi.agent.loop import agent_loop
-from pi.agent.types import AgentContext, AgentEndEvent, AgentLoopConfig, AgentMessage
+from pi.agent.types import AgentContext, AgentEndEvent, AgentEvent, AgentLoopConfig, AgentMessage
 from pi.ai.types import UserMessage, TextContent
 
 from simple_agent.log import logged
 from simple_agent.models import register_custom_models, get_api_key
 
 _log = logging.getLogger(__name__)
+
+AgentProcessHook = Callable[[AgentEvent], None]
+AgentProcessHooks = dict[str, list[AgentProcessHook]]
 
 
 class AgentProcess:
@@ -31,6 +34,7 @@ class AgentProcess:
         self._model = model
         self._api_key = get_api_key
         self._listeners: list[Callable] = []
+        self._hooks: AgentProcessHooks = {}
 
     @logged(_log)
     async def run(
@@ -40,6 +44,7 @@ class AgentProcess:
         tools: list[AgentTool],
         user_prompt: str = "",
         cancel_event: asyncio.Event | None = None,
+        hooks: AgentProcessHooks | None = None,
     ) -> list[AgentMessage]:
         """Execute a single agent run and return the new messages."""
         now_ms = int(time.time() * 1000)
@@ -52,10 +57,16 @@ class AgentProcess:
             messages=list(messages),
             tools=tools,
         )
+        new_messages: list[AgentMessage] = []
+
+        def on_loop_event(event: AgentEvent) -> None:
+            self._run_hooks(event, hooks)
+
         loop_config = AgentLoopConfig(
             model=self._model,
             convert_to_llm=lambda msgs: [m for m in msgs if m.role in ("user", "assistant", "tool_result")],
             get_api_key=self._api_key,
+            on_event=on_loop_event,
         )
 
         stream = agent_loop(
@@ -65,7 +76,6 @@ class AgentProcess:
             cancel_event=cancel_event,
         )
 
-        new_messages: list[AgentMessage] = []
         async for event in stream:
             if isinstance(event, AgentEndEvent):
                 new_messages = event.messages
@@ -84,6 +94,17 @@ class AgentProcess:
     def unsubscribe(self, callback: Callable) -> None:
         if callback in self._listeners:
             self._listeners.remove(callback)
+
+    def add_hook(self, event_type: str, hook: AgentProcessHook) -> None:
+        self._hooks.setdefault(event_type, []).append(hook)
+
+    def remove_hook(self, event_type: str, hook: AgentProcessHook) -> None:
+        if event_type in self._hooks and hook in self._hooks[event_type]:
+            self._hooks[event_type].remove(hook)
+
+    def _run_hooks(self, event: AgentEvent, hooks: AgentProcessHooks | None = None) -> None:
+        for hook in [*self._hooks.get(event.type, []), *((hooks or {}).get(event.type, []))]:
+            hook(event)
 
     def _emit(self, event) -> None:
         for listener in self._listeners:

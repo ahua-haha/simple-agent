@@ -14,6 +14,7 @@ if TYPE_CHECKING:
     from simple_agent.db.db import Database
     from simple_agent.process.agent_process import AgentProcess
     from simple_agent.task_manager import TaskManager
+    from pi.agent import AgentEvent
     from pi.agent.types import AgentMessage
 
 _log = logging.getLogger(__name__)
@@ -179,12 +180,33 @@ class SessionRunner:
         self.checkpoint(status="running")
 
     async def handle_running(self, user_input: str) -> None:
+        def stop_if_runner_left_running(event: AgentEvent) -> None:
+            if self._phase != "running":
+                self._cancel_event.set()
+
+        cancel_hooks = {
+            event_type: [stop_if_runner_left_running]
+            for event_type in (
+                "agent_start",
+                "agent_end",
+                "turn_start",
+                "turn_end",
+                "message_start",
+                "message_update",
+                "message_end",
+                "tool_execution_start",
+                "tool_execution_update",
+                "tool_execution_end",
+            )
+        }
+
         new_messages = await self._agent_process.run(
             system_prompt=SYSTEM_PROMPT,
             messages=list(self._messages),
             tools=self._create_tools(),
             user_prompt=user_input,
             cancel_event=self._cancel_event,
+            hooks=cancel_hooks,
         )
         self._db.append_runner_messages(self._session_id, new_messages)
         self._messages.extend(new_messages)

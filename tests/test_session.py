@@ -123,7 +123,7 @@ async def test_session_run_creates_queue_and_runs_agent_once(tmp_path, monkeypat
 
     calls = []
 
-    async def fake_run(self, system_prompt, messages, tools, user_prompt="", cancel_event=None):
+    async def fake_run(self, system_prompt, messages, tools, user_prompt="", cancel_event=None, hooks=None):
         calls.append(
             {
                 "system_prompt": system_prompt,
@@ -131,6 +131,7 @@ async def test_session_run_creates_queue_and_runs_agent_once(tmp_path, monkeypat
                 "tools": [tool.name for tool in tools],
                 "user_prompt": user_prompt,
                 "cancel_event": cancel_event,
+                "hooks": hooks,
             }
         )
         from pi.ai.types import AssistantMessage, TextContent
@@ -149,3 +150,5 @@ async def test_session_run_creates_queue_and_runs_agent_once(tmp_path, monkeypat
     assert "finish_todo" in calls[0]["tools"]
     assert "error_todo" in calls[0]["tools"]
     assert calls[0]["cancel_event"] is session._runner._cancel_event
+    assert "agent_start" in calls[0]["hooks"]
+    assert "message_update" in calls[0]["hooks"]

@@ -18,7 +18,7 @@ class FakeAgentProcess:
         self.calls = []
         self.subscribers = []
 
-    async def run(self, system_prompt, messages, tools, user_prompt="", cancel_event=None):
+    async def run(self, system_prompt, messages, tools, user_prompt="", cancel_event=None, hooks=None):
         self.calls.append(
             {
                 "system_prompt": system_prompt,
@@ -26,6 +26,7 @@ class FakeAgentProcess:
                 "tools": [tool.name for tool in tools],
                 "user_prompt": user_prompt,
                 "cancel_event": cancel_event,
+                "hooks": hooks,
             }
         )
         return [AssistantMessage(role="assistant", content=[TextContent(text="done")])]
@@ -59,8 +60,12 @@ async def test_session_runner_creates_task_runs_agent_and_persists_messages(tmp_
     assert result.status == "done"
     assert len(agent_process.calls) == 1
     assert agent_process.calls[0]["messages"] == []
+    assert agent_process.calls[0]["messages"] is not runner._messages
     assert agent_process.calls[0]["user_prompt"] == "Build feature"
     assert agent_process.calls[0]["cancel_event"] is cancel_event
+    assert "agent_start" in agent_process.calls[0]["hooks"]
+    assert "message_update" in agent_process.calls[0]["hooks"]
+    assert "tool_execution_end" in agent_process.calls[0]["hooks"]
     assert "create_todo" in agent_process.calls[0]["tools"]
     assert "finish_todo" in agent_process.calls[0]["tools"]
     assert "error_todo" in agent_process.calls[0]["tools"]
@@ -73,7 +78,7 @@ async def test_session_runner_creates_task_runs_agent_and_persists_messages(tmp_
 
 
 class FailingAgentProcess:
-    async def run(self, system_prompt, messages, tools, user_prompt="", cancel_event=None):
+    async def run(self, system_prompt, messages, tools, user_prompt="", cancel_event=None, hooks=None):
         raise RuntimeError("agent failed")
 
     def subscribe(self, callback):
