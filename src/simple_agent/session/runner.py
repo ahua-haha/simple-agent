@@ -85,10 +85,11 @@ class SessionRunner:
         if metadata is None:
             self._phase = "idle"
             self._active_user_task_id = None
+            self._task_manager.load(None)
             return
         self._phase = metadata.phase
         self._active_user_task_id = metadata.active_user_task_id
-        self._task_manager.active_user_task_id = metadata.active_user_task_id
+        self._task_manager.load(metadata.active_user_task_id)
 
     def checkpoint(self, *, status: str | None = None, last_error: str | None = None) -> None:
         self._db.upsert_runner_state_metadata(
@@ -177,6 +178,7 @@ class SessionRunner:
         user_task = self._task_manager.create_user_task(user_input)
         self._active_user_task_id = user_task.id
         self._phase = "running"
+        self._task_manager.save()
         self.checkpoint(status="running")
 
     async def handle_running(self, user_input: str) -> None:
@@ -184,6 +186,7 @@ class SessionRunner:
             messages = [event.message, *event.tool_results]
             self._db.append_runner_messages(self._session_id, messages)
             self._messages.extend(messages)
+            self._task_manager.save()
             self.checkpoint(status=self._phase)
 
         hooks = {
@@ -200,6 +203,7 @@ class SessionRunner:
         )
         if self._task_manager.active_todo_id is None:
             self._task_manager.finish_user_task()
+            self._task_manager.save()
         self._phase = "done"
         self.checkpoint(status="done")
 

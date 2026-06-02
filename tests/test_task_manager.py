@@ -72,6 +72,7 @@ def test_managed_task_roundtrip_preserves_items():
 def test_create_user_task_sets_active_user_task():
     db = _make_db()
     manager = TaskManager(db)
+    manager.load(None)
 
     user_task = manager.create_user_task("Build feature")
 
@@ -79,18 +80,24 @@ def test_create_user_task_sets_active_user_task():
     assert user_task.kind == "user_task"
     assert user_task.title == "Build feature"
     assert manager.active_user_task_id == user_task.id
+    assert db.get_managed_task(user_task.id) is None
 
 
 def test_create_todo_appends_task_item_to_user_task():
     db = _make_db()
     manager = TaskManager(db)
+    manager.load(None)
     user_task = manager.create_user_task("Build feature")
 
     todo = manager.create_todo("Inspect files")
-    loaded_user_task = db.get_managed_task(user_task.id)
 
     assert todo.parent_id == user_task.id
     assert manager.active_todo_id == todo.id
+    assert db.get_managed_task(user_task.id) is None
+
+    manager.save()
+    loaded_user_task = db.get_managed_task(user_task.id)
+
     assert [(item.kind, item.ref_id) for item in loaded_user_task.items] == [
         ("task", todo.id),
     ]
@@ -99,6 +106,7 @@ def test_create_todo_appends_task_item_to_user_task():
 def test_create_todo_rejects_existing_active_todo():
     db = _make_db()
     manager = TaskManager(db)
+    manager.load(None)
     manager.create_user_task("Build feature")
     manager.create_todo("Inspect files")
 
@@ -109,10 +117,11 @@ def test_create_todo_rejects_existing_active_todo():
 def test_finish_todo_marks_done_and_clears_active_todo():
     db = _make_db()
     manager = TaskManager(db)
+    manager.load(None)
     manager.create_user_task("Build feature")
     todo = manager.create_todo("Inspect files")
 
-    finished = manager.finish_todo("Found app.py")
+    finished = manager.finish_task("Found app.py")
 
     assert finished.id == todo.id
     assert finished.status == "done"
@@ -123,18 +132,21 @@ def test_finish_todo_marks_done_and_clears_active_todo():
 def test_finish_todo_rejects_missing_active_todo():
     db = _make_db()
     manager = TaskManager(db)
+    manager.load(None)
     manager.create_user_task("Build feature")
 
     with pytest.raises(TaskManagerError, match="No active todo"):
-        manager.finish_todo()
+        manager.finish_task()
 
 
 def test_record_tool_call_without_active_todo_attaches_to_user_task():
     db = _make_db()
     manager = TaskManager(db)
+    manager.load(None)
     user_task = manager.create_user_task("Build feature")
 
     manager.record_tool_call(7)
+    manager.save()
     loaded_user_task = db.get_managed_task(user_task.id)
 
     assert [(item.kind, item.ref_id) for item in loaded_user_task.items] == [
@@ -145,10 +157,12 @@ def test_record_tool_call_without_active_todo_attaches_to_user_task():
 def test_record_tool_call_with_active_todo_attaches_to_todo():
     db = _make_db()
     manager = TaskManager(db)
+    manager.load(None)
     manager.create_user_task("Build feature")
     todo = manager.create_todo("Inspect files")
 
     manager.record_tool_call(8)
+    manager.save()
     loaded_todo = db.get_managed_task(todo.id)
 
     assert [(item.kind, item.ref_id) for item in loaded_todo.items] == [
@@ -159,13 +173,15 @@ def test_record_tool_call_with_active_todo_attaches_to_todo():
 def test_mixed_user_task_order_is_preserved():
     db = _make_db()
     manager = TaskManager(db)
+    manager.load(None)
     user_task = manager.create_user_task("Build feature")
 
     manager.record_tool_call(1)
     todo = manager.create_todo("Inspect files")
-    manager.finish_todo()
+    manager.finish_task()
     manager.record_tool_call(2)
 
+    manager.save()
     loaded_user_task = db.get_managed_task(user_task.id)
     assert [(item.kind, item.ref_id) for item in loaded_user_task.items] == [
         ("tool_call", 1),
@@ -174,61 +190,24 @@ def test_mixed_user_task_order_is_preserved():
     ]
 
 
-def test_compact_items_replaces_visible_tasks_with_aggregate_task():
+def test_load_loads_children_and_active_todo():
     db = _make_db()
     manager = TaskManager(db)
-    user_task = manager.create_user_task("Build feature")
-    first = manager.create_todo("Inspect files")
-    manager.record_tool_call(1)
-    manager.finish_todo("Inspected files")
-    second = manager.create_todo("Edit files")
-    manager.record_tool_call(2)
-    manager.finish_todo("Edited files")
-
-    aggregate = manager.compact_items(
-        parent_task_id=user_task.id,
-        item_refs=[TaskItem(kind="task", ref_id=first.id), TaskItem(kind="task", ref_id=second.id)],
-        title="Inspect and edit files",
-        result="Inspected files and edited them.",
-        items=[TaskItem(kind="tool_call", ref_id=2)],
-    )
-    loaded_user_task = db.get_managed_task(user_task.id)
-
-    assert aggregate.kind == "aggregate"
-    assert aggregate.parent_id == user_task.id
-    assert aggregate.result == "Inspected files and edited them."
-    assert [(item.kind, item.ref_id) for item in aggregate.items] == [("tool_call", 2)]
-    assert [(item.kind, item.ref_id) for item in loaded_user_task.items] == [("task", aggregate.id)]
-
-
-def test_compact_items_rejects_active_todo():
-    db = _make_db()
-    manager = TaskManager(db)
+    manager.load(None)
     user_task = manager.create_user_task("Build feature")
     todo = manager.create_todo("Inspect files")
+    manager.record_tool_call(9)
+    manager.save()
 
-    with pytest.raises(TaskManagerError, match="active"):
-        manager.compact_items(
-            parent_task_id=user_task.id,
-            item_refs=[TaskItem(kind="task", ref_id=todo.id)],
-            title="Aggregate",
-            result="Nope",
-            items=[],
-        )
+    loaded_manager = TaskManager(db)
+    loaded_manager.load(user_task.id)
 
+    assert loaded_manager.active_user_task_id == user_task.id
+    assert loaded_manager.active_todo_id == todo.id
 
-def test_compact_items_rejects_duplicate_refs():
-    db = _make_db()
-    manager = TaskManager(db)
-    user_task = manager.create_user_task("Build feature")
-    todo = manager.create_todo("Inspect files")
-    manager.finish_todo()
+    loaded_manager.finish_task("Done")
+    loaded_manager.save()
 
-    with pytest.raises(TaskManagerError, match="duplicate"):
-        manager.compact_items(
-            parent_task_id=user_task.id,
-            item_refs=[TaskItem(kind="task", ref_id=todo.id), TaskItem(kind="task", ref_id=todo.id)],
-            title="Aggregate",
-            result="Nope",
-            items=[],
-        )
+    loaded_todo = db.get_managed_task(todo.id)
+    assert loaded_todo.status == "done"
+    assert loaded_todo.items[0].ref_id == 9

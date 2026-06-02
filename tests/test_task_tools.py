@@ -36,6 +36,7 @@ def _make_runner(db: Database, manager: TaskManager) -> SessionRunner:
 def test_create_todo_tool_creates_active_todo():
     db = _make_db()
     manager = TaskManager(db)
+    manager.load(None)
     manager.create_user_task("Build feature")
     runner = _make_runner(db, manager)
     tool = runner.wrap_tool(manager.create_create_todo_tool())
@@ -52,6 +53,7 @@ def test_create_todo_tool_creates_active_todo():
 def test_finish_todo_tool_finishes_active_todo():
     db = _make_db()
     manager = TaskManager(db)
+    manager.load(None)
     manager.create_user_task("Build feature")
     todo = manager.create_todo("Inspect files")
     runner = _make_runner(db, manager)
@@ -61,6 +63,7 @@ def test_finish_todo_tool_finishes_active_todo():
         return await tool.execute("call_1", {"result": "Inspected files"})
 
     asyncio.run(run())
+    manager.save()
     loaded = db.get_managed_task(todo.id)
 
     assert loaded.status == "done"
@@ -71,6 +74,7 @@ def test_finish_todo_tool_finishes_active_todo():
 def test_normal_tool_call_records_under_active_todo():
     db = _make_db()
     manager = TaskManager(db)
+    manager.load(None)
     manager.create_user_task("Build feature")
     todo = manager.create_todo("Inspect files")
     runner = _make_runner(db, manager)
@@ -93,6 +97,7 @@ def test_normal_tool_call_records_under_active_todo():
         return await wrapped.execute("call_1", {})
 
     asyncio.run(run())
+    manager.save()
     loaded_todo = db.get_managed_task(todo.id)
 
     assert len(loaded_todo.items) == 1

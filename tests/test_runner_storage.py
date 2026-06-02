@@ -5,6 +5,7 @@ from __future__ import annotations
 from pi.ai.types import AssistantMessage, TextContent
 
 from simple_agent.db.db import Database
+from simple_agent.task_manager.models import ManagedTask
 
 
 def test_runner_state_metadata_roundtrip(tmp_path):
@@ -39,6 +40,18 @@ def test_runner_messages_append_and_load_in_order(tmp_path):
     messages = db.list_runner_messages("session_a")
 
     assert [m.content[0].text for m in messages] == ["one", "two"]
+
+
+def test_next_managed_task_id_uses_highest_existing_id(tmp_path):
+    db = Database(str(tmp_path / "session.db"))
+
+    assert db.next_managed_task_id() == 1
+
+    task = ManagedTask(kind="user_task", title="Build feature")
+    task.id = db.upsert_managed_task(task)
+
+    assert task.id == 1
+    assert db.next_managed_task_id() == 2
 
 
 def test_runner_tool_call_roundtrip_success(tmp_path):

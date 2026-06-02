@@ -139,6 +139,11 @@ class Database:
             session.expunge(record)
         return [managed_task_from_record(record) for record in records]
 
+    @standalone_or_compose
+    def next_managed_task_id(self, *, session: Session | None = None) -> int:
+        record = session.exec(select(ManagedTaskRecord).order_by(ManagedTaskRecord.id.desc())).first()
+        return (record.id + 1) if record and record.id is not None else 1
+
     # ------------------------------------------------------------------
     # Runner state operations
     # ------------------------------------------------------------------

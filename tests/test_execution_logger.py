@@ -24,6 +24,7 @@ class _FakeAgentProcess:
 
 def _make_runner(db: Database) -> SessionRunner:
     manager = TaskManager(db)
+    manager.load(None)
     manager.create_user_task("Build feature")
     return SessionRunner(
         session_id="session_a",

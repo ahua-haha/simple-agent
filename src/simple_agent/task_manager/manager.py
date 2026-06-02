@@ -24,12 +24,35 @@ class TaskManager:
         self._db = db
         self.active_user_task_id: int | None = None
         self.active_todo_id: int | None = None
+        self._tasks: dict[int, ManagedTask] = {}
+        self._next_task_id: int | None = None
+
+    def load(self, active_user_task_id: int | None) -> None:
+        self._tasks = {}
+        self.active_user_task_id = active_user_task_id
+        self.active_todo_id = None
+        self._next_task_id = self._db.next_managed_task_id()
+        if active_user_task_id is None:
+            return
+        user_task = self._load_task_tree(active_user_task_id)
+        if user_task is None:
+            raise TaskManagerError("Active user task is missing")
+        for task in self._tasks.values():
+            if task.kind == "todo" and task.status == "active":
+                self.active_todo_id = task.id
+                break
+
+    def save(self) -> None:
+        for task_id in sorted(self._tasks):
+            task = self._tasks[task_id]
+            self._db.upsert_managed_task(task)
 
     def create_user_task(self, input: str) -> ManagedTask:
         if self.active_user_task_id is not None:
             raise TaskManagerError("Cannot create a second active user task")
         task = ManagedTask(kind="user_task", title=input)
-        task.id = self._db.upsert_managed_task(task)
+        task.id = self._allocate_task_id()
+        self._tasks[task.id] = task
         self.active_user_task_id = task.id
         return task
 
@@ -67,7 +90,7 @@ class TaskManager:
         )
 
         async def execute(tool_call_id, params, cancel_event=None, on_update=None):
-            todo = self.finish_todo(params.get("result"))
+            todo = self.finish_task(params.get("result"))
             return AgentToolResult(content=[TextContent(text=f"finished todo {todo.id}")])
 
         tool.execute = execute
@@ -87,133 +110,101 @@ class TaskManager:
         )
 
         async def execute(tool_call_id, params, cancel_event=None, on_update=None):
-            todo = self.error_todo(params["error"])
+            todo = self.error_task(params["error"])
             return AgentToolResult(content=[TextContent(text=f"errored todo {todo.id}")])
 
         tool.execute = execute
         return tool
 
     def create_todo(self, title: str) -> ManagedTask:
-        user_task = self._require_user_task()
+        if self.active_user_task_id is None:
+            raise TaskManagerError("No active user task")
+        user_task = self._get_task(self.active_user_task_id)
+        if user_task is None:
+            raise TaskManagerError("Active user task is missing")
         if self.active_todo_id is not None:
             raise TaskManagerError("Cannot create todo while another active todo exists")
 
         todo = ManagedTask(kind="todo", title=title, parent_id=user_task.id)
-        todo.id = self._db.upsert_managed_task(todo)
+        todo.id = self._allocate_task_id()
+        self._tasks[todo.id] = todo
 
         user_task.items.append(TaskItem(kind="task", ref_id=todo.id))
         user_task.touch()
-        self._db.upsert_managed_task(user_task)
         self.active_todo_id = todo.id
         return todo
 
-    def finish_todo(self, result: str | None = None) -> ManagedTask:
+    def finish_task(self, result: str | None = None) -> ManagedTask:
         todo = self._require_active_todo()
         todo.status = "done"
         todo.result = result
         todo.touch()
-        self._db.upsert_managed_task(todo)
         self.active_todo_id = None
         return todo
 
-    def error_todo(self, error: str) -> ManagedTask:
+    def error_task(self, error: str) -> ManagedTask:
         todo = self._require_active_todo()
         todo.status = "error"
         todo.error = error
         todo.touch()
-        self._db.upsert_managed_task(todo)
         self.active_todo_id = None
         return todo
 
-    def record_tool_call(self, tool_call_id: int) -> None:
-        target = self._require_active_todo() if self.active_todo_id is not None else self._require_user_task()
+    def record_tool_call(self, tool_call_id: int, task_id: int | None = None) -> None:
+        if task_id is not None:
+            target = self._get_task(task_id)
+            if target is None:
+                raise TaskManagerError("Cannot record tool call for missing task")
+        else:
+            if self.active_todo_id is not None:
+                target = self._require_active_todo()
+            elif self.active_user_task_id is not None:
+                target = self._get_task(self.active_user_task_id)
+                if target is None:
+                    raise TaskManagerError("Active user task is missing")
+            else:
+                raise TaskManagerError("No active user task")
         target.items.append(TaskItem(kind="tool_call", ref_id=tool_call_id))
         target.touch()
-        self._db.upsert_managed_task(target)
-
-    def compact_items(
-        self,
-        parent_task_id: int,
-        item_refs: list[TaskItem],
-        title: str,
-        result: str,
-        items: list[TaskItem],
-    ) -> ManagedTask:
-        if not item_refs:
-            raise TaskManagerError("Cannot compact an empty item list")
-
-        seen = {(item.kind, item.ref_id) for item in item_refs}
-        if len(seen) != len(item_refs):
-            raise TaskManagerError("Cannot compact duplicate refs")
-
-        parent = self._db.get_managed_task(parent_task_id)
-        if parent is None:
-            raise TaskManagerError("Parent task is missing")
-
-        visible = [(item.kind, item.ref_id) for item in parent.items]
-        selected = [(item.kind, item.ref_id) for item in item_refs]
-        if not all(ref in visible for ref in selected):
-            raise TaskManagerError("Cannot compact refs outside parent visible items")
-
-        for item in item_refs:
-            if item.kind != "task":
-                continue
-            task = self._db.get_managed_task(item.ref_id)
-            if task is None:
-                raise TaskManagerError("Cannot compact missing task")
-            if task.status == "active":
-                raise TaskManagerError("Cannot compact active task")
-
-        aggregate = ManagedTask(
-            kind="aggregate",
-            parent_id=parent.id,
-            title=title,
-            status="done",
-            result=result,
-            items=list(items),
-        )
-        aggregate.id = self._db.upsert_managed_task(aggregate)
-
-        selected_set = set(selected)
-        new_items: list[TaskItem] = []
-        inserted = False
-        for item in parent.items:
-            ref = (item.kind, item.ref_id)
-            if ref in selected_set:
-                if not inserted:
-                    new_items.append(TaskItem(kind="task", ref_id=aggregate.id))
-                    inserted = True
-                continue
-            new_items.append(item)
-
-        parent.items = new_items
-        parent.touch()
-        self._db.upsert_managed_task(parent)
-        return aggregate
 
     def finish_user_task(self, result: str | None = None) -> ManagedTask:
-        user_task = self._require_user_task()
+        if self.active_user_task_id is None:
+            raise TaskManagerError("No active user task")
+        user_task = self._get_task(self.active_user_task_id)
+        if user_task is None:
+            raise TaskManagerError("Active user task is missing")
         if self.active_todo_id is not None:
             raise TaskManagerError("Cannot finish user task while a todo is active")
         user_task.status = "done"
         user_task.result = result
         user_task.touch()
-        self._db.upsert_managed_task(user_task)
         self.active_user_task_id = None
         return user_task
-
-    def _require_user_task(self) -> ManagedTask:
-        if self.active_user_task_id is None:
-            raise TaskManagerError("No active user task")
-        task = self._db.get_managed_task(self.active_user_task_id)
-        if task is None:
-            raise TaskManagerError("Active user task is missing")
-        return task
 
     def _require_active_todo(self) -> ManagedTask:
         if self.active_todo_id is None:
             raise TaskManagerError("No active todo")
-        task = self._db.get_managed_task(self.active_todo_id)
+        task = self._get_task(self.active_todo_id)
         if task is None:
             raise TaskManagerError("Active todo is missing")
+        return task
+
+    def _get_task(self, task_id: int) -> ManagedTask | None:
+        return self._tasks.get(task_id)
+
+    def _allocate_task_id(self) -> int:
+        if self._next_task_id is None:
+            raise TaskManagerError("Task manager must be loaded before creating tasks")
+        task_id = self._next_task_id
+        self._next_task_id += 1
+        return task_id
+
+    def _load_task_tree(self, task_id: int) -> ManagedTask | None:
+        task = self._db.get_managed_task(task_id)
+        if task is None or task.id is None:
+            return None
+        self._tasks[task.id] = task
+        for item in task.items:
+            if item.kind == "task":
+                self._load_task_tree(item.ref_id)
         return task
