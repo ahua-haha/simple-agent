@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import time
+from dataclasses import dataclass
 
 from pydantic import BaseModel, TypeAdapter
 from sqlmodel import SQLModel, Field
@@ -106,6 +107,12 @@ class RunnerToolCallRecord(SQLModel, table=True):
 
 
 # ── Domain models ────────────────────────────────────────────────────
+
+
+@dataclass(frozen=True)
+class RunnerMessageEntry:
+    seq: str
+    message: AgentMessage
 
 
 class TextResult(BaseModel):

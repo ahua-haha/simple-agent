@@ -5,6 +5,8 @@ from __future__ import annotations
 from pi.ai.types import AssistantMessage, TextContent
 
 from simple_agent.db.db import Database
+from simple_agent.fractional_index import key_after
+from simple_agent.state.state import RunnerMessageEntry
 from simple_agent.task_manager.models import ManagedTask
 
 
@@ -30,35 +32,40 @@ def test_runner_state_metadata_roundtrip(tmp_path):
     assert record.version == 1
 
 
-def test_runner_messages_append_and_load_in_order(tmp_path):
+def test_runner_messages_insert_and_load_entries_in_order(tmp_path):
     db = Database(str(tmp_path / "session.db"))
     msg1 = AssistantMessage(role="assistant", content=[TextContent(text="one")])
     msg2 = AssistantMessage(role="assistant", content=[TextContent(text="two")])
+    seq1 = key_after(None)
+    seq2 = key_after(seq1)
 
-    seqs = db.append_runner_messages("session_a", [msg1, msg2])
+    db.insert_runner_message_entry("session_a", RunnerMessageEntry(seq=seq2, message=msg2))
+    db.insert_runner_message_entry("session_a", RunnerMessageEntry(seq=seq1, message=msg1))
 
+    entries = db.list_runner_message_entries("session_a")
     messages = db.list_runner_messages("session_a")
 
-    assert isinstance(seqs[0], str)
-    assert seqs[0] < seqs[1]
+    assert [entry.seq for entry in entries] == [seq1, seq2]
     assert [m.content[0].text for m in messages] == ["one", "two"]
 
 
-def test_replace_runner_messages_from_deletes_tail_and_inserts_ordered_seq(tmp_path):
+def test_delete_runner_messages_by_seq_range_deletes_requested_range(tmp_path):
     db = Database(str(tmp_path / "session.db"))
-    old = [
-        AssistantMessage(role="assistant", content=[TextContent(text="zero")]),
-        AssistantMessage(role="assistant", content=[TextContent(text="one")]),
-        AssistantMessage(role="assistant", content=[TextContent(text="two")]),
+    seq0 = key_after(None)
+    seq1 = key_after(seq0)
+    seq2 = key_after(seq1)
+    messages = [
+        RunnerMessageEntry(seq=seq0, message=AssistantMessage(role="assistant", content=[TextContent(text="zero")])),
+        RunnerMessageEntry(seq=seq1, message=AssistantMessage(role="assistant", content=[TextContent(text="one")])),
+        RunnerMessageEntry(seq=seq2, message=AssistantMessage(role="assistant", content=[TextContent(text="two")])),
     ]
-    new = [AssistantMessage(role="assistant", content=[TextContent(text="compact")])]
+    for entry in messages:
+        db.insert_runner_message_entry("session_a", entry)
 
-    seqs = db.append_runner_messages("session_a", old)
-    replacement_seqs = db.replace_runner_messages_from("session_a", seqs[1], new)
+    db.delete_runner_messages_by_seq_range("session_a", seq1)
 
     messages = db.list_runner_messages("session_a")
-    assert replacement_seqs[0] == seqs[1]
-    assert [m.content[0].text for m in messages] == ["zero", "compact"]
+    assert [m.content[0].text for m in messages] == ["zero"]
 
 
 def test_next_managed_task_id_uses_highest_existing_id(tmp_path):

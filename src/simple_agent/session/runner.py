@@ -9,7 +9,9 @@ from typing import TYPE_CHECKING, Any, Callable, Literal
 
 from pi.agent import AgentTool, AgentToolResult, AgentToolUpdateCallback
 from pi.ai.types import AssistantMessage, TextContent, ToolCall, ToolResultMessage
+from simple_agent.fractional_index import key_after
 from simple_agent.json_utils import json_safe
+from simple_agent.state.state import RunnerMessageEntry
 from simple_agent.token_estimation import estimate_messages_tokens
 from simple_agent.tool.common_tools import create_all_coding_tools
 
@@ -57,8 +59,8 @@ class SessionRunner:
     _cancel_event: asyncio.Event
     _phase: RunnerPhase
     _active_user_task_id: int | None
-    _messages: list[AgentMessage]
-    _message_seq_keys: list[str]
+    _messages: list[RunnerMessageEntry]
+    _next_message_seq: str | None
     _context_token_threshold: int
     _tool_call_threshold: int
 
@@ -81,7 +83,7 @@ class SessionRunner:
         self._phase = "idle"
         self._active_user_task_id = None
         self._messages = []
-        self._message_seq_keys = []
+        self._next_message_seq = key_after(None)
         self._context_token_threshold = context_token_threshold
         self._tool_call_threshold = tool_call_threshold
 
@@ -96,9 +98,8 @@ class SessionRunner:
 
     def load(self) -> None:
         metadata = self._db.get_runner_state_metadata(self._session_id)
-        message_entries = self._db.list_runner_message_entries(self._session_id)
-        self._message_seq_keys = [seq for seq, _ in message_entries]
-        self._messages = [message for _, message in message_entries]
+        self._messages = self._db.list_runner_message_entries(self._session_id)
+        self._next_message_seq = key_after(self._messages[-1].seq if self._messages else None)
         if metadata is None:
             self._phase = "idle"
             self._active_user_task_id = None
@@ -127,16 +128,16 @@ class SessionRunner:
         save_tasks: bool = True,
     ) -> None:
         messages = messages or []
+        entries = self._create_message_entries(messages)
         with self._db.create_session() as session:
-            seqs = []
-            if messages:
-                seqs = self._db.append_runner_messages(self._session_id, messages, session=session)
+            for entry in entries:
+                self._db.insert_runner_message_entry(self._session_id, entry, session=session)
             if save_tasks:
                 self._task_manager.save(session=session)
             self.save_metadata(status=status or self._phase, last_error=last_error, session=session)
             session.commit()
-        self._messages.extend(messages)
-        self._message_seq_keys.extend(seqs)
+        self._messages.extend(entries)
+        self._next_message_seq = key_after(self._messages[-1].seq if self._messages else None)
 
     def _create_tools(self):
         tools = [
@@ -233,7 +234,7 @@ class SessionRunner:
 
         await self._agent_process.run(
             system_prompt=SYSTEM_PROMPT,
-            messages=list(self._messages),
+            messages=self._agent_messages(),
             tools=self._create_tools(),
             user_prompt=user_input,
             cancel_event=self._cancel_event,
@@ -247,7 +248,7 @@ class SessionRunner:
         self.save_current_data(status="done")
 
     def pause_for_compaction_if_needed(self) -> None:
-        context_tokens = estimate_messages_tokens(self._messages)
+        context_tokens = estimate_messages_tokens(self._agent_messages())
         tool_calls = len(self._db.list_runner_tool_calls(self._session_id))
         if (
             context_tokens <= self._context_token_threshold
@@ -280,13 +281,12 @@ class SessionRunner:
             raise RuntimeError("Compact end message is before start message")
 
         messages_before_start = self._messages[:start_seq]
-        message_seq_keys_before_start = self._message_seq_keys[:start_seq]
-        preserved_messages = self._messages[end_seq + 1:]
+        preserved_messages = [entry.message for entry in self._messages[end_seq + 1:]]
 
         self._task_manager.begin_compact_buffer()
         await self._agent_process.run(
             system_prompt=COMPACT_SYSTEM_PROMPT,
-            messages=self._messages[start_seq:end_seq + 1],
+            messages=[entry.message for entry in self._messages[start_seq:end_seq + 1]],
             tools=self._task_manager.create_compact_tools(),
             user_prompt=user_input,
             cancel_event=self._cancel_event,
@@ -297,23 +297,26 @@ class SessionRunner:
             compacted_todo = self._task_manager.replace_compact_scope(session=session)
             compact_messages = [self.format_compacted_todo_message(compacted_todo)]
             replacement_messages = [*compact_messages, *preserved_messages]
-            start_seq_key = self._message_seq_keys[start_seq]
-            replacement_seq_keys = self._db.replace_runner_messages_from(
+            start_seq_key = self._messages[start_seq].seq
+            replacement_entries = self._create_message_entries(replacement_messages, start_seq=start_seq_key)
+            self._db.delete_runner_messages_by_seq_range(
                 self._session_id,
                 start_seq_key,
-                replacement_messages,
                 session=session,
             )
+            for entry in replacement_entries:
+                self._db.insert_runner_message_entry(self._session_id, entry, session=session)
             self._phase = "running"
             self.save_metadata(status="running", session=session)
             session.commit()
 
-        self._messages = [*messages_before_start, *replacement_messages]
-        self._message_seq_keys = [*message_seq_keys_before_start, *replacement_seq_keys]
+        self._messages = [*messages_before_start, *replacement_entries]
+        self._next_message_seq = key_after(self._messages[-1].seq if self._messages else None)
         self._cancel_event.clear()
 
     def find_assistant_message_seq_for_tool_call(self, tool_call_id: str) -> int:
-        for seq, message in enumerate(self._messages):
+        for seq, entry in enumerate(self._messages):
+            message = entry.message
             if not isinstance(message, AssistantMessage):
                 continue
             for content in message.content:
@@ -322,7 +325,8 @@ class SessionRunner:
         raise RuntimeError(f"Could not find assistant message for tool call {tool_call_id}")
 
     def find_tool_result_message_seq_for_tool_call(self, tool_call_id: str) -> int:
-        for seq, message in enumerate(self._messages):
+        for seq, entry in enumerate(self._messages):
+            message = entry.message
             if isinstance(message, ToolResultMessage) and message.tool_call_id == tool_call_id:
                 return seq
         raise RuntimeError(f"Could not find tool result message for tool call {tool_call_id}")
@@ -339,3 +343,21 @@ class SessionRunner:
         _log.exception("session runner failed: session=%s", self._session_id)
         self._phase = "error"
         self.save_current_data(status="error", last_error=str(exc), save_tasks=False)
+
+    def _agent_messages(self) -> list[AgentMessage]:
+        return [entry.message for entry in self._messages]
+
+    def _create_message_entries(
+        self,
+        messages: list[AgentMessage],
+        *,
+        start_seq: str | None = None,
+    ) -> list[RunnerMessageEntry]:
+        seq = start_seq or self._next_message_seq
+        if seq is None:
+            raise RuntimeError("SessionRunner must be loaded before creating message entries")
+        entries: list[RunnerMessageEntry] = []
+        for message in messages:
+            entries.append(RunnerMessageEntry(seq=seq, message=message))
+            seq = key_after(seq)
+        return entries

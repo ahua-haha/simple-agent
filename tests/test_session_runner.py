@@ -9,7 +9,9 @@ import pytest
 from pi.ai.types import AssistantMessage, TextContent, ToolCall, ToolResultMessage, UserMessage
 
 from simple_agent.db.db import Database
+from simple_agent.fractional_index import key_after
 from simple_agent.session.runner import SessionRunner
+from simple_agent.state.state import RunnerMessageEntry
 from simple_agent.task_manager import TaskManager
 
 
@@ -62,6 +64,15 @@ class FakeCompactAgentProcess(FakeAgentProcess):
         await by_name["record_compacted_tool_call"].execute("compact_record", {"tool_call_log_id": 1})
         await by_name["finish_compacted_todo"].execute("compact_finish", {})
         return []
+
+
+def _message_entries(messages):
+    seq = key_after(None)
+    entries = []
+    for message in messages:
+        entries.append(RunnerMessageEntry(seq=seq, message=message))
+        seq = key_after(seq)
+    return entries
 
 
 @pytest.mark.asyncio
@@ -275,7 +286,7 @@ async def test_handle_compact_replaces_messages_and_tasks(tmp_path):
     active = task_manager.create_todo("Continue work")
     runner._active_user_task_id = user_task.id
     runner._phase = "compact"
-    runner._messages = [
+    runner._messages = _message_entries([
         UserMessage(content=[TextContent(text="original request")], timestamp=1),
         AssistantMessage(
             role="assistant",
@@ -308,8 +319,9 @@ async def test_handle_compact_replaces_messages_and_tasks(tmp_path):
                 ToolCall(id="call_active", name="create_todo", arguments={"title": active.title}),
             ],
         ),
-    ]
-    runner._message_seq_keys = db.append_runner_messages("session_a", runner._messages)
+    ])
+    for entry in runner._messages:
+        db.insert_runner_message_entry("session_a", entry)
     db.insert_runner_tool_call(
         session_id="session_a",
         tool_call_id="tool_1",
@@ -352,7 +364,7 @@ async def test_session_runner_finds_assistant_message_for_tool_call_id(tmp_path)
         agent_process=FakeAgentProcess(),
         cancel_event=asyncio.Event(),
     )
-    runner._messages = [
+    runner._messages = _message_entries([
         UserMessage(content=[TextContent(text="request")], timestamp=1),
         AssistantMessage(role="assistant", content=[TextContent(text="thinking")]),
         AssistantMessage(
@@ -362,7 +374,7 @@ async def test_session_runner_finds_assistant_message_for_tool_call_id(tmp_path)
                 ToolCall(id="call_create", name="create_todo", arguments={"title": "Inspect files"}),
             ],
         ),
-    ]
+    ])
 
     assert runner.find_assistant_message_seq_for_tool_call("call_create") == 2
 
@@ -377,7 +389,7 @@ async def test_session_runner_finds_tool_result_message_for_tool_call_id(tmp_pat
         agent_process=FakeAgentProcess(),
         cancel_event=asyncio.Event(),
     )
-    runner._messages = [
+    runner._messages = _message_entries([
         UserMessage(content=[TextContent(text="request")], timestamp=1),
         AssistantMessage(
             role="assistant",
@@ -391,7 +403,7 @@ async def test_session_runner_finds_tool_result_message_for_tool_call_id(tmp_pat
             toolName="finish_todo",
             content=[TextContent(text="finished")],
         ),
-    ]
+    ])
 
     assert runner.find_tool_result_message_seq_for_tool_call("call_finish") == 2
 
