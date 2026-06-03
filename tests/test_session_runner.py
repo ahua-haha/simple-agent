@@ -309,7 +309,7 @@ async def test_handle_compact_replaces_messages_and_tasks(tmp_path):
             ],
         ),
     ]
-    db.append_runner_messages("session_a", runner._messages)
+    runner._message_seq_keys = db.append_runner_messages("session_a", runner._messages)
     db.insert_runner_tool_call(
         session_id="session_a",
         tool_call_id="tool_1",
@@ -325,7 +325,8 @@ async def test_handle_compact_replaces_messages_and_tasks(tmp_path):
     await runner.handle_compact("Build feature")
 
     messages = db.list_runner_messages("session_a")
-    loaded_user_task = db.get_managed_task(user_task.id)
+    loaded_task_manager = TaskManager(db)
+    loaded_task_manager.load(user_task.id)
     assert compact_agent.calls[0]["tools"] == [
         "create_compacted_todo",
         "record_compacted_tool_call",
@@ -337,7 +338,7 @@ async def test_handle_compact_replaces_messages_and_tasks(tmp_path):
     assert messages[0].content[0].text == "original request"
     assert "Compact summary" in messages[1].content[0].text
     assert "active todo" in messages[2].content[0].text
-    assert len(loaded_user_task.items) == 2
+    assert len(loaded_task_manager.child_tasks(user_task.id)) == 2
     assert db.get_runner_state_metadata("session_a").phase == "running"
 
 

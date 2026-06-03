@@ -8,7 +8,8 @@ from typing import TYPE_CHECKING
 from pi.agent import AgentTool, AgentToolResult
 from pi.ai.types import TextContent
 
-from simple_agent.task_manager.models import ManagedTask, TaskItem
+from simple_agent.fractional_index import key_after
+from simple_agent.task_manager.models import ManagedTask
 
 if TYPE_CHECKING:
     from simple_agent.db.db import Database
@@ -23,6 +24,11 @@ class CompactScope:
 @dataclass
 class CompactBuffer:
     todo: ManagedTask | None = None
+    tool_call_tasks: list[ManagedTask] = None
+
+    def __post_init__(self) -> None:
+        if self.tool_call_tasks is None:
+            self.tool_call_tasks = []
 
 
 class TaskManagerError(RuntimeError):
@@ -39,6 +45,7 @@ class TaskManager:
         self._tasks: dict[int, ManagedTask] = {}
         self._next_task_id: int | None = None
         self._compact_buffer: CompactBuffer | None = None
+        self._next_task_seq: str | None = None
 
     def load(self, active_user_task_id: int | None) -> None:
         self._tasks = {}
@@ -46,6 +53,7 @@ class TaskManager:
         self.active_todo_id = None
         self._next_task_id = self._db.next_managed_task_id()
         self._compact_buffer = None
+        self._next_task_seq = self._db.next_managed_task_seq()
         if active_user_task_id is None:
             return
         user_task = self._load_task_tree(active_user_task_id)
@@ -72,6 +80,7 @@ class TaskManager:
             raise TaskManagerError("Cannot create a second active user task")
         task = ManagedTask(kind="user_task", title=input)
         task.id = self._allocate_task_id()
+        self._assign_next_task_seq(task)
         self._tasks[task.id] = task
         self.active_user_task_id = task.id
         return task
@@ -154,8 +163,8 @@ class TaskManager:
         todo.id = self._allocate_task_id()
         self._tasks[todo.id] = todo
 
-        user_task.items.append(TaskItem(kind="task", ref_id=todo.id))
-        user_task.touch()
+        self._assign_next_task_seq(todo)
+        self._add_child(user_task, todo)
         self.active_todo_id = todo.id
         return todo
 
@@ -177,7 +186,7 @@ class TaskManager:
         self.active_todo_id = None
         return todo
 
-    def record_tool_call(self, tool_call_id: int, task_id: int | None = None) -> None:
+    def record_tool_call(self, tool_call_id: int, task_id: int | None = None) -> ManagedTask:
         if task_id is not None:
             target = self._get_task(task_id)
             if target is None:
@@ -191,8 +200,18 @@ class TaskManager:
                     raise TaskManagerError("Active user task is missing")
             else:
                 raise TaskManagerError("No active user task")
-        target.items.append(TaskItem(kind="tool_call", ref_id=tool_call_id))
-        target.touch()
+        tool_call_task = ManagedTask(
+            kind="tool_call",
+            title=f"Tool call {tool_call_id}",
+            status="done",
+            parent_id=target.id,
+            tool_call_log_id=tool_call_id,
+        )
+        tool_call_task.id = self._allocate_task_id()
+        self._tasks[tool_call_task.id] = tool_call_task
+        self._assign_next_task_seq(tool_call_task)
+        self._add_child(target, tool_call_task)
+        return tool_call_task
 
     def finish_user_task(self, result: str | None = None) -> ManagedTask:
         if self.active_user_task_id is None:
@@ -215,12 +234,7 @@ class TaskManager:
         if user_task is None:
             raise TaskManagerError("Active user task is missing")
 
-        todos = [
-            self._get_task(item.ref_id)
-            for item in user_task.items
-            if item.kind == "task"
-        ]
-        todos = [todo for todo in todos if todo is not None and todo.kind == "todo"]
+        todos = [task for task in self.child_tasks(user_task.id) if task.kind == "todo"]
         finished = [todo for todo in todos if todo.status == "done"]
         if not finished:
             return None
@@ -241,13 +255,24 @@ class TaskManager:
             raise TaskManagerError("Compacted todo already exists")
         todo = ManagedTask(kind="todo", title="Compacted work", status="active", result=description)
         todo.id = self._allocate_task_id()
+        self._assign_next_task_seq(todo)
         self._compact_buffer.todo = todo
         return todo
 
     def record_compacted_tool_call(self, tool_call_log_id: int) -> None:
         if self._compact_buffer is None or self._compact_buffer.todo is None:
             raise TaskManagerError("No compacted todo")
-        self._compact_buffer.todo.items.append(TaskItem(kind="tool_call", ref_id=tool_call_log_id))
+        tool_call_task = ManagedTask(
+            kind="tool_call",
+            title=f"Tool call {tool_call_log_id}",
+            status="done",
+            parent_id=self._compact_buffer.todo.id,
+            tool_call_log_id=tool_call_log_id,
+        )
+        tool_call_task.id = self._allocate_task_id()
+        self._assign_next_task_seq(tool_call_task)
+        self._add_child(self._compact_buffer.todo, tool_call_task)
+        self._compact_buffer.tool_call_tasks.append(tool_call_task)
 
     def finish_compacted_todo(self) -> ManagedTask:
         if self._compact_buffer is None or self._compact_buffer.todo is None:
@@ -259,10 +284,13 @@ class TaskManager:
         if self._compact_buffer is None or self._compact_buffer.todo is None:
             raise TaskManagerError("No compacted todo")
         todo = self._compact_buffer.todo
+        tool_call_tasks = self._compact_buffer.tool_call_tasks
         if todo.status != "done":
             raise TaskManagerError("Compacted todo is not finished")
         self._compact_buffer = None
         self._tasks[todo.id] = todo
+        for tool_call_task in tool_call_tasks:
+            self._tasks[tool_call_task.id] = tool_call_task
         return todo
 
     def create_compact_tools(self) -> list[AgentTool]:
@@ -334,20 +362,34 @@ class TaskManager:
         current_tree_ids = [task_id for task_id in self._tasks if task_id is not None]
         compacted_todo = self.consume_compact_buffer()
         compacted_todo.parent_id = user_task.id
+        compacted_todo.seq = scope.compact_todos[0].seq
         self._tasks[compacted_todo.id] = compacted_todo
-        user_task.items = [
-            TaskItem(kind="task", ref_id=compacted_todo.id),
-            *[TaskItem(kind="task", ref_id=todo.id) for todo in scope.preserved_todos],
-        ]
+
         user_task.touch()
         for todo in scope.compact_todos:
-            if todo.id is not None:
-                self._tasks.pop(todo.id, None)
+            self._remove_task_subtree(todo.id)
+        self._tasks[compacted_todo.id] = compacted_todo
 
         self._db.delete_managed_tasks(current_tree_ids, session=session)
         session.flush()
         self.save(session=session)
         return compacted_todo
+
+    def child_tasks(self, task_id: int) -> list[ManagedTask]:
+        task = self._get_task(task_id)
+        if task is None:
+            raise TaskManagerError("Task is missing")
+        return sorted(
+            [task for task in self._tasks.values() if task.parent_id == task_id],
+            key=lambda child: child.seq,
+        )
+
+    def tool_call_log_ids(self, task_id: int) -> list[int]:
+        return [
+            child.tool_call_log_id
+            for child in self.child_tasks(task_id)
+            if child.kind == "tool_call" and child.tool_call_log_id is not None
+        ]
 
     def _require_active_todo(self) -> ManagedTask:
         if self.active_todo_id is None:
@@ -359,6 +401,26 @@ class TaskManager:
 
     def _get_task(self, task_id: int) -> ManagedTask | None:
         return self._tasks.get(task_id)
+
+    def _assign_next_task_seq(self, task: ManagedTask) -> None:
+        if self._next_task_seq is None:
+            raise TaskManagerError("Task manager must be loaded before creating tasks")
+        task.seq = self._next_task_seq
+        self._next_task_seq = key_after(task.seq)
+
+    def _add_child(self, parent: ManagedTask, child: ManagedTask) -> None:
+        child.parent_id = parent.id
+        parent.touch()
+
+    def _remove_task_subtree(self, task_id: int | None) -> None:
+        if task_id is None:
+            return
+        child_ids = [task.id for task in self._tasks.values() if task.parent_id == task_id]
+        task = self._tasks.pop(task_id, None)
+        if task is None:
+            return
+        for child_id in child_ids:
+            self._remove_task_subtree(child_id)
 
     def _allocate_task_id(self) -> int:
         if self._next_task_id is None:
@@ -372,7 +434,7 @@ class TaskManager:
         if task is None or task.id is None:
             return None
         self._tasks[task.id] = task
-        for item in task.items:
-            if item.kind == "task":
-                self._load_task_tree(item.ref_id)
+        for child in self._db.list_managed_task_children(task.id):
+            if child.id is not None:
+                self._load_task_tree(child.id)
         return task

@@ -98,7 +98,9 @@ def test_normal_tool_call_records_under_active_todo():
 
     asyncio.run(run())
     manager.save()
-    loaded_todo = db.get_managed_task(todo.id)
+    loaded_manager = TaskManager(db)
+    loaded_manager.load(todo.parent_id)
+    loaded_children = loaded_manager.child_tasks(todo.id)
 
-    assert len(loaded_todo.items) == 1
-    assert loaded_todo.items[0].kind == "tool_call"
+    assert len(loaded_children) == 1
+    assert loaded_children[0].kind == "tool_call"

@@ -58,6 +58,7 @@ class SessionRunner:
     _phase: RunnerPhase
     _active_user_task_id: int | None
     _messages: list[AgentMessage]
+    _message_seq_keys: list[str]
     _context_token_threshold: int
     _tool_call_threshold: int
 
@@ -80,6 +81,7 @@ class SessionRunner:
         self._phase = "idle"
         self._active_user_task_id = None
         self._messages = []
+        self._message_seq_keys = []
         self._context_token_threshold = context_token_threshold
         self._tool_call_threshold = tool_call_threshold
 
@@ -94,7 +96,9 @@ class SessionRunner:
 
     def load(self) -> None:
         metadata = self._db.get_runner_state_metadata(self._session_id)
-        self._messages = self._db.list_runner_messages(self._session_id)
+        message_entries = self._db.list_runner_message_entries(self._session_id)
+        self._message_seq_keys = [seq for seq, _ in message_entries]
+        self._messages = [message for _, message in message_entries]
         if metadata is None:
             self._phase = "idle"
             self._active_user_task_id = None
@@ -124,13 +128,15 @@ class SessionRunner:
     ) -> None:
         messages = messages or []
         with self._db.create_session() as session:
+            seqs = []
             if messages:
-                self._db.append_runner_messages(self._session_id, messages, session=session)
+                seqs = self._db.append_runner_messages(self._session_id, messages, session=session)
             if save_tasks:
                 self._task_manager.save(session=session)
             self.save_metadata(status=status or self._phase, last_error=last_error, session=session)
             session.commit()
         self._messages.extend(messages)
+        self._message_seq_keys.extend(seqs)
 
     def _create_tools(self):
         tools = [
@@ -274,6 +280,7 @@ class SessionRunner:
             raise RuntimeError("Compact end message is before start message")
 
         messages_before_start = self._messages[:start_seq]
+        message_seq_keys_before_start = self._message_seq_keys[:start_seq]
         preserved_messages = self._messages[end_seq + 1:]
 
         self._task_manager.begin_compact_buffer()
@@ -290,9 +297,10 @@ class SessionRunner:
             compacted_todo = self._task_manager.replace_compact_scope(session=session)
             compact_messages = [self.format_compacted_todo_message(compacted_todo)]
             replacement_messages = [*compact_messages, *preserved_messages]
-            self._db.replace_runner_messages_from(
+            start_seq_key = self._message_seq_keys[start_seq]
+            replacement_seq_keys = self._db.replace_runner_messages_from(
                 self._session_id,
-                start_seq,
+                start_seq_key,
                 replacement_messages,
                 session=session,
             )
@@ -301,6 +309,7 @@ class SessionRunner:
             session.commit()
 
         self._messages = [*messages_before_start, *replacement_messages]
+        self._message_seq_keys = [*message_seq_keys_before_start, *replacement_seq_keys]
         self._cancel_event.clear()
 
     def find_assistant_message_seq_for_tool_call(self, tool_call_id: str) -> int:
@@ -319,7 +328,7 @@ class SessionRunner:
         raise RuntimeError(f"Could not find tool result message for tool call {tool_call_id}")
 
     def format_compacted_todo_message(self, compacted_todo) -> AgentMessage:
-        tool_refs = [item.ref_id for item in compacted_todo.items if item.kind == "tool_call"]
+        tool_refs = self._task_manager.tool_call_log_ids(compacted_todo.id)
         text = (
             f"Compacted todo: {compacted_todo.result or compacted_todo.title}\n"
             f"Useful tool calls: {tool_refs}"

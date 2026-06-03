@@ -35,14 +35,16 @@ def test_runner_messages_append_and_load_in_order(tmp_path):
     msg1 = AssistantMessage(role="assistant", content=[TextContent(text="one")])
     msg2 = AssistantMessage(role="assistant", content=[TextContent(text="two")])
 
-    db.append_runner_messages("session_a", [msg1, msg2])
+    seqs = db.append_runner_messages("session_a", [msg1, msg2])
 
     messages = db.list_runner_messages("session_a")
 
+    assert isinstance(seqs[0], str)
+    assert seqs[0] < seqs[1]
     assert [m.content[0].text for m in messages] == ["one", "two"]
 
 
-def test_replace_runner_messages_from_deletes_tail_and_inserts_dense_seq(tmp_path):
+def test_replace_runner_messages_from_deletes_tail_and_inserts_ordered_seq(tmp_path):
     db = Database(str(tmp_path / "session.db"))
     old = [
         AssistantMessage(role="assistant", content=[TextContent(text="zero")]),
@@ -51,10 +53,11 @@ def test_replace_runner_messages_from_deletes_tail_and_inserts_dense_seq(tmp_pat
     ]
     new = [AssistantMessage(role="assistant", content=[TextContent(text="compact")])]
 
-    db.append_runner_messages("session_a", old)
-    db.replace_runner_messages_from("session_a", 1, new)
+    seqs = db.append_runner_messages("session_a", old)
+    replacement_seqs = db.replace_runner_messages_from("session_a", seqs[1], new)
 
     messages = db.list_runner_messages("session_a")
+    assert replacement_seqs[0] == seqs[1]
     assert [m.content[0].text for m in messages] == ["zero", "compact"]
 
 

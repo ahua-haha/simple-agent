@@ -34,8 +34,9 @@ message range by scanning assistant messages for `ToolCall` content:
   `end_tool_call_id`
 - preserved tail: messages after the compact end
 
-This keeps message sequencing in the runner, where messages are stored, and
-keeps the task manager focused on task state.
+Runner messages are stored with string fractional `seq` keys. This keeps
+message sequencing in the runner, where messages are stored, and keeps the task
+manager focused on task state.
 
 ## Compact Scope
 
@@ -104,12 +105,13 @@ Tasks use one replacement function under the existing user task:
 1. `TaskManager.replace_compact_scope()` computes the current compact scope
    from the task tree and consumes the generated compacted todo from the
    compact buffer.
-2. It rebuilds the in-memory user-task tree so `user_task.items` contains the
-   compacted todo plus preserved todos in order.
+2. It rebuilds the in-memory parent-id tree so direct children of the user task
+   contain the compacted todo plus preserved todos in `seq` order.
 3. In the caller's DB session, it deletes the currently persisted managed-task
    tree rows.
 4. It saves the rebuilt tree rows, including the compacted todo and any
-   preserved todos.
+   preserved todos. All task rows, including tool-call tasks, carry `parent_id`
+   for tree structure and string fractional `seq` keys for sibling ordering.
 
 Runner metadata is saved in the same transaction:
 

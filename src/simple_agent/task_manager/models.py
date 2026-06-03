@@ -7,18 +7,8 @@ from typing import Literal
 
 from pydantic import BaseModel, Field
 
-TaskKind = Literal["user_task", "todo", "aggregate"]
+TaskKind = Literal["user_task", "todo", "tool_call", "aggregate"]
 TaskStatus = Literal["active", "done", "error"]
-TaskItemKind = Literal["task", "tool_call"]
-
-
-class TaskItem(BaseModel):
-    """A visible ordered reference owned by a managed task."""
-
-    kind: TaskItemKind
-    ref_id: int
-
-
 class ManagedTask(BaseModel):
     """Unified task model for user tasks, todos, and aggregate tasks."""
 
@@ -27,11 +17,12 @@ class ManagedTask(BaseModel):
     kind: TaskKind
     title: str
     status: TaskStatus = "active"
-    items: list[TaskItem] = Field(default_factory=list)
+    seq: str = ""
     result: str | None = None
     error: str | None = None
     create_tool_call_id: str | None = None
     end_tool_call_id: str | None = None
+    tool_call_log_id: int | None = None
     created_at: float = Field(default_factory=time.time)
     updated_at: float = Field(default_factory=time.time)
 

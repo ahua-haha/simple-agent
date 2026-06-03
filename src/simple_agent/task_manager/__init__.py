@@ -1,6 +1,6 @@
 """Task manager package."""
 
 from simple_agent.task_manager.manager import TaskManager, TaskManagerError
-from simple_agent.task_manager.models import ManagedTask, TaskItem
+from simple_agent.task_manager.models import ManagedTask
 
-__all__ = ["ManagedTask", "TaskItem", "TaskManager", "TaskManagerError"]
+__all__ = ["ManagedTask", "TaskManager", "TaskManagerError"]

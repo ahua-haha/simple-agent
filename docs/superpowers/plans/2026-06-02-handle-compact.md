@@ -8,8 +8,10 @@ todo work with one compacted todo and matching compacted runner messages.
 **Architecture:** Todos store `create_tool_call_id` from the assistant
 `create_todo` call that created them and `end_tool_call_id` from the
 `finish_todo` or `error_todo` call that completed them. `TaskManager` owns
-in-memory todo mutation and compact task replacement. `SessionRunner` owns
-runner messages, finds compact starts by scanning assistant `ToolCall.id`
+in-memory todo mutation and compact task replacement. Every task row, including
+tool-call tasks, uses `parent_id` for tree structure and a string fractional
+`seq` key for sibling ordering. `SessionRunner` owns runner messages with string
+fractional `seq` keys, finds compact starts by scanning assistant `ToolCall.id`
 values, and finds compact ends by scanning tool-result messages for the saved
 end tool-call ID.
 
@@ -31,6 +33,10 @@ end tool-call ID.
   and save the rebuilt tree in one function.
 - [x] Make `TaskManager.replace_compact_scope()` compute scope and consume the
   compact buffer itself instead of receiving arguments.
+- [x] Store tool calls as `ManagedTask(kind="tool_call")` children that point to
+  runner tool-call log rows.
+- [x] Use string fractional `seq` keys for runner messages and managed-task
+  sibling ordering.
 - [x] Update focused task-manager and session-runner tests.
 
 ## Verification
