@@ -109,7 +109,7 @@ class SessionManager:
     # ------------------------------------------------------------------
 
     @logged(_log)
-    def run(self, session_id: str, user_input: str) -> asyncio.Queue:
+    def run(self, session_id: str, user_input: str | None) -> asyncio.Queue:
         """Start a background run of *session_id* with *user_input*.
 
         Returns the session's event queue for SSE streaming.

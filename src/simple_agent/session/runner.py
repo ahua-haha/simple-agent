@@ -24,7 +24,7 @@ if TYPE_CHECKING:
 
 _log = logging.getLogger(__name__)
 
-RunnerPhase = Literal["idle", "running", "compact", "done", "error"]
+RunnerPhase = Literal["idle", "new_user_task", "running", "compact", "done", "error"]
 
 SYSTEM_PROMPT = """You are a helpful coding agent.
 
@@ -194,14 +194,14 @@ class SessionRunner:
     def wrap_tools(self, tools: list[AgentTool]) -> list[AgentTool]:
         return [self.wrap_tool(tool) for tool in tools]
 
-    async def run(self, user_input: str):
+    async def run(self, user_input: str | None):
         self.load()
+        self.handle_input(user_input)
         try:
             while self._phase != "done":
-                if self._phase in ("idle", "done", "error"):
-                    await self.handle_idle(user_input)
-                    continue
-                if self._phase == "running":
+                if self._phase in ("idle", "error"):
+                    break
+                if self._phase in ("new_user_task", "running"):
                     await self.handle_running(user_input)
                     continue
                 if self._phase == "compact":
@@ -216,15 +216,35 @@ class SessionRunner:
             return None
         return self._db.get_managed_task(self._active_user_task_id)
 
-    async def handle_idle(self, user_input: str) -> None:
+    def handle_input(self, user_input: str | None) -> None:
+        if user_input is None:
+            return
+
+        self.finish_previous_user_task()
+        self._task_manager.load(None)
         user_task = self._task_manager.create_user_task(user_input)
         self._active_user_task_id = user_task.id
-        self._phase = "running"
-        self.save_current_data(status="running")
+        self._phase = "new_user_task"
+        self._cancel_event.clear()
+        self.save_current_data(status="new_user_task")
 
-    async def handle_running(self, user_input: str) -> None:
+    def finish_previous_user_task(self) -> None:
+        previous_user_task = self._task_manager.active_user_task
+        if previous_user_task is None:
+            return
+
+        if previous_user_task.status != "done":
+            if self._task_manager.active_todo_id is not None:
+                self._task_manager.error_task("Interrupted by new user input")
+            self._task_manager.finish_user_task()
+            self.save_current_data(messages=[], status="done")
+        self._active_user_task_id = None
+
+    async def handle_running(self, user_input: str | None) -> None:
         def save_current_data(event: AgentEvent) -> None:
             messages = [event.message, *event.tool_results]
+            if self._phase == "new_user_task":
+                self._phase = "running"
             self.save_current_data(messages, status=self._phase)
             self.pause_for_compaction_if_needed()
 
@@ -232,11 +252,12 @@ class SessionRunner:
             "turn_end": [save_current_data],
         }
 
+        agent_user_prompt = user_input if self._phase == "new_user_task" else None
         await self._agent_process.run(
             system_prompt=SYSTEM_PROMPT,
             messages=self._agent_messages(),
             tools=self._create_tools(),
-            user_prompt=user_input,
+            user_prompt=agent_user_prompt,
             cancel_event=self._cancel_event,
             hooks=hooks,
         )
@@ -260,7 +281,7 @@ class SessionRunner:
         self.save_current_data(messages=[], status="compact", save_tasks=False)
         self._cancel_event.set()
 
-    async def handle_compact(self, user_input: str) -> None:
+    async def handle_compact(self, user_input: str | None) -> None:
         scope = self._task_manager.compact_scope()
         if scope is None:
             self._phase = "running"

@@ -8,7 +8,7 @@ import time
 from typing import Callable
 
 from pi.agent import AgentTool
-from pi.agent.loop import agent_loop
+from pi.agent.loop import agent_loop, agent_loop_continue
 from pi.agent.types import AgentContext, AgentEndEvent, AgentEvent, AgentLoopConfig, AgentMessage
 from pi.ai.types import UserMessage, TextContent
 
@@ -41,16 +41,11 @@ class AgentProcess:
         system_prompt: str,
         messages: list[AgentMessage],
         tools: list[AgentTool],
-        user_prompt: str = "",
+        user_prompt: str | None = "",
         cancel_event: asyncio.Event | None = None,
         hooks: AgentProcessHooks | None = None,
     ) -> list[AgentMessage]:
         """Execute a single agent run and return the new messages."""
-        now_ms = int(time.time() * 1000)
-        input_messages = []
-        if user_prompt:
-            input_messages.append(UserMessage(content=[TextContent(text=user_prompt)], timestamp=now_ms))
-
         context = AgentContext(
             system_prompt=system_prompt,
             messages=list(messages),
@@ -69,12 +64,23 @@ class AgentProcess:
             on_event=on_loop_event,
         )
 
-        stream = agent_loop(
-            input_messages,
-            context,
-            loop_config,
-            cancel_event=cancel_event,
-        )
+        if user_prompt is None:
+            stream = agent_loop_continue(
+                context,
+                loop_config,
+                cancel_event=cancel_event,
+            )
+        else:
+            now_ms = int(time.time() * 1000)
+            input_messages = []
+            if user_prompt:
+                input_messages.append(UserMessage(content=[TextContent(text=user_prompt)], timestamp=now_ms))
+            stream = agent_loop(
+                input_messages,
+                context,
+                loop_config,
+                cancel_event=cancel_event,
+            )
 
         async for event in stream:
             if isinstance(event, AgentEndEvent):

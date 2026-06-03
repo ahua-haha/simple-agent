@@ -6,7 +6,7 @@ import asyncio
 
 import pytest
 
-from pi.ai.types import AssistantMessage, TextContent
+from pi.ai.types import AssistantMessage, TextContent, UserMessage
 
 from simple_agent.process.agent_process import AgentProcess
 
@@ -50,6 +50,55 @@ async def test_agent_process_run_returns_messages_without_agent_state(monkeypatc
 
     assert result == [message]
     assert captured["cancel_event"] is cancel_event
+    assert captured["tools"] == []
+
+
+@pytest.mark.asyncio
+async def test_agent_process_run_with_none_user_prompt_continues_existing_messages(monkeypatch):
+    message = AssistantMessage(role="assistant", content=[TextContent(text="continued")])
+    existing_message = UserMessage(content=[TextContent(text="previous")], timestamp=1)
+
+    class FakeStream:
+        _background_task = None
+
+        def __aiter__(self):
+            return self
+
+        async def __anext__(self):
+            from pi.agent.types import AgentEndEvent
+
+            if getattr(self, "_sent", False):
+                raise StopAsyncIteration
+            self._sent = True
+            return AgentEndEvent(messages=[message])
+
+    captured = {}
+
+    def fake_agent_loop_continue(context, loop_config, cancel_event=None):
+        captured["cancel_event"] = cancel_event
+        captured["messages"] = context.messages
+        captured["tools"] = context.tools
+        return FakeStream()
+
+    def fake_agent_loop(input_messages, context, loop_config, cancel_event=None):
+        raise AssertionError("run should use agent_loop_continue when user_prompt is None")
+
+    monkeypatch.setattr("simple_agent.process.agent_process.agent_loop", fake_agent_loop)
+    monkeypatch.setattr("simple_agent.process.agent_process.agent_loop_continue", fake_agent_loop_continue)
+
+    cancel_event = asyncio.Event()
+    process = AgentProcess(model=object())
+    result = await process.run(
+        system_prompt="system",
+        messages=[existing_message],
+        tools=[],
+        user_prompt=None,
+        cancel_event=cancel_event,
+    )
+
+    assert result == [message]
+    assert captured["cancel_event"] is cancel_event
+    assert captured["messages"] == [existing_message]
     assert captured["tools"] == []
 
 

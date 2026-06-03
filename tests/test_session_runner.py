@@ -21,6 +21,10 @@ class FakeAgentProcess:
         self.subscribers = []
         self.count_persisted = None
         self.persisted_after_turn = None
+        self.observe_phase = None
+        self.phase_at_run_start = None
+        self.observe_metadata_phase = None
+        self.metadata_phase_after_turn = None
 
     async def run(self, system_prompt, messages, tools, user_prompt="", cancel_event=None, hooks=None):
         message = AssistantMessage(role="assistant", content=[TextContent(text="done")])
@@ -40,12 +44,16 @@ class FakeAgentProcess:
                 "hooks": hooks,
             }
         )
+        if self.observe_phase is not None:
+            self.phase_at_run_start = self.observe_phase()
         from pi.agent.types import TurnEndEvent
 
         for hook in hooks["turn_end"]:
             hook(TurnEndEvent(message=message, tool_results=[tool_result]))
         if self.count_persisted is not None:
             self.persisted_after_turn = self.count_persisted()
+        if self.observe_metadata_phase is not None:
+            self.metadata_phase_after_turn = self.observe_metadata_phase()
         return [message, tool_result]
 
     def subscribe(self, callback):
@@ -89,6 +97,8 @@ async def test_session_runner_creates_task_runs_agent_and_persists_messages(tmp_
         cancel_event=cancel_event,
     )
     agent_process.count_persisted = lambda: len(db.list_runner_messages("session_a"))
+    agent_process.observe_phase = lambda: runner._phase
+    agent_process.observe_metadata_phase = lambda: db.get_runner_state_metadata("session_a").phase
 
     result = await runner.run("Build feature")
 
@@ -111,9 +121,91 @@ async def test_session_runner_creates_task_runs_agent_and_persists_messages(tmp_
     assert metadata.active_user_task_id == result.id
     persisted_messages = db.list_runner_messages("session_a")
     assert agent_process.persisted_after_turn == 2
+    assert agent_process.phase_at_run_start == "new_user_task"
+    assert agent_process.metadata_phase_after_turn == "running"
     assert len(persisted_messages) == 2
     assert persisted_messages[0].content[0].text == "done"
     assert persisted_messages[1].content[0].text == "tool done"
+
+
+@pytest.mark.asyncio
+async def test_session_runner_run_after_done_starts_new_user_task(tmp_path):
+    db = Database(str(tmp_path / "session.db"))
+    runner = SessionRunner(
+        session_id="session_a",
+        db=db,
+        task_manager=TaskManager(db),
+        agent_process=FakeAgentProcess(),
+        cancel_event=asyncio.Event(),
+    )
+
+    first = await runner.run("First request")
+    second = await runner.run("Second request")
+
+    assert first.title == "First request"
+    assert second.title == "Second request"
+    assert len(runner._agent_process.calls) == 2
+    assert runner._agent_process.calls[1]["user_prompt"] == "Second request"
+
+
+@pytest.mark.asyncio
+async def test_session_runner_run_none_continues_running_task_without_user_prompt(tmp_path):
+    db = Database(str(tmp_path / "session.db"))
+    task_manager = TaskManager(db)
+    task_manager.load(None)
+    user_task = task_manager.create_user_task("Paused request")
+    task_manager.save()
+    db.upsert_runner_state_metadata(
+        "session_a",
+        phase="running",
+        status="running",
+        active_user_task_id=user_task.id,
+    )
+    agent_process = FakeAgentProcess()
+    runner = SessionRunner(
+        session_id="session_a",
+        db=db,
+        task_manager=TaskManager(db),
+        agent_process=agent_process,
+        cancel_event=asyncio.Event(),
+    )
+
+    result = await runner.run(None)
+
+    assert result.title == "Paused request"
+    assert len(agent_process.calls) == 1
+    assert agent_process.calls[0]["user_prompt"] is None
+
+
+@pytest.mark.asyncio
+async def test_session_runner_new_input_closes_previous_task_and_creates_new_task(tmp_path):
+    db = Database(str(tmp_path / "session.db"))
+    task_manager = TaskManager(db)
+    task_manager.load(None)
+    previous_task = task_manager.create_user_task("Previous request")
+    task_manager.save()
+    db.upsert_runner_state_metadata(
+        "session_a",
+        phase="running",
+        status="running",
+        active_user_task_id=previous_task.id,
+    )
+    agent_process = FakeAgentProcess()
+    runner = SessionRunner(
+        session_id="session_a",
+        db=db,
+        task_manager=TaskManager(db),
+        agent_process=agent_process,
+        cancel_event=asyncio.Event(),
+    )
+
+    result = await runner.run("New request")
+
+    reloaded_previous = db.get_managed_task(previous_task.id)
+    assert reloaded_previous.status == "done"
+    assert result.title == "New request"
+    assert len(agent_process.calls) == 1
+    assert agent_process.calls[0]["user_prompt"] == "New request"
 
 
 class FailingAgentProcess:

@@ -58,7 +58,7 @@ class Session:
         return self._running
 
     @logged(_log)
-    def run(self, user_input: str) -> asyncio.Queue:
+    def run(self, user_input: str | None) -> asyncio.Queue:
         """Start the persisted runner and return the event queue."""
         if self._running:
             raise RuntimeError("Session is already running")
@@ -73,7 +73,7 @@ class Session:
         self._run_task = asyncio.create_task(self._run(user_input, queue, on_agent_event))
         return queue
 
-    async def _run(self, user_input: str, queue: asyncio.Queue, on_agent_event) -> None:
+    async def _run(self, user_input: str | None, queue: asyncio.Queue, on_agent_event) -> None:
         """Execute the runner and close the event queue when complete."""
         user_task = None
         try:

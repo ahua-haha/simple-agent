@@ -16,7 +16,7 @@ from simple_agent.session.session_manager import SessionBusyError, SessionManage
 
 
 class RunRequest(BaseModel):
-    input: str
+    input: str | None = None
 
 
 def _get_session_manager(request: Request) -> SessionManager:
