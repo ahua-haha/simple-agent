@@ -8,7 +8,7 @@ import time
 from typing import TYPE_CHECKING, Any, Callable, Literal
 
 from pi.agent import AgentTool, AgentToolResult, AgentToolUpdateCallback
-from pi.ai.types import AssistantMessage, TextContent, ToolCall, ToolResultMessage
+from pi.ai.types import AssistantMessage, TextContent, ToolCall, ToolResultMessage, UserMessage
 from simple_agent.fractional_index import key_after
 from simple_agent.json_utils import json_safe
 from simple_agent.state.state import RunnerMessageEntry
@@ -64,6 +64,7 @@ class SessionRunner:
     _context_token_threshold: int
     _tool_call_threshold: int
     _user_paused: bool
+    _hooks: dict[str, list[Callable[[AgentEvent], None]]]
 
     def __init__(
         self,
@@ -88,12 +89,25 @@ class SessionRunner:
         self._context_token_threshold = context_token_threshold
         self._tool_call_threshold = tool_call_threshold
         self._user_paused = False
+        self._hooks = {}
 
     def subscribe(self, callback: Callable) -> None:
         self._agent_process.subscribe(callback)
 
     def unsubscribe(self, callback: Callable) -> None:
         self._agent_process.unsubscribe(callback)
+
+    def add_hook(self, event_type: str, hook: Callable[[AgentEvent], None]) -> None:
+        self._hooks.setdefault(event_type, []).append(hook)
+
+    def remove_hook(self, event_type: str, hook: Callable[[AgentEvent], None]) -> None:
+        hooks = self._hooks.get(event_type)
+        if hooks is None:
+            return
+        if hook in hooks:
+            hooks.remove(hook)
+        if not hooks:
+            self._hooks.pop(event_type)
 
     def pause(self) -> None:
         self._user_paused = True
@@ -255,14 +269,20 @@ class SessionRunner:
             self.save_current_data(messages, status=self._phase)
             self.pause_for_compaction_if_needed()
 
-        hooks = {
+        hooks = self._merge_hooks({
             "turn_end": [save_current_data],
-        }
+        })
+
+        if self._phase == "new_user_task" and user_input is not None:
+            self.save_current_data(messages=[self._create_user_message(user_input)], status="new_user_task")
 
         agent_user_prompt = user_input if self._phase == "new_user_task" else None
+        agent_messages = self._agent_messages()
+        if self._phase == "new_user_task":
+            agent_messages = agent_messages[:-1]
         await self._agent_process.run(
             system_prompt=SYSTEM_PROMPT,
-            messages=self._agent_messages(),
+            messages=agent_messages,
             tools=self._create_tools(),
             user_prompt=agent_user_prompt,
             cancel_event=self._cancel_event,
@@ -270,12 +290,13 @@ class SessionRunner:
         )
         if self._phase == "compact":
             return
-        if self._user_paused:
-            return
         if self._task_manager.active_todo_id is None:
             self._task_manager.finish_user_task()
-        self._phase = "done"
-        self.save_current_data(status="done")
+            self._phase = "done"
+            self.save_current_data(status="done")
+            return
+        if self._user_paused:
+            return
 
     def pause_for_compaction_if_needed(self) -> None:
         context_tokens = estimate_messages_tokens(self._agent_messages())
@@ -289,6 +310,15 @@ class SessionRunner:
         self._phase = "compact"
         self.save_current_data(messages=[], status="compact", save_tasks=False)
         self._cancel_event.set()
+
+    def _merge_hooks(self, built_in_hooks: dict[str, list[Callable[[AgentEvent], None]]]):
+        hooks = {
+            event_type: list(event_hooks)
+            for event_type, event_hooks in self._hooks.items()
+        }
+        for event_type, event_hooks in built_in_hooks.items():
+            hooks.setdefault(event_type, []).extend(event_hooks)
+        return hooks
 
     async def handle_compact(self, user_input: str | None) -> None:
         scope = self._task_manager.compact_scope()
@@ -380,6 +410,12 @@ class SessionRunner:
 
     def _agent_messages(self) -> list[AgentMessage]:
         return [entry.message for entry in self._messages]
+
+    def _create_user_message(self, user_input: str) -> AgentMessage:
+        return UserMessage(
+            content=[TextContent(text=user_input)],
+            timestamp=int(time.time() * 1000),
+        )
 
     def _create_message_entries(
         self,

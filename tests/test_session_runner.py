@@ -74,19 +74,6 @@ class FakeCompactAgentProcess(FakeAgentProcess):
         return []
 
 
-class FakePausedAgentProcess(FakeAgentProcess):
-    def __init__(self):
-        super().__init__()
-        self.pause = None
-
-    async def run(self, system_prompt, messages, tools, user_prompt="", cancel_event=None, hooks=None):
-        self.calls.append({"user_prompt": user_prompt, "cancel_event": cancel_event})
-        if len(self.calls) > 1:
-            raise RuntimeError("runner should stop after paused agent run")
-        self.pause()
-        return []
-
-
 def _message_entries(messages):
     seq = key_after(None)
     entries = []
@@ -133,12 +120,13 @@ async def test_session_runner_creates_task_runs_agent_and_persists_messages(tmp_
     assert metadata.status == "done"
     assert metadata.active_user_task_id == result.id
     persisted_messages = db.list_runner_messages("session_a")
-    assert agent_process.persisted_after_turn == 2
+    assert agent_process.persisted_after_turn == 3
     assert agent_process.phase_at_run_start == "new_user_task"
     assert agent_process.metadata_phase_after_turn == "running"
-    assert len(persisted_messages) == 2
-    assert persisted_messages[0].content[0].text == "done"
-    assert persisted_messages[1].content[0].text == "tool done"
+    assert len(persisted_messages) == 3
+    assert persisted_messages[0].content[0].text == "Build feature"
+    assert persisted_messages[1].content[0].text == "done"
+    assert persisted_messages[2].content[0].text == "tool done"
 
 
 @pytest.mark.asyncio
@@ -191,7 +179,7 @@ async def test_session_runner_run_none_continues_running_task_without_user_promp
 
 
 @pytest.mark.asyncio
-async def test_session_runner_stops_after_paused_running_task(tmp_path):
+async def test_session_runner_stops_after_turn_end_pause_hook(tmp_path):
     db = Database(str(tmp_path / "session.db"))
     task_manager = TaskManager(db)
     task_manager.load(None)
@@ -204,7 +192,7 @@ async def test_session_runner_stops_after_paused_running_task(tmp_path):
         status="running",
         active_user_task_id=user_task.id,
     )
-    agent_process = FakePausedAgentProcess()
+    agent_process = FakeAgentProcess()
     runner = SessionRunner(
         session_id="session_a",
         db=db,
@@ -212,7 +200,11 @@ async def test_session_runner_stops_after_paused_running_task(tmp_path):
         agent_process=agent_process,
         cancel_event=asyncio.Event(),
     )
-    agent_process.pause = runner.pause
+
+    def pause_on_turn_end(event):
+        runner.pause()
+
+    runner.add_hook("turn_end", pause_on_turn_end)
 
     result = await runner.run(None)
 
@@ -220,6 +212,33 @@ async def test_session_runner_stops_after_paused_running_task(tmp_path):
     assert result.title == "Paused request"
     assert len(agent_process.calls) == 1
     assert metadata.phase == "running"
+
+
+@pytest.mark.asyncio
+async def test_session_runner_finishes_completed_task_even_when_turn_end_pauses(tmp_path):
+    db = Database(str(tmp_path / "session.db"))
+    agent_process = FakeAgentProcess()
+    runner = SessionRunner(
+        session_id="session_a",
+        db=db,
+        task_manager=TaskManager(db),
+        agent_process=agent_process,
+        cancel_event=asyncio.Event(),
+    )
+
+    def pause_on_turn_end(event):
+        runner.pause()
+
+    runner.add_hook("turn_end", pause_on_turn_end)
+
+    result = await runner.run("Build feature")
+    continued = await runner.run(None)
+
+    metadata = db.get_runner_state_metadata("session_a")
+    assert result.status == "done"
+    assert continued.id == result.id
+    assert len(agent_process.calls) == 1
+    assert metadata.phase == "done"
 
 
 @pytest.mark.asyncio
