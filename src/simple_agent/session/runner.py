@@ -9,6 +9,7 @@ from typing import TYPE_CHECKING, Any, Callable, Literal
 
 from pi.agent import AgentTool, AgentToolResult, AgentToolUpdateCallback
 from pi.ai.types import AssistantMessage, TextContent, ToolCall, ToolResultMessage
+from simple_agent.json_utils import json_safe
 from simple_agent.token_estimation import estimate_messages_tokens
 from simple_agent.tool.common_tools import create_all_coding_tools
 
@@ -41,11 +42,8 @@ tool-call log IDs, then finish the compacted todo."""
 
 def _tool_result_payload(result: AgentToolResult) -> dict[str, Any]:
     return {
-        "content": [
-            item.model_dump(mode="json") if hasattr(item, "model_dump") else dict(item.__dict__)
-            for item in result.content
-        ],
-        "details": result.details,
+        "content": [json_safe(item) for item in result.content],
+        "details": json_safe(result.details),
     }
 
 

@@ -6,8 +6,6 @@ tokenizer. It mirrors the common chars/4 approximation used elsewhere.
 
 from __future__ import annotations
 
-import json
-
 from pi.ai.types import (
     AssistantMessage,
     ImageContent,
@@ -18,6 +16,7 @@ from pi.ai.types import (
     ToolResultMessage,
     UserMessage,
 )
+from simple_agent.json_utils import stable_json
 
 IMAGE_ESTIMATED_CHARS = 4800
 
@@ -39,8 +38,6 @@ def estimate_assistant_message_tokens(message: AssistantMessage) -> int:
 def estimate_tool_result_message_tokens(message: ToolResultMessage) -> int:
     chars = len(message.tool_name)
     chars += _estimate_content_items_chars(message.content)
-    if message.details is not None:
-        chars += len(_stable_json(message.details))
     return chars // 4
 
 
@@ -67,11 +64,7 @@ def _estimate_content_items_chars(items: list[object]) -> int:
             total += len(item.thinking)
         elif isinstance(item, ToolCall):
             total += len(item.name)
-            total += len(_stable_json(item.arguments))
+            total += len(stable_json(item.arguments))
         elif isinstance(item, ImageContent):
             total += IMAGE_ESTIMATED_CHARS
     return total
-
-
-def _stable_json(value: object) -> str:
-    return json.dumps(value, sort_keys=True, separators=(",", ":"))

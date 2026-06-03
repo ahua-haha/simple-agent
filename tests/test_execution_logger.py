@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import asyncio
+import json
+from dataclasses import dataclass
 
 import pytest
 
@@ -12,6 +14,17 @@ from pi.ai.types import TextContent
 from simple_agent.db.db import Database
 from simple_agent.session.runner import SessionRunner
 from simple_agent.task_manager import TaskManager
+
+
+@dataclass
+class _NestedDetails:
+    truncated: bool
+
+
+@dataclass
+class _ToolDetails:
+    exit_code: int
+    nested: _NestedDetails
 
 
 class _FakeAgentProcess:
@@ -56,6 +69,31 @@ async def test_wrap_tool_records_runner_tool_call_success(tmp_path):
     assert records[0].params_json == '{"name": "Ada"}'
     assert records[0].status == "success"
     assert records[0].error is None
+
+
+@pytest.mark.asyncio
+async def test_wrap_tool_records_dataclass_details_as_json(tmp_path):
+    db = Database(str(tmp_path / "session.db"))
+    tool = AgentTool(name="bash", description="Bash", parameters={"type": "object", "properties": {}})
+
+    async def execute(tool_call_id, params, cancel_event=None, on_update=None):
+        return AgentToolResult(
+            content=[TextContent(text="hello")],
+            details=_ToolDetails(exit_code=0, nested=_NestedDetails(truncated=False)),
+        )
+
+    tool.execute = execute
+    runner = _make_runner(db)
+    wrapped = runner.wrap_tool(tool)
+
+    await wrapped.execute("call_1", {"command": "echo hello"})
+
+    records = db.list_runner_tool_calls("session_a")
+    payload = json.loads(records[0].result_json)
+    assert payload["details"] == {
+        "exit_code": 0,
+        "nested": {"truncated": False},
+    }
 
 
 @pytest.mark.asyncio

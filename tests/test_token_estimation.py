@@ -1,5 +1,7 @@
 """Tests for project-local message token estimation."""
 
+from dataclasses import dataclass
+
 from pi.ai.types import (
     AssistantMessage,
     ImageContent,
@@ -18,6 +20,17 @@ from simple_agent.token_estimation import (
     estimate_tool_result_message_tokens,
     estimate_user_message_tokens,
 )
+
+
+@dataclass
+class _NestedDetails:
+    count: int
+
+
+@dataclass
+class _ToolDetails:
+    ok: bool
+    nested: _NestedDetails
 
 
 def test_estimate_user_message_tokens_for_text():
@@ -60,6 +73,25 @@ def test_estimate_tool_result_message_tokens_counts_content_and_metadata():
     )
 
     assert estimate_tool_result_message_tokens(message) > 3
+
+
+def test_estimate_tool_result_message_tokens_ignores_details():
+    without_details = ToolResultMessage(
+        toolCallId="call_1",
+        toolName="ls",
+        content=[TextContent(text="files")],
+        details=None,
+        timestamp=1,
+    )
+    with_details = ToolResultMessage(
+        toolCallId="call_1",
+        toolName="ls",
+        content=[TextContent(text="files")],
+        details=_ToolDetails(ok=True, nested=_NestedDetails(count=2)),
+        timestamp=1,
+    )
+
+    assert estimate_tool_result_message_tokens(with_details) == estimate_tool_result_message_tokens(without_details)
 
 
 def test_estimate_message_tokens_dispatches_by_role():
