@@ -63,6 +63,7 @@ class SessionRunner:
     _next_message_seq: str | None
     _context_token_threshold: int
     _tool_call_threshold: int
+    _user_paused: bool
 
     def __init__(
         self,
@@ -86,6 +87,7 @@ class SessionRunner:
         self._next_message_seq = key_after(None)
         self._context_token_threshold = context_token_threshold
         self._tool_call_threshold = tool_call_threshold
+        self._user_paused = False
 
     def subscribe(self, callback: Callable) -> None:
         self._agent_process.subscribe(callback)
@@ -94,6 +96,7 @@ class SessionRunner:
         self._agent_process.unsubscribe(callback)
 
     def pause(self) -> None:
+        self._user_paused = True
         self._cancel_event.set()
 
     def load(self) -> None:
@@ -195,10 +198,14 @@ class SessionRunner:
         return [self.wrap_tool(tool) for tool in tools]
 
     async def run(self, user_input: str | None):
+        self._user_paused = False
+        self._cancel_event.clear()
         self.load()
         self.handle_input(user_input)
         try:
             while self._phase != "done":
+                if self._user_paused:
+                    break
                 if self._phase in ("idle", "error"):
                     break
                 if self._phase in ("new_user_task", "running"):
@@ -262,6 +269,8 @@ class SessionRunner:
             hooks=hooks,
         )
         if self._phase == "compact":
+            return
+        if self._user_paused:
             return
         if self._task_manager.active_todo_id is None:
             self._task_manager.finish_user_task()

@@ -74,6 +74,19 @@ class FakeCompactAgentProcess(FakeAgentProcess):
         return []
 
 
+class FakePausedAgentProcess(FakeAgentProcess):
+    def __init__(self):
+        super().__init__()
+        self.pause = None
+
+    async def run(self, system_prompt, messages, tools, user_prompt="", cancel_event=None, hooks=None):
+        self.calls.append({"user_prompt": user_prompt, "cancel_event": cancel_event})
+        if len(self.calls) > 1:
+            raise RuntimeError("runner should stop after paused agent run")
+        self.pause()
+        return []
+
+
 def _message_entries(messages):
     seq = key_after(None)
     entries = []
@@ -175,6 +188,38 @@ async def test_session_runner_run_none_continues_running_task_without_user_promp
     assert result.title == "Paused request"
     assert len(agent_process.calls) == 1
     assert agent_process.calls[0]["user_prompt"] is None
+
+
+@pytest.mark.asyncio
+async def test_session_runner_stops_after_paused_running_task(tmp_path):
+    db = Database(str(tmp_path / "session.db"))
+    task_manager = TaskManager(db)
+    task_manager.load(None)
+    user_task = task_manager.create_user_task("Paused request")
+    task_manager.create_todo("Active todo")
+    task_manager.save()
+    db.upsert_runner_state_metadata(
+        "session_a",
+        phase="running",
+        status="running",
+        active_user_task_id=user_task.id,
+    )
+    agent_process = FakePausedAgentProcess()
+    runner = SessionRunner(
+        session_id="session_a",
+        db=db,
+        task_manager=TaskManager(db),
+        agent_process=agent_process,
+        cancel_event=asyncio.Event(),
+    )
+    agent_process.pause = runner.pause
+
+    result = await runner.run(None)
+
+    metadata = db.get_runner_state_metadata("session_a")
+    assert result.title == "Paused request"
+    assert len(agent_process.calls) == 1
+    assert metadata.phase == "running"
 
 
 @pytest.mark.asyncio
