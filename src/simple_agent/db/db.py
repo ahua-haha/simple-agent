@@ -19,7 +19,6 @@ from simple_agent.state.state import (
     RunnerStateMetadataRecord,
     RunnerToolCallRecord,
     SessionRecord,
-    TaskRecord,
     agent_message_from_json,
     agent_message_to_json,
     managed_task_from_record,
@@ -80,41 +79,6 @@ class Database:
     def create_session(self) -> Session:
         """Create a database session for composing multiple writes."""
         return self._get_session()
-
-    # ------------------------------------------------------------------
-    # Task operations
-    # ------------------------------------------------------------------
-
-    @standalone_or_compose
-    def upsert_task(self, task, *, session: Session | None = None) -> int:
-        """INSERT or UPDATE a task row.  Returns the task ``id``."""
-        record = session.merge(task.to_db_row())
-        session.flush()
-        task.id = record.id
-        return record.id
-
-    @standalone_or_compose
-    def get_task(self, task_id: int, *, session: Session | None = None) -> TaskRecord | None:
-        """Return a single task record, or None."""
-        record = session.get(TaskRecord, task_id)
-        if record is not None:
-            session.expunge(record)
-        return record
-
-    @standalone_or_compose
-    def load_all_tasks(self, *, session: Session | None = None) -> list[TaskRecord]:
-        """Return all task records, ordered by id."""
-        records = list(session.exec(select(TaskRecord).order_by(TaskRecord.id)).all())
-        for r in records:
-            session.expunge(r)
-        return records
-
-    @standalone_or_compose
-    def delete_task(self, task_id: int, *, session: Session | None = None) -> None:
-        """Delete a task row by id."""
-        record = session.get(TaskRecord, task_id)
-        if record is not None:
-            session.delete(record)
 
     # ------------------------------------------------------------------
     # ManagedTask operations

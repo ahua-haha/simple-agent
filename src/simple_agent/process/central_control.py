@@ -8,7 +8,6 @@ from typing import TYPE_CHECKING
 from simple_agent.log import logged
 from simple_agent.process.runners import BaseRunner, RunnerResult
 from simple_agent.state.state import Task
-from simple_agent.db.db import Database
 
 if TYPE_CHECKING:
     from collections.abc import Callable
@@ -20,20 +19,11 @@ class CentralControl:
     """Single-transition state machine.
 
     ``run(cursor)`` executes one agent cycle and one state transition.
-    Returns ``(new_cursor, updates, inserts)`` — the exact tasks to
-    persist.  Session owns the loop and cursor.
-
-    Usage::
-
-        cursor = db.load_active()
-        while cursor is not None:
-            new_cursor, updates, inserts = await cc.run(cursor)
-            for t in updates: db.upsert_task(t)
-            for t in inserts: db.upsert_task(t)
-            cursor = new_cursor
+    This legacy runner no longer persists ``Task`` rows; session running is
+    owned by ``SessionRunner`` and ``TaskManager``.
     """
 
-    def __init__(self, db: Database, runners: dict[str, BaseRunner]):
+    def __init__(self, db, runners: dict[str, BaseRunner]):
         self._db = db
         self._runners = runners
 
@@ -73,18 +63,7 @@ class CentralControl:
         if cursor.parent_id is None:
             return None, [cursor], []
 
-        record = self._db.get_task(cursor.parent_id)
-        if record is None:
-            return None, [cursor], []
-
-        parent = Task.from_db_rows([record])[cursor.parent_id]
-
-        parent.messages.extend(cursor.result_msg or [])
-        parent.finished_task_ids.append(cursor.id)
-        parent.running_task_id = None
-        parent.running_task = None
-
-        return parent, [cursor, parent], []
+        raise RuntimeError("CentralControl no longer supports persisted parent loading")
 
     def _handle_sub_task(self, cursor: Task, child: Task | None
                          ) -> tuple[Task | None, list[Task], list[Task]]:
