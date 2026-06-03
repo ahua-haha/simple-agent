@@ -23,6 +23,7 @@ class ManagedTask(BaseModel):
     create_tool_call_id: str | None = None
     end_tool_call_id: str | None = None
     tool_call_log_id: int | None = None
+    children: list["ManagedTask"] = Field(default_factory=list, exclude=True)
     created_at: float = Field(default_factory=time.time)
     updated_at: float = Field(default_factory=time.time)
 

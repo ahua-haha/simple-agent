@@ -284,6 +284,7 @@ async def test_handle_compact_replaces_messages_and_tasks(tmp_path):
     todo = task_manager.create_todo("Inspect files", tool_call_id="call_create")
     task_manager.finish_task("Done", tool_call_id="call_finish")
     active = task_manager.create_todo("Continue work")
+    task_manager.save()
     runner._active_user_task_id = user_task.id
     runner._phase = "compact"
     runner._messages = _message_entries([
@@ -350,7 +351,7 @@ async def test_handle_compact_replaces_messages_and_tasks(tmp_path):
     assert messages[0].content[0].text == "original request"
     assert "Compact summary" in messages[1].content[0].text
     assert "active todo" in messages[2].content[0].text
-    assert len(loaded_task_manager.child_tasks(user_task.id)) == 2
+    assert len(loaded_task_manager.active_user_task.children) == 2
     assert db.get_runner_state_metadata("session_a").phase == "running"
 
 

@@ -100,7 +100,7 @@ def test_normal_tool_call_records_under_active_todo():
     manager.save()
     loaded_manager = TaskManager(db)
     loaded_manager.load(todo.parent_id)
-    loaded_children = loaded_manager.child_tasks(todo.id)
+    loaded_children = loaded_manager.active_todo.children
 
     assert len(loaded_children) == 1
     assert loaded_children[0].kind == "tool_call"

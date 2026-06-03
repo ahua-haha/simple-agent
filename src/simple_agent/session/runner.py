@@ -332,7 +332,11 @@ class SessionRunner:
         raise RuntimeError(f"Could not find tool result message for tool call {tool_call_id}")
 
     def format_compacted_todo_message(self, compacted_todo) -> AgentMessage:
-        tool_refs = self._task_manager.tool_call_log_ids(compacted_todo.id)
+        tool_refs = [
+            child.tool_call_log_id
+            for child in compacted_todo.children
+            if child.kind == "tool_call" and child.tool_call_log_id is not None
+        ]
         text = (
             f"Compacted todo: {compacted_todo.result or compacted_todo.title}\n"
             f"Useful tool calls: {tool_refs}"
