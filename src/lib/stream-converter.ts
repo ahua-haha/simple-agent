@@ -1,4 +1,7 @@
-import type { AgentEvent } from "@earendil-works/pi-agent-core";
+import type {
+  AgentEvent,
+  AgentToolResult,
+} from "@earendil-works/pi-agent-core";
 import type { AssistantMessageEvent } from "@earendil-works/pi-ai";
 import type { UIMessageChunk } from "ai";
 
@@ -20,6 +23,14 @@ function mapStopReasonToFinishReason(
     return STOP_REASON_MAP[stopReason];
   }
   return "stop";
+}
+
+function toolResultContentToText(
+  content: AgentToolResult<unknown>["content"],
+): string {
+  return content
+    .map((part) => (part.type === "text" ? part.text : "[image]"))
+    .join("\n");
 }
 
 /**
@@ -95,15 +106,13 @@ export class StreamConverter {
       }
 
       case "tool_execution_end": {
+        const result = event.result as AgentToolResult<unknown>;
         if (event.isError) {
           return [
             {
               type: "tool-output-error" as const,
               toolCallId: event.toolCallId,
-              errorText:
-                typeof event.result === "string"
-                  ? event.result
-                  : JSON.stringify(event.result),
+              errorText: toolResultContentToText(result.content),
             },
           ];
         }
@@ -111,7 +120,7 @@ export class StreamConverter {
           {
             type: "tool-output-available" as const,
             toolCallId: event.toolCallId,
-            output: event.result,
+            output: toolResultContentToText(result.content),
           },
         ];
       }
