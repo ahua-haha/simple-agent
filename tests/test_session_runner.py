@@ -342,7 +342,7 @@ def test_session_runner_pause_controls_cancel_event(tmp_path):
     assert cancel_event.is_set()
 
 
-def test_append_messages_updates_memory_and_database(tmp_path):
+def test_append_messages_buffers_until_sync(tmp_path):
     db = Database(str(tmp_path / "session.db"))
     runner = SessionRunner(
         session_id="session_a",
@@ -356,13 +356,19 @@ def test_append_messages_updates_memory_and_database(tmp_path):
 
     runner.append_messages([message])
 
-    persisted = db.list_runner_messages("session_a")
     assert len(runner._messages) == 1
     assert runner._messages[0].message is message
+    assert len(runner._uncommitted_messages) == 1
+    assert db.list_runner_messages("session_a") == []
+
+    runner.sync_messages()
+
+    persisted = db.list_runner_messages("session_a")
     assert persisted[0].content[0].text == "hello"
+    assert runner._uncommitted_messages == []
 
 
-def test_record_tool_call_updates_task_manager_and_database(tmp_path):
+def test_record_tool_call_buffers_until_sync(tmp_path):
     db = Database(str(tmp_path / "session.db"))
     task_manager = TaskManager(db)
     task_manager.load(None)
@@ -385,6 +391,11 @@ def test_record_tool_call_updates_task_manager_and_database(tmp_path):
 
     runner.record_tool_call(tool_call, tool_result, started_at=1.0, finished_at=2.0)
 
+    assert len(runner._uncommitted_tool_calls) == 1
+    assert db.list_runner_tool_calls("session_a") == []
+
+    runner.sync_tool_calls()
+
     records = db.list_runner_tool_calls("session_a")
     loaded_manager = TaskManager(db)
     loaded_manager.load(user_task.id)
@@ -393,6 +404,30 @@ def test_record_tool_call_updates_task_manager_and_database(tmp_path):
     assert records[0].id == 0
     assert records[0].tool_call_id == "call_1"
     assert loaded_todo.children[0].tool_call_log_id == 0
+    assert runner._uncommitted_tool_calls == []
+
+
+def test_failed_save_keeps_uncommitted_buffers(tmp_path):
+    db = Database(str(tmp_path / "session.db"))
+    task_manager = FailingSaveTaskManager(db)
+    task_manager.load(None)
+    task_manager.create_user_task("Build feature")
+    task_manager.save_calls = 1
+    runner = SessionRunner(
+        session_id="session_a",
+        db=db,
+        task_manager=task_manager,
+        agent_process=FakeAgentProcess(),
+        cancel_event=asyncio.Event(),
+    )
+    runner.load()
+    message = UserMessage(content=[TextContent(text="hello")], timestamp=1)
+
+    with pytest.raises(RuntimeError, match="task save failed"):
+        runner.save_current_data(messages=[message])
+
+    assert len(runner._uncommitted_messages) == 1
+    assert db.list_runner_messages("session_a") == []
 
 
 @pytest.mark.asyncio

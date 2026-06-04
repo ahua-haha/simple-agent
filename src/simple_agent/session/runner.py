@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import time
+from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, Callable, Literal
 
 from pi.ai.types import AssistantMessage, TextContent, ToolCall, ToolResultMessage, UserMessage
@@ -69,6 +70,15 @@ def _tool_result_error(result: ToolResultMessage) -> str | None:
     return "\n".join(text_parts) if text_parts else "Tool call failed"
 
 
+@dataclass(frozen=True)
+class PendingToolCallRecord:
+    log_id: int
+    tool_call: ToolCall | None
+    tool_result: ToolResultMessage
+    started_at: float
+    finished_at: float
+
+
 class SessionRunner:
     """Persisted runner for one Session.run invocation at a time."""
 
@@ -84,6 +94,9 @@ class SessionRunner:
     _context_token_threshold: int
     _tool_call_threshold: int
     _user_paused: bool
+    _uncommitted_messages: list[RunnerMessageEntry]
+    _uncommitted_tool_calls: list[PendingToolCallRecord]
+    _next_tool_call_log_id: int
 
     def __init__(
         self,
@@ -108,6 +121,9 @@ class SessionRunner:
         self._context_token_threshold = context_token_threshold
         self._tool_call_threshold = tool_call_threshold
         self._user_paused = False
+        self._uncommitted_messages = []
+        self._uncommitted_tool_calls = []
+        self._next_tool_call_log_id = 0
 
     def subscribe(self, callback: Callable) -> None:
         self._agent_process.subscribe(callback)
@@ -123,6 +139,9 @@ class SessionRunner:
         metadata = self._db.get_runner_state_metadata(self._session_id)
         self._messages = self._db.list_runner_message_entries(self._session_id)
         self._next_message_seq = key_after(self._messages[-1].seq if self._messages else None)
+        self._uncommitted_messages = []
+        self._uncommitted_tool_calls = []
+        self._next_tool_call_log_id = self._db.next_runner_tool_call_id(self._session_id)
         if metadata is None:
             self._phase = "idle"
             self._active_user_task_id = None
@@ -142,17 +161,21 @@ class SessionRunner:
             session=session,
         )
 
-    def append_messages(self, messages: list[AgentMessage], *, session=None) -> None:
-        if session is None:
-            with self._db.create_session() as session:
-                self.append_messages(messages, session=session)
-                session.commit()
-            return
-
+    def append_messages(self, messages: list[AgentMessage]) -> None:
         entries = self._create_message_entries(messages)
         self._messages.extend(entries)
+        self._uncommitted_messages.extend(entries)
         self._next_message_seq = key_after(self._messages[-1].seq if self._messages else None)
-        for entry in entries:
+
+    def sync_messages(self, *, session=None) -> None:
+        if session is None:
+            with self._db.create_session() as session:
+                self.sync_messages(session=session)
+                session.commit()
+            self._uncommitted_messages.clear()
+            return
+
+        for entry in self._uncommitted_messages:
             self._db.insert_runner_message_entry(self._session_id, entry, session=session)
 
     def record_tool_call(
@@ -162,58 +185,58 @@ class SessionRunner:
         *,
         started_at: float,
         finished_at: float,
-        session=None,
     ) -> int:
-        if session is None:
-            with self._db.create_session() as session:
-                log_id = self.record_tool_call(
-                    tool_call,
-                    tool_result,
-                    started_at=started_at,
-                    finished_at=finished_at,
-                    session=session,
-                )
-                self._task_manager.save(session=session)
-                session.commit()
-                return log_id
-
-        log_id = self._db.next_runner_tool_call_id(self._session_id, session=session)
+        log_id = max(
+            self._next_tool_call_log_id,
+            self._db.next_runner_tool_call_id(self._session_id),
+        )
+        self._next_tool_call_log_id = log_id + 1
         self._task_manager.record_tool_call(log_id)
-        self._db.insert_runner_tool_call(
-            id=log_id,
-            session_id=self._session_id,
-            tool_call_id=tool_result.tool_call_id,
-            tool_name=tool_result.tool_name,
-            params=tool_call.arguments if tool_call is not None else {},
-            result=_tool_result_payload(tool_result),
-            status="error" if tool_result.is_error else "success",
-            started_at=started_at,
-            finished_at=finished_at,
-            error=_tool_result_error(tool_result),
-            session=session,
+        self._uncommitted_tool_calls.append(
+            PendingToolCallRecord(
+                log_id=log_id,
+                tool_call=tool_call,
+                tool_result=tool_result,
+                started_at=started_at,
+                finished_at=finished_at,
+            )
         )
         return log_id
+
+    def sync_tool_calls(self, *, session=None) -> None:
+        if session is None:
+            with self._db.create_session() as session:
+                self.sync_tool_calls(session=session)
+                self._task_manager.save(session=session)
+                session.commit()
+            self._uncommitted_tool_calls.clear()
+            return
+
+        for pending in self._uncommitted_tool_calls:
+            self._db.insert_runner_tool_call(
+                id=pending.log_id,
+                session_id=self._session_id,
+                tool_call_id=pending.tool_result.tool_call_id,
+                tool_name=pending.tool_result.tool_name,
+                params=pending.tool_call.arguments if pending.tool_call is not None else {},
+                result=_tool_result_payload(pending.tool_result),
+                status="error" if pending.tool_result.is_error else "success",
+                started_at=pending.started_at,
+                finished_at=pending.finished_at,
+                error=_tool_result_error(pending.tool_result),
+                session=session,
+            )
 
     def record_tool_calls(
         self,
         tool_call_records: list[tuple[ToolCall | None, ToolResultMessage, float, float]],
-        *,
-        session=None,
     ) -> None:
-        if session is None:
-            with self._db.create_session() as session:
-                self.record_tool_calls(tool_call_records, session=session)
-                self._task_manager.save(session=session)
-                session.commit()
-            return
-
         for tool_call, tool_result, started_at, finished_at in tool_call_records:
             self.record_tool_call(
                 tool_call,
                 tool_result,
                 started_at=started_at,
                 finished_at=finished_at,
-                session=session,
             )
 
     def save_current_data(
@@ -227,13 +250,20 @@ class SessionRunner:
     ) -> None:
         messages = messages or []
         tool_call_records = tool_call_records or []
+        self.record_tool_calls(tool_call_records)
+        self.append_messages(messages)
         with self._db.create_session() as session:
-            self.record_tool_calls(tool_call_records, session=session)
-            self.append_messages(messages, session=session)
+            self.sync_tool_calls(session=session)
+            self.sync_messages(session=session)
             if save_tasks:
                 self._task_manager.save(session=session)
             self.save_metadata(status=status or self._phase, last_error=last_error, session=session)
             session.commit()
+        self._clear_uncommitted_buffers()
+
+    def _clear_uncommitted_buffers(self) -> None:
+        self._uncommitted_messages.clear()
+        self._uncommitted_tool_calls.clear()
 
     def _create_tools(self):
         return [
@@ -461,7 +491,9 @@ class SessionRunner:
     def handle_error(self, exc: Exception) -> None:
         _log.exception("session runner failed: session=%s", self._session_id)
         self._phase = "error"
-        self.save_current_data(status="error", last_error=str(exc), save_tasks=False)
+        with self._db.create_session() as session:
+            self.save_metadata(status="error", last_error=str(exc), session=session)
+            session.commit()
 
     def _agent_messages(self) -> list[AgentMessage]:
         return [entry.message for entry in self._messages]
