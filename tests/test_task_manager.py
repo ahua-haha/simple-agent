@@ -220,6 +220,64 @@ def test_record_tool_call_with_active_todo_attaches_to_todo():
     assert loaded_tool_call.tool_call_log_id == 8
 
 
+def test_user_instruction_without_active_todo_asks_for_complexity_check():
+    db = _make_db()
+    manager = TaskManager(db)
+    _load(manager, None)
+    manager.create_user_task("Build feature")
+
+    instruction = manager.user_instruction_text()
+
+    assert "determine whether the user task is complex" in instruction.lower()
+    assert "create the next small atomic todo" in instruction
+
+
+def test_user_instruction_without_active_todo_after_many_tools_requires_todo():
+    db = _make_db()
+    manager = TaskManager(db)
+    _load(manager, None)
+    manager.create_user_task("Build feature")
+    todo = manager.create_todo("Inspect files")
+    manager.finish_task("Done")
+    for tool_call_id in range(6):
+        manager.record_tool_call(tool_call_id)
+
+    instruction = manager.user_instruction_text()
+
+    assert todo.status == "done"
+    assert "More than 5 tool calls have run since the previous todo" in instruction
+    assert "create a small atomic todo before doing more work" in instruction
+
+
+def test_user_instruction_with_active_todo_focuses_on_current_todo():
+    db = _make_db()
+    manager = TaskManager(db)
+    _load(manager, None)
+    manager.create_user_task("Build feature")
+    manager.create_todo("Inspect files")
+
+    instruction = manager.user_instruction_text()
+
+    assert "Focus on the active todo" in instruction
+    assert "finish_todo immediately when it is complete" in instruction
+
+
+def test_user_instruction_with_active_todo_after_many_tools_asks_to_finish_if_done():
+    db = _make_db()
+    manager = TaskManager(db)
+    _load(manager, None)
+    manager.create_user_task("Build feature")
+    manager.create_todo("Inspect files")
+    for tool_call_id in range(11):
+        manager.record_tool_call(tool_call_id)
+
+    instruction = manager.user_instruction_text()
+
+    assert "More than 10 tool calls have run for the active todo" in instruction
+    assert "determine whether the active todo is finished" in instruction.lower()
+    assert "call finish_todo now" in instruction
+
+
 def test_mixed_user_task_order_is_preserved():
     db = _make_db()
     manager = TaskManager(db)

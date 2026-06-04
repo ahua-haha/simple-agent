@@ -9,7 +9,7 @@ import pytest
 from pi.ai.types import AssistantMessage, TextContent, ToolCall, ToolResultMessage, UserMessage
 
 from simple_agent.db.db import Database
-from simple_agent.session.runner import RUNTIME_STEERING_PROMPT, SessionRunner
+from simple_agent.session.runner import SessionRunner
 from simple_agent.task_manager import TaskManager
 
 
@@ -242,7 +242,8 @@ async def test_session_runner_run_after_done_starts_new_user_task(tmp_path):
     assert second.title == "Second request"
     assert len(runner._agent_process.calls) == 2
     assert runner._agent_process.calls[1]["messages"][-2].content[0].text == "Second request"
-    assert runner._agent_process.calls[1]["messages"][-1].content[0].text == RUNTIME_STEERING_PROMPT
+    instruction = runner._agent_process.calls[1]["messages"][-1].content[0].text
+    assert "determine whether the user task is complex" in instruction.lower()
 
 
 @pytest.mark.asyncio
@@ -271,7 +272,8 @@ async def test_session_runner_run_none_continues_running_task_without_user_promp
     assert result.title == "Paused request"
     assert len(agent_process.calls) == 1
     assert len(agent_process.calls[0]["messages"]) == 1
-    assert agent_process.calls[0]["messages"][0].content[0].text == RUNTIME_STEERING_PROMPT
+    instruction = agent_process.calls[0]["messages"][0].content[0].text
+    assert "determine whether the user task is complex" in instruction.lower()
 
 
 @pytest.mark.asyncio
@@ -356,7 +358,8 @@ async def test_session_runner_new_input_closes_previous_task_and_creates_new_tas
     assert result.title == "New request"
     assert len(agent_process.calls) == 1
     assert agent_process.calls[0]["messages"][-2].content[0].text == "New request"
-    assert agent_process.calls[0]["messages"][-1].content[0].text == RUNTIME_STEERING_PROMPT
+    instruction = agent_process.calls[0]["messages"][-1].content[0].text
+    assert "determine whether the user task is complex" in instruction.lower()
 
 
 class FailingAgentProcess:
@@ -679,15 +682,17 @@ async def test_step_token_threshold_persists_compact_and_sets_cancel(tmp_path):
 async def test_handle_running_with_tool_calls_returns_normal_run_without_compaction(tmp_path):
     db = Database(str(tmp_path / "session.db"))
     task_manager = TaskManager(db)
+    agent_process = FakeAgentProcess()
     runner = SessionRunner(
         session_id="session_a",
         db=db,
         task_manager=task_manager,
-        agent_process=FakeAgentProcess(),
+        agent_process=agent_process,
         cancel_event=asyncio.Event(),
     )
     _load_task_manager(task_manager, None)
     user_task = task_manager.create_user_task("Build feature")
+    task_manager.create_todo("Inspect files")
     runner._active_user_task_id = user_task.id
     runner._next_action = "normal_run"
 
@@ -697,6 +702,8 @@ async def test_handle_running_with_tool_calls_returns_normal_run_without_compact
     assert metadata.next_action == "normal_run"
     assert runner._next_action == "normal_run"
     assert next_action == "normal_run"
+    instruction = agent_process.calls[0]["messages"][-1].content[0].text
+    assert "Focus on the active todo: Inspect files" in instruction
 
 
 @pytest.mark.asyncio
@@ -724,7 +731,7 @@ async def test_handle_running_adds_transient_steering_user_message(tmp_path):
     persisted_messages = db.list_runner_messages("session_a")
     assert llm_messages[:-1] == [request_message]
     assert llm_messages[-1].role == "user"
-    assert llm_messages[-1].content[0].text == RUNTIME_STEERING_PROMPT
+    assert "determine whether the user task is complex" in llm_messages[-1].content[0].text.lower()
     assert [message.role for message in runner._messages] == ["user", "assistant"]
     assert [message.role for message in persisted_messages] == ["assistant"]
     assert persisted_messages[0].content[0].text == "final answer"

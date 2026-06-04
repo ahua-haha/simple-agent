@@ -198,6 +198,45 @@ class TaskManager:
             lines.append(line)
         return "\n".join(lines)
 
+    def user_instruction_text(self) -> str:
+        if self._user_task is None:
+            return (
+                "Runtime instruction for this turn:\n"
+                "- Wait for the user to provide a task before creating todos or doing tool work."
+            )
+
+        if self._active_todo is None:
+            tool_calls_after_previous_todo = self._count_tool_calls_after_latest_todo(self._user_task)
+            if tool_calls_after_previous_todo > 5:
+                return (
+                    "Runtime instruction for this turn:\n"
+                    "- More than 5 tool calls have run since the previous todo.\n"
+                    "- Stop and create a small atomic todo before doing more work.\n"
+                    "- The todo should describe only the next coherent unit of work."
+                )
+            return (
+                "Runtime instruction for this turn:\n"
+                "- Determine whether the user task is complex before doing more work.\n"
+                "- If it is complex or long-running, create the next small atomic todo first.\n"
+                "- If it is simple, answer directly or use the needed tools."
+            )
+
+        active_todo_tool_calls = self._count_tool_calls(self._active_todo.children)
+        if active_todo_tool_calls > 10:
+            return (
+                "Runtime instruction for this turn:\n"
+                "- More than 10 tool calls have run for the active todo.\n"
+                "- Determine whether the active todo is finished.\n"
+                "- If it is finished, call finish_todo now with a concise result.\n"
+                "- If it is not finished, do only the next action needed to complete it."
+            )
+        return (
+            "Runtime instruction for this turn:\n"
+            f"- Focus on the active todo: {self._active_todo.title}\n"
+            "- Use tools only for work needed by this todo.\n"
+            "- Call finish_todo immediately when it is complete."
+        )
+
     def finish_task(self, result: str | None = None, tool_call_id: str | None = None) -> ManagedTask:
         todo = self._require_active_todo()
         todo.status = "done"
@@ -422,6 +461,16 @@ class TaskManager:
             tasks.append(task)
             stack.extend(reversed(task.children))
         return tasks
+
+    def _count_tool_calls_after_latest_todo(self, user_task: ManagedTask) -> int:
+        latest_todo_index = -1
+        for index, child in enumerate(user_task.children):
+            if child.kind == "todo":
+                latest_todo_index = index
+        return self._count_tool_calls(user_task.children[latest_todo_index + 1:])
+
+    def _count_tool_calls(self, tasks: list[ManagedTask]) -> int:
+        return sum(1 for task in tasks if task.kind == "tool_call")
 
     def _first_child_index(self, user_task: ManagedTask, tasks: list[ManagedTask]) -> int:
         task_ids = {task.id for task in tasks}

@@ -31,13 +31,6 @@ Be concise, practical, and honest about uncertainty. Use available tools
 when they are needed, and explain outcomes clearly.
 """
 
-RUNTIME_STEERING_PROMPT = """Runtime instruction for this turn:
-- Before doing the next unit of work, explicitly create a small todo with create_todo.
-- Use tools to perform the work described by the active todo.
-- Mark the active todo finished immediately when it is done.
-- If the active todo cannot be completed, mark it error and create a revised todo when there is a clear next step.
-"""
-
 DEFAULT_CONTEXT_TOKEN_THRESHOLD = 120_000
 DEFAULT_TOOL_CALL_THRESHOLD = 200
 
@@ -273,7 +266,7 @@ class SessionRunner:
         llm_messages = [
             *self._messages,
             UserMessage(
-                content=[TextContent(text=RUNTIME_STEERING_PROMPT)],
+                content=[TextContent(text=self._task_manager.user_instruction_text())],
                 timestamp=int(time.time() * 1000),
             ),
         ]
