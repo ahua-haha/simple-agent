@@ -114,7 +114,8 @@ async def test_agent_process_call_llm_step_returns_one_assistant_message_and_emi
 
     async def fake_stream_assistant_response(context, loop_config, cancel_event, stream, stream_fn):
         captured["context_messages"] = context.messages
-        loop_config.on_event(MessageEndEvent(message=message))
+        captured["on_event"] = loop_config.on_event
+        stream.push(MessageEndEvent(message=message))
         return message
 
     monkeypatch.setattr(
@@ -130,12 +131,12 @@ async def test_agent_process_call_llm_step_returns_one_assistant_message_and_emi
         system_prompt="system",
         messages=[existing_message],
         tools=[],
-        hooks={"message_end": [lambda event: calls.append(("hook", event.type))]},
     )
 
     assert result is message
     assert captured["context_messages"] == [existing_message]
-    assert calls == [("hook", "message_end"), ("listener", "message_end")]
+    assert captured["on_event"] is None
+    assert calls == [("listener", "message_end")]
 
 
 @pytest.mark.asyncio
@@ -171,20 +172,18 @@ async def test_agent_process_run_tool_calls_step_returns_tool_results_and_emits_
     results = await process.run_tool_calls_step(
         tools=[tool],
         assistant_message=assistant,
-        hooks={"tool_execution_end": [lambda event: calls.append(("hook", event.type))]},
     )
 
     assert len(results) == 1
     assert results[0].tool_call_id == "call_1"
     assert results[0].tool_name == "echo"
     assert results[0].content[0].text == "hello"
-    assert ("hook", "tool_execution_end") in calls
     assert ("listener", "tool_execution_end") in calls
     assert ("listener", "message_end") in calls
 
 
 @pytest.mark.asyncio
-async def test_agent_process_runs_hooks_before_listeners(monkeypatch):
+async def test_agent_process_run_emits_listener_events(monkeypatch):
     from pi.agent.types import AgentEndEvent
 
     message = AssistantMessage(role="assistant", content=[TextContent(text="done")])
@@ -210,18 +209,12 @@ async def test_agent_process_runs_hooks_before_listeners(monkeypatch):
 
     def fake_agent_loop(input_messages, context, loop_config, cancel_event=None):
         captured["messages"] = context.messages
-        loop_config.on_event(event)
+        captured["on_event"] = loop_config.on_event
         return FakeStream()
 
     monkeypatch.setattr("simple_agent.process.agent_process.agent_loop", fake_agent_loop)
 
     process = AgentProcess(model=object())
-
-    def hook(seen_event):
-        calls.append(("hook", seen_event is event))
-
-    def wrong_type_hook(seen_event):
-        calls.append(("wrong_type_hook", seen_event is event))
 
     def listener(seen_event):
         calls.append(("listener", seen_event is event))
@@ -233,9 +226,9 @@ async def test_agent_process_runs_hooks_before_listeners(monkeypatch):
         messages=[],
         tools=[],
         user_prompt="hello",
-        hooks={"agent_end": [hook], "message_start": [wrong_type_hook]},
     )
 
     assert result == [message]
     assert captured["messages"] == []
-    assert calls == [("hook", True), ("listener", True)]
+    assert captured["on_event"] is None
+    assert calls == [("listener", True)]

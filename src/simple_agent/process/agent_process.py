@@ -15,16 +15,13 @@ from pi.agent.loop import (
     agent_loop,
     agent_loop_continue,
 )
-from pi.agent.types import AgentContext, AgentEndEvent, AgentEvent, AgentLoopConfig, AgentMessage
+from pi.agent.types import AgentContext, AgentEndEvent, AgentLoopConfig, AgentMessage
 from pi.ai.types import AssistantMessage, TextContent, ToolResultMessage, UserMessage
 
 from simple_agent.log import logged
 from simple_agent.models import register_custom_models, get_api_key
 
 _log = logging.getLogger(__name__)
-
-AgentProcessHook = Callable[[AgentEvent], None]
-AgentProcessHooks = dict[str, list[AgentProcessHook]]
 
 
 class AgentProcess:
@@ -41,18 +38,16 @@ class AgentProcess:
         self._api_key = get_api_key
         self._listeners: list[Callable] = []
 
-    def _on_event(self, event: AgentEvent, hooks: AgentProcessHooks | None = None) -> None:
-        for hook in (hooks or {}).get(event.type, []):
-            hook(event)
-        self._emit(event)
-
-    def _create_loop_config(self, hooks: AgentProcessHooks | None = None) -> AgentLoopConfig:
+    def _create_loop_config(self) -> AgentLoopConfig:
         return AgentLoopConfig(
             model=self._model,
             convert_to_llm=lambda msgs: [m for m in msgs if m.role in ("user", "assistant", "tool_result")],
             get_api_key=self._api_key,
-            on_event=lambda event: self._on_event(event, hooks),
         )
+
+    async def _consume_stream_events(self, stream) -> None:
+        async for event in stream:
+            self._emit(event)
 
     async def call_llm_step(
         self,
@@ -61,7 +56,6 @@ class AgentProcess:
         messages: list[AgentMessage],
         tools: list[AgentTool],
         cancel_event: asyncio.Event | None = None,
-        hooks: AgentProcessHooks | None = None,
     ) -> AssistantMessage:
         """Call the LLM once and return the assistant message without running tools."""
         context = AgentContext(
@@ -70,13 +64,18 @@ class AgentProcess:
             tools=tools,
         )
         stream = _create_agent_stream()
-        return await _stream_assistant_response(
-            context,
-            self._create_loop_config(hooks),
-            cancel_event,
-            stream,
-            stream_fn=None,
-        )
+        consumer = asyncio.create_task(self._consume_stream_events(stream))
+        try:
+            return await _stream_assistant_response(
+                context,
+                self._create_loop_config(),
+                cancel_event,
+                stream,
+                stream_fn=None,
+            )
+        finally:
+            stream.end()
+            await consumer
 
     async def run_tool_calls_step(
         self,
@@ -84,19 +83,23 @@ class AgentProcess:
         tools: list[AgentTool],
         assistant_message: AssistantMessage,
         cancel_event: asyncio.Event | None = None,
-        hooks: AgentProcessHooks | None = None,
     ) -> list[ToolResultMessage]:
         """Execute tool calls from one assistant message and return tool results."""
         stream = _create_agent_stream()
-        execution = await _execute_tool_calls(
-            tools,
-            assistant_message,
-            cancel_event,
-            stream,
-            self._create_loop_config(hooks),
-            get_steering_messages=None,
-        )
-        return execution["tool_results"]
+        consumer = asyncio.create_task(self._consume_stream_events(stream))
+        try:
+            execution = await _execute_tool_calls(
+                tools,
+                assistant_message,
+                cancel_event,
+                stream,
+                self._create_loop_config(),
+                get_steering_messages=None,
+            )
+            return execution["tool_results"]
+        finally:
+            stream.end()
+            await consumer
 
     @logged(_log)
     async def run(
@@ -106,7 +109,6 @@ class AgentProcess:
         tools: list[AgentTool],
         user_prompt: str | None = "",
         cancel_event: asyncio.Event | None = None,
-        hooks: AgentProcessHooks | None = None,
     ) -> list[AgentMessage]:
         """Execute a single agent run and return the new messages."""
         context = AgentContext(
@@ -116,7 +118,7 @@ class AgentProcess:
         )
         new_messages: list[AgentMessage] = []
 
-        loop_config = self._create_loop_config(hooks)
+        loop_config = self._create_loop_config()
 
         if user_prompt is None:
             stream = agent_loop_continue(
@@ -139,6 +141,7 @@ class AgentProcess:
         async for event in stream:
             if isinstance(event, AgentEndEvent):
                 new_messages = event.messages
+            self._emit(event)
 
         if stream._background_task is not None:
             exc = stream._background_task.exception()
