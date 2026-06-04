@@ -84,12 +84,12 @@ def _print_event(event: AgentEvent | dict) -> None:
 
 
 def _print_database_messages(session: Session) -> None:
-    entries = session._db.list_runner_message_entries(session.id)
-    print(f"[db messages] count={len(entries)}")
-    for index, entry in enumerate(entries, start=1):
-        role = getattr(entry.message, "role", type(entry.message).__name__)
-        print(f"{index}. seq={entry.seq} role={role}")
-        for line in _message_lines(entry.message):
+    messages = session._db.list_runner_messages(session.id)
+    print(f"[db messages] count={len(messages)}")
+    for index, message in enumerate(messages, start=1):
+        role = getattr(message, "role", type(message).__name__)
+        print(f"{index}. role={role}")
+        for line in _message_lines(message):
             _print_indented(line)
 
 

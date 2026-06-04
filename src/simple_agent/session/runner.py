@@ -9,9 +9,7 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, Callable, Literal
 
 from pi.ai.types import AssistantMessage, TextContent, ToolCall, ToolResultMessage, UserMessage
-from simple_agent.fractional_index import key_after
 from simple_agent.json_utils import json_safe
-from simple_agent.state.state import RunnerMessageEntry
 from simple_agent.token_estimation import estimate_messages_tokens
 from simple_agent.tool.common_tools import create_all_coding_tools
 
@@ -89,12 +87,11 @@ class SessionRunner:
     _cancel_event: asyncio.Event
     _phase: RunnerPhase
     _active_user_task_id: int | None
-    _messages: list[RunnerMessageEntry]
-    _next_message_seq: str | None
+    _messages: list[AgentMessage]
     _context_token_threshold: int
     _tool_call_threshold: int
     _user_paused: bool
-    _uncommitted_messages: list[RunnerMessageEntry]
+    _uncommitted_messages: list[AgentMessage]
     _uncommitted_tool_calls: list[PendingToolCallRecord]
     _next_tool_call_log_id: int
 
@@ -117,7 +114,6 @@ class SessionRunner:
         self._phase = "idle"
         self._active_user_task_id = None
         self._messages = []
-        self._next_message_seq = key_after(None)
         self._context_token_threshold = context_token_threshold
         self._tool_call_threshold = tool_call_threshold
         self._user_paused = False
@@ -137,8 +133,7 @@ class SessionRunner:
 
     def load(self) -> None:
         metadata = self._db.get_runner_state_metadata(self._session_id)
-        self._messages = self._db.list_runner_message_entries(self._session_id)
-        self._next_message_seq = key_after(self._messages[-1].seq if self._messages else None)
+        self._messages = self._db.list_runner_messages(self._session_id)
         self._uncommitted_messages = []
         self._uncommitted_tool_calls = []
         self._next_tool_call_log_id = self._db.next_runner_tool_call_id(self._session_id)
@@ -162,10 +157,8 @@ class SessionRunner:
         )
 
     def append_messages(self, messages: list[AgentMessage]) -> None:
-        entries = self._create_message_entries(messages)
-        self._messages.extend(entries)
-        self._uncommitted_messages.extend(entries)
-        self._next_message_seq = key_after(self._messages[-1].seq if self._messages else None)
+        self._messages.extend(messages)
+        self._uncommitted_messages.extend(messages)
 
     def sync_messages(self, *, session=None) -> None:
         if session is None:
@@ -175,8 +168,8 @@ class SessionRunner:
             self._uncommitted_messages.clear()
             return
 
-        for entry in self._uncommitted_messages:
-            self._db.insert_runner_message_entry(self._session_id, entry, session=session)
+        for message in self._uncommitted_messages:
+            self._db.insert_runner_message(self._session_id, message, session=session)
 
     def record_tool_call(
         self,
@@ -397,22 +390,22 @@ class SessionRunner:
         start_tool_call_id = scope.compact_todos[0].create_tool_call_id
         if start_tool_call_id is None:
             raise RuntimeError("Compact start todo is missing create_tool_call_id")
-        start_seq = self.find_assistant_message_seq_for_tool_call(start_tool_call_id)
+        start_index = self.find_assistant_message_index_for_tool_call(start_tool_call_id)
 
         end_tool_call_id = scope.compact_todos[-1].end_tool_call_id
         if end_tool_call_id is None:
             raise RuntimeError("Compact end todo is missing end_tool_call_id")
-        end_seq = self.find_tool_result_message_seq_for_tool_call(end_tool_call_id)
-        if end_seq < start_seq:
+        end_index = self.find_tool_result_message_index_for_tool_call(end_tool_call_id)
+        if end_index < start_index:
             raise RuntimeError("Compact end message is before start message")
 
-        messages_before_start = self._messages[:start_seq]
-        preserved_messages = [entry.message for entry in self._messages[end_seq + 1:]]
+        messages_before_start = self._messages[:start_index]
+        preserved_messages = self._messages[end_index + 1:]
 
         self._task_manager.begin_compact_buffer()
         await self._agent_process.run(
             system_prompt=COMPACT_SYSTEM_PROMPT,
-            messages=[entry.message for entry in self._messages[start_seq:end_seq + 1]],
+            messages=self._messages[start_index:end_index + 1],
             tools=self._task_manager.create_compact_tools(),
             user_prompt=user_input,
             cancel_event=self._cancel_event,
@@ -421,39 +414,29 @@ class SessionRunner:
         with self._db.create_session() as session:
             compacted_todo = self._task_manager.replace_compact_scope(session=session)
             compact_messages = [self.format_compacted_todo_message(compacted_todo)]
-            replacement_messages = [*compact_messages, *preserved_messages]
-            start_seq_key = self._messages[start_seq].seq
-            replacement_entries = self._create_message_entries(replacement_messages, start_seq=start_seq_key)
-            self._db.delete_runner_messages_by_seq_range(
-                self._session_id,
-                start_seq_key,
-                session=session,
-            )
-            for entry in replacement_entries:
-                self._db.insert_runner_message_entry(self._session_id, entry, session=session)
+            replacement_messages = [*messages_before_start, *compact_messages, *preserved_messages]
+            self._db.replace_runner_messages(self._session_id, replacement_messages, session=session)
             self._phase = "running"
             self.save_metadata(status="running", session=session)
             session.commit()
 
-        self._messages = [*messages_before_start, *replacement_entries]
-        self._next_message_seq = key_after(self._messages[-1].seq if self._messages else None)
+        self._messages = replacement_messages
+        self._uncommitted_messages.clear()
         self._cancel_event.clear()
 
-    def find_assistant_message_seq_for_tool_call(self, tool_call_id: str) -> int:
-        for seq, entry in enumerate(self._messages):
-            message = entry.message
+    def find_assistant_message_index_for_tool_call(self, tool_call_id: str) -> int:
+        for index, message in enumerate(self._messages):
             if not isinstance(message, AssistantMessage):
                 continue
             for content in message.content:
                 if isinstance(content, ToolCall) and content.id == tool_call_id:
-                    return seq
+                    return index
         raise RuntimeError(f"Could not find assistant message for tool call {tool_call_id}")
 
-    def find_tool_result_message_seq_for_tool_call(self, tool_call_id: str) -> int:
-        for seq, entry in enumerate(self._messages):
-            message = entry.message
+    def find_tool_result_message_index_for_tool_call(self, tool_call_id: str) -> int:
+        for index, message in enumerate(self._messages):
             if isinstance(message, ToolResultMessage) and message.tool_call_id == tool_call_id:
-                return seq
+                return index
         raise RuntimeError(f"Could not find tool result message for tool call {tool_call_id}")
 
     def _assistant_has_tool_calls(self, message: AssistantMessage) -> bool:
@@ -496,25 +479,10 @@ class SessionRunner:
             session.commit()
 
     def _agent_messages(self) -> list[AgentMessage]:
-        return [entry.message for entry in self._messages]
+        return list(self._messages)
 
     def _create_user_message(self, user_input: str) -> AgentMessage:
         return UserMessage(
             content=[TextContent(text=user_input)],
             timestamp=int(time.time() * 1000),
         )
-
-    def _create_message_entries(
-        self,
-        messages: list[AgentMessage],
-        *,
-        start_seq: str | None = None,
-    ) -> list[RunnerMessageEntry]:
-        seq = start_seq or self._next_message_seq
-        if seq is None:
-            raise RuntimeError("SessionRunner must be loaded before creating message entries")
-        entries: list[RunnerMessageEntry] = []
-        for message in messages:
-            entries.append(RunnerMessageEntry(seq=seq, message=message))
-            seq = key_after(seq)
-        return entries

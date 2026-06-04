@@ -14,7 +14,6 @@ from pi.agent.types import AgentMessage
 from simple_agent.fractional_index import key_after
 from simple_agent.state.state import (
     ManagedTaskRecord,
-    RunnerMessageEntry,
     RunnerMessageRecord,
     RunnerStateMetadataRecord,
     RunnerToolCallRecord,
@@ -183,18 +182,16 @@ class Database:
         return record
 
     @standalone_or_compose
-    def insert_runner_message_entry(
+    def insert_runner_message(
         self,
         session_id: str,
-        entry: RunnerMessageEntry,
+        message: AgentMessage,
         *,
         session: Session | None = None,
     ) -> None:
-        message = entry.message
         session.add(
             RunnerMessageRecord(
                 session_id=session_id,
-                seq=entry.seq,
                 role=message.role,
                 content_json=agent_message_to_json(message),
                 timestamp_ms=getattr(message, "timestamp", None),
@@ -202,41 +199,19 @@ class Database:
         )
 
     @standalone_or_compose
-    def delete_runner_messages_by_seq_range(
+    def replace_runner_messages(
         self,
         session_id: str,
-        start_seq: str,
-        end_seq: str | None = None,
+        messages: list[AgentMessage],
         *,
         session: Session | None = None,
     ) -> None:
-        statement = (
+        session.exec(
             delete(RunnerMessageRecord)
             .where(RunnerMessageRecord.session_id == session_id)
-            .where(RunnerMessageRecord.seq >= start_seq)
         )
-        if end_seq is not None:
-            statement = statement.where(RunnerMessageRecord.seq <= end_seq)
-        session.exec(statement)
-
-    @standalone_or_compose
-    def list_runner_message_entries(
-        self,
-        session_id: str,
-        *,
-        session: Session | None = None,
-    ) -> list[RunnerMessageEntry]:
-        records = list(
-            session.exec(
-                select(RunnerMessageRecord)
-                .where(RunnerMessageRecord.session_id == session_id)
-                .order_by(RunnerMessageRecord.seq)
-            ).all()
-        )
-        return [
-            RunnerMessageEntry(seq=record.seq, message=agent_message_from_json(record.content_json))
-            for record in records
-        ]
+        for message in messages:
+            self.insert_runner_message(session_id, message, session=session)
 
     @standalone_or_compose
     def list_runner_messages(
@@ -245,7 +220,14 @@ class Database:
         *,
         session: Session | None = None,
     ) -> list[AgentMessage]:
-        return [entry.message for entry in self.list_runner_message_entries(session_id, session=session)]
+        records = list(
+            session.exec(
+                select(RunnerMessageRecord)
+                .where(RunnerMessageRecord.session_id == session_id)
+                .order_by(RunnerMessageRecord.id)
+            ).all()
+        )
+        return [agent_message_from_json(record.content_json) for record in records]
 
     @standalone_or_compose
     def next_runner_tool_call_id(

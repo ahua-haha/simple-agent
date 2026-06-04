@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import time
-from dataclasses import dataclass
 
 from pydantic import BaseModel, TypeAdapter
 from sqlmodel import SQLModel, Field
@@ -61,7 +60,6 @@ class RunnerMessageRecord(SQLModel, table=True):
 
     id: int | None = Field(default=None, primary_key=True)
     session_id: str = Field(index=True)
-    seq: str = Field(index=True)
     role: str = Field(index=True)
     content_json: str
     timestamp_ms: int | None = Field(default=None)
@@ -84,12 +82,6 @@ class RunnerToolCallRecord(SQLModel, table=True):
 
 
 # ── Domain models ────────────────────────────────────────────────────
-
-
-@dataclass(frozen=True)
-class RunnerMessageEntry:
-    seq: str
-    message: AgentMessage
 
 
 class TextResult(BaseModel):
