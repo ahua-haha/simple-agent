@@ -190,7 +190,7 @@ class TaskManager:
 
         lines = ["Todos:"]
         for todo in todos:
-            line = f"- {todo.id}: [{todo.status}] {todo.title}"
+            line = f"- [{todo.status}] {todo.title}"
             if todo.result:
                 line += f" result={todo.result}"
             if todo.error:

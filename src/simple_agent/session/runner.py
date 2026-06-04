@@ -27,21 +27,15 @@ RunnerAction = Literal["normal_run", "compact", "wait_user_input"]
 
 SYSTEM_PROMPT = """You are a helpful coding agent.
 
-IMPORTANT: Manage your task list for the current session with the todo
-tools. For complex or long-running tasks, you must decompose the work and
-use create_todo to explicitly define the next thing to do before doing
-that work.
+Be concise, practical, and honest about uncertainty. Use available tools
+when they are needed, and explain outcomes clearly.
+"""
 
-Todos must be small and atomic. Do not create broad todos that combine
-multiple steps. Before you try to do the next unit of work, including
-calling any non-todo tool, first create the todo that describes that unit
-of work. Only one todo may be active at a time.
-
-Call finish_todo immediately when the active todo is complete. If
-something fails, call error_todo for the active todo and create a revised
-todo when there is a clear next step.
-
-Keep responses concise and use available tools to do the work.
+RUNTIME_STEERING_PROMPT = """Runtime instruction for this turn:
+- Before doing the next unit of work, explicitly create a small todo with create_todo.
+- Use tools to perform the work described by the active todo.
+- Mark the active todo finished immediately when it is done.
+- If the active todo cannot be completed, mark it error and create a revised todo when there is a clear next step.
 """
 
 DEFAULT_CONTEXT_TOKEN_THRESHOLD = 120_000
@@ -276,9 +270,16 @@ class SessionRunner:
             return self._next_action
 
         tools = self._create_tools()
+        llm_messages = [
+            *self._messages,
+            UserMessage(
+                content=[TextContent(text=RUNTIME_STEERING_PROMPT)],
+                timestamp=int(time.time() * 1000),
+            ),
+        ]
         assistant_message = await self._agent_process.call_llm_step(
             system_prompt=SYSTEM_PROMPT,
-            messages=list(self._messages),
+            messages=llm_messages,
             tools=tools,
             cancel_event=self._cancel_event,
         )

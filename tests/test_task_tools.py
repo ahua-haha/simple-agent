@@ -38,7 +38,8 @@ def test_create_todo_tool_creates_active_todo():
     result = asyncio.run(run())
 
     assert "Todos:" in result.content[0].text
-    assert f"- {manager.active_todo_id}: [active] Inspect files" in result.content[0].text
+    assert "- [active] Inspect files" in result.content[0].text
+    assert f"- {manager.active_todo_id}:" not in result.content[0].text
     assert manager.active_todo_id is not None
 
 
@@ -60,7 +61,8 @@ def test_finish_todo_tool_finishes_active_todo():
     assert loaded.status == "done"
     assert loaded.result == "Inspected files"
     assert manager.active_todo_id is None
-    assert f"- {todo.id}: [done] Inspect files" in result.content[0].text
+    assert "- [done] Inspect files" in result.content[0].text
+    assert f"- {todo.id}:" not in result.content[0].text
     assert "result=Inspected files" in result.content[0].text
 
 
@@ -81,7 +83,8 @@ def test_error_todo_tool_returns_latest_todo_status():
 
     assert loaded.status == "error"
     assert manager.active_todo_id is None
-    assert f"- {todo.id}: [error] Inspect files" in result.content[0].text
+    assert "- [error] Inspect files" in result.content[0].text
+    assert f"- {todo.id}:" not in result.content[0].text
     assert "error=Missing dependency" in result.content[0].text
 
 
