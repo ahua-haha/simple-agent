@@ -102,19 +102,27 @@ class TaskManager:
     def create_create_todo_tool(self) -> AgentTool:
         tool = AgentTool(
             name="create_todo",
-            description="Create a todo for the next coherent unit of work.",
+            description=(
+                "Create the next todo item for the current session task list. "
+                "Use for complex tasks with 3+ steps or when the user provides "
+                "multiple tasks. Create items in priority order. Only one todo "
+                "may be active at a time."
+            ),
             parameters={
                 "type": "object",
                 "properties": {
-                    "title": {"type": "string", "description": "Short title for the todo"},
+                    "title": {
+                        "type": "string",
+                        "description": "Short content for the next coherent unit of work.",
+                    },
                 },
                 "required": ["title"],
             },
         )
 
         async def execute(tool_call_id, params, cancel_event=None, on_update=None):
-            todo = self.create_todo(params["title"], tool_call_id=tool_call_id)
-            return AgentToolResult(content=[TextContent(text=f"created todo {todo.id}")])
+            self.create_todo(params["title"], tool_call_id=tool_call_id)
+            return AgentToolResult(content=[TextContent(text=self.todo_status_text())])
 
         tool.execute = execute
         return tool
@@ -122,7 +130,10 @@ class TaskManager:
     def create_finish_todo_tool(self) -> AgentTool:
         tool = AgentTool(
             name="finish_todo",
-            description="Mark the active todo as done.",
+            description=(
+                "Mark the active todo as completed. Call immediately when the "
+                "todo is done before moving to the next item."
+            ),
             parameters={
                 "type": "object",
                 "properties": {
@@ -133,8 +144,8 @@ class TaskManager:
         )
 
         async def execute(tool_call_id, params, cancel_event=None, on_update=None):
-            todo = self.finish_task(params.get("result"), tool_call_id=tool_call_id)
-            return AgentToolResult(content=[TextContent(text=f"finished todo {todo.id}")])
+            self.finish_task(params.get("result"), tool_call_id=tool_call_id)
+            return AgentToolResult(content=[TextContent(text=self.todo_status_text())])
 
         tool.execute = execute
         return tool
@@ -142,7 +153,10 @@ class TaskManager:
     def create_error_todo_tool(self) -> AgentTool:
         tool = AgentTool(
             name="error_todo",
-            description="Mark the active todo as failed.",
+            description=(
+                "Cancel the active todo because it cannot be completed. If "
+                "there is a clear next step, create a revised todo after this."
+            ),
             parameters={
                 "type": "object",
                 "properties": {
@@ -153,8 +167,8 @@ class TaskManager:
         )
 
         async def execute(tool_call_id, params, cancel_event=None, on_update=None):
-            todo = self.error_task(params["error"], tool_call_id=tool_call_id)
-            return AgentToolResult(content=[TextContent(text=f"errored todo {todo.id}")])
+            self.error_task(params["error"], tool_call_id=tool_call_id)
+            return AgentToolResult(content=[TextContent(text=self.todo_status_text())])
 
         tool.execute = execute
         return tool
@@ -179,6 +193,22 @@ class TaskManager:
         self._active_todo = todo
         self.active_todo_id = todo.id
         return todo
+
+    def todo_status_text(self) -> str:
+        user_task = self._require_active_user_task()
+        todos = [child for child in user_task.children if child.kind == "todo"]
+        if not todos:
+            return "Todos: []"
+
+        lines = ["Todos:"]
+        for todo in todos:
+            line = f"- {todo.id}: [{todo.status}] {todo.title}"
+            if todo.result:
+                line += f" result={todo.result}"
+            if todo.error:
+                line += f" error={todo.error}"
+            lines.append(line)
+        return "\n".join(lines)
 
     def finish_task(self, result: str | None = None, tool_call_id: str | None = None) -> ManagedTask:
         todo = self._require_active_todo()

@@ -46,7 +46,8 @@ def test_create_todo_tool_creates_active_todo():
 
     result = asyncio.run(run())
 
-    assert "created todo" in result.content[0].text.lower()
+    assert "Todos:" in result.content[0].text
+    assert f"- {manager.active_todo_id}: [active] Inspect files" in result.content[0].text
     assert manager.active_todo_id is not None
 
 
@@ -62,13 +63,37 @@ def test_finish_todo_tool_finishes_active_todo():
     async def run():
         return await tool.execute("call_1", {"result": "Inspected files"})
 
-    asyncio.run(run())
+    result = asyncio.run(run())
     manager.save()
     loaded = db.get_managed_task(todo.id)
 
     assert loaded.status == "done"
     assert loaded.result == "Inspected files"
     assert manager.active_todo_id is None
+    assert f"- {todo.id}: [done] Inspect files" in result.content[0].text
+    assert "result=Inspected files" in result.content[0].text
+
+
+def test_error_todo_tool_returns_latest_todo_status():
+    db = _make_db()
+    manager = TaskManager(db)
+    manager.load(None)
+    manager.create_user_task("Build feature")
+    todo = manager.create_todo("Inspect files")
+    runner = _make_runner(db, manager)
+    tool = runner.wrap_tool(manager.create_error_todo_tool())
+
+    async def run():
+        return await tool.execute("call_1", {"error": "Missing dependency"})
+
+    result = asyncio.run(run())
+    manager.save()
+    loaded = db.get_managed_task(todo.id)
+
+    assert loaded.status == "error"
+    assert manager.active_todo_id is None
+    assert f"- {todo.id}: [error] Inspect files" in result.content[0].text
+    assert "error=Missing dependency" in result.content[0].text
 
 
 def test_normal_tool_call_records_under_active_todo():
