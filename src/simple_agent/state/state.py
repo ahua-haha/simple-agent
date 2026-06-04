@@ -32,7 +32,6 @@ class ManagedTaskRecord(SQLModel, table=True):
     kind: str = Field(index=True)
     title: str
     status: str = Field(default="active", index=True)
-    seq: str = Field(default="", index=True)
     result: str | None = None
     error: str | None = None
     create_tool_call_id: str | None = Field(default=None, index=True)
@@ -116,7 +115,6 @@ def managed_task_to_record(task: ManagedTask) -> ManagedTaskRecord:
         kind=task.kind,
         title=task.title,
         status=task.status,
-        seq=task.seq,
         result=task.result,
         error=task.error,
         create_tool_call_id=task.create_tool_call_id,
@@ -134,7 +132,6 @@ def managed_task_from_record(record: ManagedTaskRecord) -> ManagedTask:
         kind=record.kind,
         title=record.title,
         status=record.status,
-        seq=record.seq,
         result=record.result,
         error=record.error,
         create_tool_call_id=record.create_tool_call_id,

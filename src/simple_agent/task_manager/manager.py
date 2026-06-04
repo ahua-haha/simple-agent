@@ -8,7 +8,6 @@ from typing import TYPE_CHECKING
 from pi.agent import AgentTool, AgentToolResult
 from pi.ai.types import TextContent
 
-from simple_agent.fractional_index import key_after
 from simple_agent.task_manager.models import ManagedTask
 
 if TYPE_CHECKING:
@@ -40,7 +39,6 @@ class TaskManager:
     _active_todo: ManagedTask | None
     _next_task_id: int | None
     _compact_buffer: CompactBuffer | None
-    _next_task_seq: str | None
 
     def __init__(self, db: Database):
         self._db = db
@@ -50,7 +48,6 @@ class TaskManager:
         self._active_todo: ManagedTask | None = None
         self._next_task_id: int | None = None
         self._compact_buffer: CompactBuffer | None = None
-        self._next_task_seq: str | None = None
 
     def load(self, active_user_task_id: int | None) -> None:
         self._user_task = None
@@ -59,7 +56,6 @@ class TaskManager:
         self.active_todo_id = None
         self._next_task_id = self._db.next_managed_task_id()
         self._compact_buffer = None
-        self._next_task_seq = self._db.next_managed_task_seq()
         if active_user_task_id is None:
             return
         self._user_task = self.build_task_tree(active_user_task_id)
@@ -86,7 +82,6 @@ class TaskManager:
             raise TaskManagerError("Cannot create a second active user task")
         task = ManagedTask(kind="user_task", title=input)
         task.id = self._allocate_task_id()
-        self._assign_next_task_seq(task)
         self._user_task = task
         self.active_user_task_id = task.id
         return task
@@ -186,9 +181,7 @@ class TaskManager:
         )
         todo.id = self._allocate_task_id()
 
-        self._assign_next_task_seq(todo)
         user_task.children.append(todo)
-        user_task.children.sort(key=lambda task: task.seq)
         user_task.touch()
         self._active_todo = todo
         self.active_todo_id = todo.id
@@ -243,9 +236,7 @@ class TaskManager:
             tool_call_log_id=tool_call_id,
         )
         tool_call_task.id = self._allocate_task_id()
-        self._assign_next_task_seq(tool_call_task)
         target.children.append(tool_call_task)
-        target.children.sort(key=lambda task: task.seq)
         target.touch()
         return tool_call_task
 
@@ -283,7 +274,6 @@ class TaskManager:
             raise TaskManagerError("Compacted todo already exists")
         todo = ManagedTask(kind="todo", title="Compacted work", status="active", result=description)
         todo.id = self._allocate_task_id()
-        self._assign_next_task_seq(todo)
         self._compact_buffer.todo = todo
         return todo
 
@@ -298,9 +288,7 @@ class TaskManager:
             tool_call_log_id=tool_call_log_id,
         )
         tool_call_task.id = self._allocate_task_id()
-        self._assign_next_task_seq(tool_call_task)
         self._compact_buffer.todo.children.append(tool_call_task)
-        self._compact_buffer.todo.children.sort(key=lambda task: task.seq)
         self._compact_buffer.todo.touch()
 
     def finish_compacted_todo(self) -> ManagedTask:
@@ -381,29 +369,23 @@ class TaskManager:
         if scope is None:
             raise TaskManagerError("No compact scope")
         compacted_todo = self.consume_compact_buffer()
+        compacted_original_id = compacted_todo.id
+        compacted_todo.id = scope.compact_todos[0].id
         compacted_todo.parent_id = user_task.id
-        compacted_todo.seq = scope.compact_todos[0].seq
+        for child in compacted_todo.children:
+            if child.parent_id == compacted_original_id:
+                child.parent_id = compacted_todo.id
 
-        compacted_scope_ids = [
-            task.id
-            for todo in scope.compact_todos
-            for task in self._flatten_task_tree(todo)
-            if task.id is not None
-        ]
         compacted_scope_id_set = {todo.id for todo in scope.compact_todos}
+        insert_index = self._first_child_index(user_task, scope.compact_todos)
         user_task.children = [
             child for child in user_task.children
             if child.id not in compacted_scope_id_set
         ]
-        user_task.children.append(compacted_todo)
-        user_task.children.sort(key=lambda task: task.seq)
+        user_task.children.insert(insert_index, compacted_todo)
         user_task.touch()
 
-        self._db.delete_managed_tasks(compacted_scope_ids, session=session)
-        session.flush()
-        self._db.upsert_managed_task(user_task, session=session)
-        for task in self._flatten_task_tree(compacted_todo):
-            self._db.upsert_managed_task(task, session=session)
+        self._db.replace_managed_task_tree(user_task, session=session)
         return compacted_todo
 
     def build_task_tree(self, root_task_id: int) -> ManagedTask | None:
@@ -417,7 +399,6 @@ class TaskManager:
                 if child.id is not None:
                     attach_children(child)
                     task.children.append(child)
-            task.children.sort(key=lambda child: child.seq)
 
         attach_children(root)
         return root
@@ -439,12 +420,6 @@ class TaskManager:
             raise TaskManagerError("No active todo")
         return self._active_todo
 
-    def _assign_next_task_seq(self, task: ManagedTask) -> None:
-        if self._next_task_seq is None:
-            raise TaskManagerError("Task manager must be loaded before creating tasks")
-        task.seq = self._next_task_seq
-        self._next_task_seq = key_after(task.seq)
-
     def _walk_tasks(self) -> list[ManagedTask]:
         if self._user_task is None:
             return []
@@ -458,3 +433,10 @@ class TaskManager:
             tasks.append(task)
             stack.extend(reversed(task.children))
         return tasks
+
+    def _first_child_index(self, user_task: ManagedTask, tasks: list[ManagedTask]) -> int:
+        task_ids = {task.id for task in tasks}
+        for index, child in enumerate(user_task.children):
+            if child.id in task_ids:
+                return index
+        return len(user_task.children)

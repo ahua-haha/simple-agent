@@ -15,7 +15,7 @@ def test_managed_task_defaults():
     task = ManagedTask(kind="user_task", title="Build feature")
     assert task.kind == "user_task"
     assert task.status == "active"
-    assert task.seq == ""
+    assert not hasattr(task, "seq")
     assert task.children == []
     assert task.result is None
     assert task.error is None
@@ -26,14 +26,13 @@ def _make_db() -> Database:
         return Database(f.name)
 
 
-def test_managed_task_roundtrip_preserves_parent_and_seq():
+def test_managed_task_roundtrip_preserves_parent():
     db = _make_db()
-    child = ManagedTask(kind="todo", title="Runtime child", parent_id=10, seq="V")
+    child = ManagedTask(kind="todo", title="Runtime child", parent_id=10)
     task = ManagedTask(
         kind="user_task",
         title="Build feature",
         parent_id=10,
-        seq="U",
         children=[child],
     )
 
@@ -45,7 +44,7 @@ def test_managed_task_roundtrip_preserves_parent_and_seq():
     assert loaded.kind == "user_task"
     assert loaded.title == "Build feature"
     assert loaded.parent_id == 10
-    assert loaded.seq == "U"
+    assert not hasattr(loaded, "seq")
     assert loaded.children == []
 
 
@@ -75,7 +74,6 @@ def test_create_user_task_sets_active_user_task():
     assert user_task.id is not None
     assert user_task.kind == "user_task"
     assert user_task.title == "Build feature"
-    assert user_task.seq != ""
     assert manager.active_user_task_id == user_task.id
     assert db.get_managed_task(user_task.id) is None
 
@@ -216,32 +214,6 @@ def test_mixed_user_task_order_is_preserved():
     ]
 
 
-def test_next_task_seq_advances_after_in_memory_assignment():
-    db = _make_db()
-    manager = TaskManager(db)
-    manager.load(None)
-    manager.create_user_task("Build feature")
-
-    first = manager.record_tool_call(1)
-    second = manager.record_tool_call(2)
-
-    assert first.seq < second.seq
-
-
-def test_next_task_seq_continues_from_database_next_seq():
-    db = _make_db()
-    manager = TaskManager(db)
-    manager.load(None)
-    first_user_task = manager.create_user_task("Build feature")
-    manager.save()
-
-    next_manager = TaskManager(db)
-    next_manager.load(None)
-    second_user_task = next_manager.create_user_task("Build another feature")
-
-    assert first_user_task.seq < second_user_task.seq
-
-
 def test_compact_scope_selects_first_todo_through_latest_finished_todo():
     db = _make_db()
     manager = TaskManager(db)
@@ -301,6 +273,7 @@ def test_replace_compact_scope_persists_rebuilt_task_tree():
     manager.save()
     manager.begin_compact_buffer()
     compacted = manager.create_compacted_todo("Summary")
+    compacted_buffer_id = compacted.id
     manager.finish_compacted_todo()
 
     with db.create_session() as session:
@@ -312,12 +285,12 @@ def test_replace_compact_scope_persists_rebuilt_task_tree():
     loaded_manager = TaskManager(db)
     loaded_manager.load(user_task.id)
 
-    assert db.get_managed_task(first.id) is None
+    assert compacted.id == first.id
+    assert db.get_managed_task(compacted_buffer_id) is None
     assert db.get_managed_task(second.id) is None
     assert loaded_active.id == active.id
     assert [task.id for task in loaded_manager.active_user_task.children] == [compacted.id, active.id]
     assert loaded_compacted.parent_id == user_task.id
-    assert loaded_compacted.seq < loaded_active.seq
 
 
 def test_load_loads_children_and_active_todo():

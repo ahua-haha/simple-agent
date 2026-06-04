@@ -11,7 +11,6 @@ import sqlite3
 
 from pi.agent.types import AgentMessage
 
-from simple_agent.fractional_index import key_after
 from simple_agent.state.state import (
     ManagedTaskRecord,
     RunnerMessageRecord,
@@ -110,12 +109,12 @@ class Database:
 
     @standalone_or_compose
     def list_managed_task_children(self, parent_id: int, *, session: Session | None = None):
-        """Return direct managed-task children ordered by sibling seq."""
+        """Return direct managed-task children in append order."""
         records = list(
             session.exec(
                 select(ManagedTaskRecord)
                 .where(ManagedTaskRecord.parent_id == parent_id)
-                .order_by(ManagedTaskRecord.seq)
+                .order_by(ManagedTaskRecord.id)
             ).all()
         )
         for record in records:
@@ -128,20 +127,22 @@ class Database:
         return (record.id + 1) if record and record.id is not None else 1
 
     @standalone_or_compose
-    def next_managed_task_seq(self, *, session: Session | None = None) -> str:
-        record = session.exec(
-            select(ManagedTaskRecord)
-            .where(ManagedTaskRecord.seq != "")
-            .order_by(ManagedTaskRecord.seq.desc())
-        ).first()
-        return key_after(record.seq if record else None)
-
-    @standalone_or_compose
     def delete_managed_tasks(self, task_ids: list[int], *, session: Session | None = None) -> None:
         for task_id in task_ids:
             record = session.get(ManagedTaskRecord, task_id)
             if record is not None:
                 session.delete(record)
+
+    @standalone_or_compose
+    def replace_managed_task_tree(self, root_task, *, session: Session | None = None) -> None:
+        if root_task.id is None:
+            raise ValueError("Cannot replace a managed task tree without a root task id")
+        session.exec(
+            delete(ManagedTaskRecord)
+            .where(ManagedTaskRecord.id > root_task.id)
+        )
+        for task in _flatten_managed_task_tree(root_task):
+            self.upsert_managed_task(task, session=session)
 
     # ------------------------------------------------------------------
     # Runner state operations
@@ -332,3 +333,13 @@ class Database:
         record = session.get(SessionRecord, session_id)
         if record is not None:
             session.delete(record)
+
+
+def _flatten_managed_task_tree(task) -> list:
+    tasks = []
+    stack = [task]
+    while stack:
+        current = stack.pop()
+        tasks.append(current)
+        stack.extend(reversed(current.children))
+    return tasks

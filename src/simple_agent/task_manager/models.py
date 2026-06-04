@@ -17,7 +17,6 @@ class ManagedTask(BaseModel):
     kind: TaskKind
     title: str
     status: TaskStatus = "active"
-    seq: str = ""
     result: str | None = None
     error: str | None = None
     create_tool_call_id: str | None = None
