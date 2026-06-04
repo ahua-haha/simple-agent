@@ -71,15 +71,15 @@ def agent_loop(
                 tools=context.tools,
             )
 
-            push_event(stream, config, AgentStartEvent())
-            push_event(stream, config, TurnStartEvent())
+            stream.push(AgentStartEvent())
+            stream.push(TurnStartEvent())
             for prompt in prompts:
-                push_event(stream, config, MessageStartEvent(message=prompt))
-                push_event(stream, config, MessageEndEvent(message=prompt))
+                stream.push(MessageStartEvent(message=prompt))
+                stream.push(MessageEndEvent(message=prompt))
 
             await _run_loop(current_context, new_messages, config, cancel_event, stream, stream_fn)
         except Exception:
-            push_event(stream, config, AgentEndEvent(messages=new_messages))
+            stream.push(AgentEndEvent(messages=new_messages))
             stream.end()
             raise
 
@@ -110,27 +110,17 @@ def agent_loop_continue(
                 tools=context.tools,
             )
 
-            push_event(stream, config, AgentStartEvent())
-            push_event(stream, config, TurnStartEvent())
+            stream.push(AgentStartEvent())
+            stream.push(TurnStartEvent())
 
             await _run_loop(current_context, new_messages, config, cancel_event, stream, stream_fn)
         except Exception:
-            push_event(stream, config, AgentEndEvent(messages=new_messages))
+            stream.push(AgentEndEvent(messages=new_messages))
             stream.end()
             raise
 
     stream._background_task = asyncio.ensure_future(_run())
     return stream
-
-
-def push_event(
-    stream: EventStream[AgentEvent, list[AgentMessage]],
-    config: AgentLoopConfig,
-    event: AgentEvent,
-) -> None:
-    stream.push(event)
-    if config.on_event is not None:
-        config.on_event(event)
 
 
 async def _run_loop(
@@ -154,7 +144,7 @@ async def _run_loop(
 
         while (not cancel_event.is_set()) and (has_more_tool_calls or pending_messages):
             if not first_turn:
-                push_event(stream, config, TurnStartEvent())
+                stream.push(TurnStartEvent())
             else:
                 first_turn = False
 
@@ -162,8 +152,8 @@ async def _run_loop(
                 for message in pending_messages:
                     current_context.messages.append(message)
                     new_messages.append(message)
-                    push_event(stream, config, MessageStartEvent(message=message))
-                    push_event(stream, config, MessageEndEvent(message=message))
+                    stream.push(MessageStartEvent(message=message))
+                    stream.push(MessageEndEvent(message=message))
                 pending_messages = []
 
             # Stream assistant response
@@ -171,8 +161,8 @@ async def _run_loop(
             new_messages.append(message)
 
             if message.stop_reason in ("error", "aborted"):
-                push_event(stream, config, TurnEndEvent(message=message, tool_results=[]))
-                push_event(stream, config, AgentEndEvent(messages=new_messages))
+                stream.push(TurnEndEvent(message=message, tool_results=[]))
+                stream.push(AgentEndEvent(messages=new_messages))
                 stream.end(new_messages)
                 return
 
@@ -197,7 +187,7 @@ async def _run_loop(
                     current_context.messages.append(result)
                     new_messages.append(result)
 
-            push_event(stream, config, TurnEndEvent(message=message, tool_results=tool_results))
+            stream.push(TurnEndEvent(message=message, tool_results=tool_results))
 
             if steering_after_tools:
                 pending_messages = steering_after_tools
@@ -214,7 +204,7 @@ async def _run_loop(
 
         break
 
-    push_event(stream, config, AgentEndEvent(messages=new_messages))
+    stream.push(AgentEndEvent(messages=new_messages))
     stream.end(new_messages)
 
 
@@ -276,7 +266,7 @@ async def _stream_assistant_response(
             partial_message = event.partial
             context.messages.append(partial_message)
             added_partial = True
-            push_event(stream, config, MessageStartEvent(message=deepcopy(partial_message)))
+            stream.push(MessageStartEvent(message=deepcopy(partial_message)))
 
         elif event.type in (
             "text_start",
@@ -292,9 +282,7 @@ async def _stream_assistant_response(
             if partial_message:
                 partial_message = event.partial
                 context.messages[-1] = partial_message
-                push_event(
-                    stream,
-                    config,
+                stream.push(
                     MessageUpdateEvent(
                         assistant_message_event=event,
                         message=deepcopy(partial_message),
@@ -308,8 +296,8 @@ async def _stream_assistant_response(
             else:
                 context.messages.append(final_message)
             if not added_partial:
-                push_event(stream, config, MessageStartEvent(message=deepcopy(final_message)))
-            push_event(stream, config, MessageEndEvent(message=final_message))
+                stream.push(MessageStartEvent(message=deepcopy(final_message)))
+            stream.push(MessageEndEvent(message=final_message))
             return final_message
 
     return await response.result()
@@ -331,7 +319,7 @@ async def _execute_tool_calls(
     for index, tc in enumerate(tool_calls):
         tool = next((t for t in (tools or []) if t.name == tc.name), None)
 
-        push_event(stream, config, ToolExecutionStartEvent(tool_call_id=tc.id, tool_name=tc.name, args=tc.arguments))
+        stream.push(ToolExecutionStartEvent(tool_call_id=tc.id, tool_name=tc.name, args=tc.arguments))
 
         result: AgentToolResult
         is_error = False
@@ -348,9 +336,7 @@ async def _execute_tool_calls(
                 raise ValueError(f"Invalid arguments: {'; '.join(errors)}")
 
             def on_update(partial: AgentToolResult, _tc: Any = tc) -> None:
-                push_event(
-                    stream,
-                    config,
+                stream.push(
                     ToolExecutionUpdateEvent(
                         tool_call_id=_tc.id,
                         tool_name=_tc.name,
@@ -365,9 +351,7 @@ async def _execute_tool_calls(
             result = AgentToolResult(content=[TextContent(text=str(e))], details={})
             is_error = True
 
-        push_event(
-            stream,
-            config,
+        stream.push(
             ToolExecutionEndEvent(
                 tool_call_id=tc.id,
                 tool_name=tc.name,
@@ -386,8 +370,8 @@ async def _execute_tool_calls(
         )
 
         results.append(tool_result_msg)
-        push_event(stream, config, MessageStartEvent(message=tool_result_msg))
-        push_event(stream, config, MessageEndEvent(message=tool_result_msg))
+        stream.push(MessageStartEvent(message=tool_result_msg))
+        stream.push(MessageEndEvent(message=tool_result_msg))
 
         # Check for steering
         if get_steering_messages:
@@ -413,14 +397,10 @@ def _skip_tool_call(
         details={},
     )
 
-    push_event(
-        stream,
-        config,
+    stream.push(
         ToolExecutionStartEvent(tool_call_id=tool_call.id, tool_name=tool_call.name, args=tool_call.arguments),
     )
-    push_event(
-        stream,
-        config,
+    stream.push(
         ToolExecutionEndEvent(
             tool_call_id=tool_call.id,
             tool_name=tool_call.name,
@@ -438,6 +418,6 @@ def _skip_tool_call(
         timestamp=int(time.time() * 1000),
     )
 
-    push_event(stream, config, MessageStartEvent(message=msg))
-    push_event(stream, config, MessageEndEvent(message=msg))
+    stream.push(MessageStartEvent(message=msg))
+    stream.push(MessageEndEvent(message=msg))
     return msg
