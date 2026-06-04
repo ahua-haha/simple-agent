@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import asyncio
 import logging
-import time
 from typing import Callable
 
 from pi.agent import AgentTool
@@ -12,13 +11,10 @@ from pi.agent.loop import (
     _create_agent_stream,
     _execute_tool_calls,
     _stream_assistant_response,
-    agent_loop,
-    agent_loop_continue,
 )
-from pi.agent.types import AgentContext, AgentEndEvent, AgentLoopConfig, AgentMessage
-from pi.ai.types import AssistantMessage, TextContent, ToolResultMessage, UserMessage
+from pi.agent.types import AgentContext, AgentLoopConfig, AgentMessage
+from pi.ai.types import AssistantMessage, ToolResultMessage
 
-from simple_agent.log import logged
 from simple_agent.models import register_custom_models, get_api_key
 
 _log = logging.getLogger(__name__)
@@ -27,9 +23,9 @@ _log = logging.getLogger(__name__)
 class AgentProcess:
     """Pure agent executor.
 
-    ``__init__`` sets the model. ``run()`` takes prompts, messages,
-    caller-owned tools, and an optional cancel event, then returns the
-    messages produced by the agent loop.
+    ``__init__`` sets the model. Step methods take prompts, messages,
+    caller-owned tools, and an optional cancel event. The caller owns the
+    loop and state transitions.
     """
 
     def __init__(self, model):
@@ -60,7 +56,7 @@ class AgentProcess:
         """Call the LLM once and return the assistant message without running tools."""
         context = AgentContext(
             system_prompt=system_prompt,
-            messages=list(messages),
+            messages=messages,
             tools=tools,
         )
         stream = _create_agent_stream()
@@ -100,55 +96,6 @@ class AgentProcess:
         finally:
             stream.end()
             await consumer
-
-    @logged(_log)
-    async def run(
-        self,
-        system_prompt: str,
-        messages: list[AgentMessage],
-        tools: list[AgentTool],
-        user_prompt: str | None = "",
-        cancel_event: asyncio.Event | None = None,
-    ) -> list[AgentMessage]:
-        """Execute a single agent run and return the new messages."""
-        context = AgentContext(
-            system_prompt=system_prompt,
-            messages=list(messages),
-            tools=tools,
-        )
-        new_messages: list[AgentMessage] = []
-
-        loop_config = self._create_loop_config()
-
-        if user_prompt is None:
-            stream = agent_loop_continue(
-                context,
-                loop_config,
-                cancel_event=cancel_event,
-            )
-        else:
-            now_ms = int(time.time() * 1000)
-            input_messages = []
-            if user_prompt:
-                input_messages.append(UserMessage(content=[TextContent(text=user_prompt)], timestamp=now_ms))
-            stream = agent_loop(
-                input_messages,
-                context,
-                loop_config,
-                cancel_event=cancel_event,
-            )
-
-        async for event in stream:
-            if isinstance(event, AgentEndEvent):
-                new_messages = event.messages
-            self._emit(event)
-
-        if stream._background_task is not None:
-            exc = stream._background_task.exception()
-            if exc is not None:
-                raise exc
-
-        return new_messages
 
     def subscribe(self, callback: Callable) -> None:
         self._listeners.append(callback)

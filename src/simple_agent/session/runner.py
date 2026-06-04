@@ -350,13 +350,24 @@ class SessionRunner:
         preserved_messages = self._messages[end_index + 1:]
 
         self._task_manager.begin_compact_buffer()
-        await self._agent_process.run(
-            system_prompt=COMPACT_SYSTEM_PROMPT,
-            messages=self._messages[start_index:end_index + 1],
-            tools=self._task_manager.create_compact_tools(),
-            user_prompt=user_input,
-            cancel_event=self._cancel_event,
-        )
+        compact_messages = list(self._messages[start_index:end_index + 1])
+        compact_tools = self._task_manager.create_compact_tools()
+        while True:
+            assistant_message = await self._agent_process.call_llm_step(
+                system_prompt=COMPACT_SYSTEM_PROMPT,
+                messages=compact_messages,
+                tools=compact_tools,
+                cancel_event=self._cancel_event,
+            )
+            compact_messages.append(assistant_message)
+            if not self._assistant_has_tool_calls(assistant_message):
+                break
+            tool_results = await self._agent_process.run_tool_calls_step(
+                tools=compact_tools,
+                assistant_message=assistant_message,
+                cancel_event=self._cancel_event,
+            )
+            compact_messages.extend(tool_results)
 
         with self._db.create_session() as session:
             compacted_todo = self._task_manager.replace_compact_scope(session=session)

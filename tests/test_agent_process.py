@@ -13,97 +13,6 @@ from simple_agent.process.agent_process import AgentProcess
 
 
 @pytest.mark.asyncio
-async def test_agent_process_run_returns_messages_without_agent_state(monkeypatch):
-    message = AssistantMessage(role="assistant", content=[TextContent(text="done")])
-
-    class FakeStream:
-        _background_task = None
-
-        def __aiter__(self):
-            return self
-
-        async def __anext__(self):
-            from pi.agent.types import AgentEndEvent
-
-            if getattr(self, "_sent", False):
-                raise StopAsyncIteration
-            self._sent = True
-            return AgentEndEvent(messages=[message])
-
-    captured = {}
-
-    def fake_agent_loop(input_messages, context, loop_config, cancel_event=None):
-        captured["cancel_event"] = cancel_event
-        captured["tools"] = context.tools
-        return FakeStream()
-
-    monkeypatch.setattr("simple_agent.process.agent_process.agent_loop", fake_agent_loop)
-
-    cancel_event = asyncio.Event()
-    process = AgentProcess(model=object())
-    result = await process.run(
-        system_prompt="system",
-        messages=[],
-        tools=[],
-        user_prompt="hello",
-        cancel_event=cancel_event,
-    )
-
-    assert result == [message]
-    assert captured["cancel_event"] is cancel_event
-    assert captured["tools"] == []
-
-
-@pytest.mark.asyncio
-async def test_agent_process_run_with_none_user_prompt_continues_existing_messages(monkeypatch):
-    message = AssistantMessage(role="assistant", content=[TextContent(text="continued")])
-    existing_message = UserMessage(content=[TextContent(text="previous")], timestamp=1)
-
-    class FakeStream:
-        _background_task = None
-
-        def __aiter__(self):
-            return self
-
-        async def __anext__(self):
-            from pi.agent.types import AgentEndEvent
-
-            if getattr(self, "_sent", False):
-                raise StopAsyncIteration
-            self._sent = True
-            return AgentEndEvent(messages=[message])
-
-    captured = {}
-
-    def fake_agent_loop_continue(context, loop_config, cancel_event=None):
-        captured["cancel_event"] = cancel_event
-        captured["messages"] = context.messages
-        captured["tools"] = context.tools
-        return FakeStream()
-
-    def fake_agent_loop(input_messages, context, loop_config, cancel_event=None):
-        raise AssertionError("run should use agent_loop_continue when user_prompt is None")
-
-    monkeypatch.setattr("simple_agent.process.agent_process.agent_loop", fake_agent_loop)
-    monkeypatch.setattr("simple_agent.process.agent_process.agent_loop_continue", fake_agent_loop_continue)
-
-    cancel_event = asyncio.Event()
-    process = AgentProcess(model=object())
-    result = await process.run(
-        system_prompt="system",
-        messages=[existing_message],
-        tools=[],
-        user_prompt=None,
-        cancel_event=cancel_event,
-    )
-
-    assert result == [message]
-    assert captured["cancel_event"] is cancel_event
-    assert captured["messages"] == [existing_message]
-    assert captured["tools"] == []
-
-
-@pytest.mark.asyncio
 async def test_agent_process_call_llm_step_returns_one_assistant_message_and_emits_events(monkeypatch):
     from pi.agent.types import MessageEndEvent
 
@@ -127,14 +36,16 @@ async def test_agent_process_call_llm_step_returns_one_assistant_message_and_emi
     calls = []
     process.subscribe(lambda event: calls.append(("listener", event.type)))
 
+    messages = [existing_message]
+
     result = await process.call_llm_step(
         system_prompt="system",
-        messages=[existing_message],
+        messages=messages,
         tools=[],
     )
 
     assert result is message
-    assert captured["context_messages"] == [existing_message]
+    assert captured["context_messages"] is messages
     assert captured["on_event"] is None
     assert calls == [("listener", "message_end")]
 
@@ -182,53 +93,5 @@ async def test_agent_process_run_tool_calls_step_returns_tool_results_and_emits_
     assert ("listener", "message_end") in calls
 
 
-@pytest.mark.asyncio
-async def test_agent_process_run_emits_listener_events(monkeypatch):
-    from pi.agent.types import AgentEndEvent
-
-    message = AssistantMessage(role="assistant", content=[TextContent(text="done")])
-    event = AgentEndEvent(messages=[message])
-    calls = []
-
-    class FakeStream:
-        _background_task = None
-
-        def __init__(self):
-            self._sent = False
-
-        def __aiter__(self):
-            return self
-
-        async def __anext__(self):
-            if self._sent:
-                raise StopAsyncIteration
-            self._sent = True
-            return event
-
-    captured = {}
-
-    def fake_agent_loop(input_messages, context, loop_config, cancel_event=None):
-        captured["messages"] = context.messages
-        captured["on_event"] = loop_config.on_event
-        return FakeStream()
-
-    monkeypatch.setattr("simple_agent.process.agent_process.agent_loop", fake_agent_loop)
-
-    process = AgentProcess(model=object())
-
-    def listener(seen_event):
-        calls.append(("listener", seen_event is event))
-
-    process.subscribe(listener)
-
-    result = await process.run(
-        system_prompt="system",
-        messages=[],
-        tools=[],
-        user_prompt="hello",
-    )
-
-    assert result == [message]
-    assert captured["messages"] == []
-    assert captured["on_event"] is None
-    assert calls == [("listener", True)]
+def test_agent_process_does_not_expose_run_method():
+    assert not hasattr(AgentProcess(model=object()), "run")

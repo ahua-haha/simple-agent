@@ -112,13 +112,33 @@ class FakeToolThenFinalAgentProcess(FakeAgentProcess):
 
 
 class FakeCompactAgentProcess(FakeAgentProcess):
-    async def run(self, system_prompt, messages, tools, user_prompt="", cancel_event=None):
-        self.calls.append({"tools": [tool.name for tool in tools], "messages": messages})
+    async def call_llm_step(self, system_prompt, messages, tools, cancel_event=None):
+        self.calls.append({"tools": [tool.name for tool in tools], "messages": list(messages)})
+        if len(self.calls) > 1:
+            return AssistantMessage(role="assistant", content=[TextContent(text="compact done")])
+        return AssistantMessage(
+            role="assistant",
+            content=[
+                ToolCall(id="compact_create", name="create_compacted_todo", arguments={"description": "Compact summary"}),
+                ToolCall(id="compact_record", name="record_compacted_tool_call", arguments={"tool_call_log_id": 1}),
+                ToolCall(id="compact_finish", name="finish_compacted_todo", arguments={}),
+            ],
+        )
+
+    async def run_tool_calls_step(self, tools, assistant_message, cancel_event=None):
         by_name = {tool.name: tool for tool in tools}
-        await by_name["create_compacted_todo"].execute("compact_create", {"description": "Compact summary"})
-        await by_name["record_compacted_tool_call"].execute("compact_record", {"tool_call_log_id": 1})
-        await by_name["finish_compacted_todo"].execute("compact_finish", {})
-        return []
+        results = []
+        for content in assistant_message.content:
+            if isinstance(content, ToolCall):
+                result = await by_name[content.name].execute(content.id, content.arguments)
+                results.append(
+                    ToolResultMessage(
+                        toolCallId=content.id,
+                        toolName=content.name,
+                        content=result.content,
+                    )
+                )
+        return results
 
 
 def _load_task_manager(manager: TaskManager, active_user_task_id: int | None) -> None:
