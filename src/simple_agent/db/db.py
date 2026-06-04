@@ -265,6 +265,7 @@ class Database:
     def insert_runner_tool_call(
         self,
         *,
+        id: int | None = None,
         session_id: str,
         tool_call_id: str,
         tool_name: str,
@@ -276,7 +277,7 @@ class Database:
         error: str | None,
         session: Session | None = None,
     ) -> int:
-        next_id = self.next_runner_tool_call_id(session_id, session=session)
+        next_id = id if id is not None else self.next_runner_tool_call_id(session_id, session=session)
         record = RunnerToolCallRecord(
             id=next_id,
             session_id=session_id,

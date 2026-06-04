@@ -1,4 +1,4 @@
-"""Tests for SessionRunner tool execution wrapping."""
+"""Tests for SessionRunner tool-call recording after tool execution."""
 
 from __future__ import annotations
 
@@ -8,8 +8,7 @@ from dataclasses import dataclass
 
 import pytest
 
-from pi.agent import AgentTool, AgentToolResult
-from pi.ai.types import TextContent
+from pi.ai.types import AssistantMessage, TextContent, ToolCall, ToolResultMessage
 
 from simple_agent.db.db import Database
 from simple_agent.session.runner import SessionRunner
@@ -28,6 +27,31 @@ class _ToolDetails:
 
 
 class _FakeAgentProcess:
+    def __init__(self, *, result_details=None, is_error: bool = False):
+        self.result_details = result_details
+        self.is_error = is_error
+        self.seen_tools = []
+
+    async def call_llm_step(self, system_prompt, messages, tools, cancel_event=None):
+        self.seen_tools = [tool.name for tool in tools]
+        return AssistantMessage(
+            role="assistant",
+            content=[
+                ToolCall(id="call_1", name="example", arguments={"name": "Ada"}),
+            ],
+        )
+
+    async def run_tool_calls_step(self, tools, assistant_message, cancel_event=None):
+        return [
+            ToolResultMessage(
+                toolCallId="call_1",
+                toolName="example",
+                content=[TextContent(text="boom" if self.is_error else "hello")],
+                details=self.result_details or {},
+                isError=self.is_error,
+            )
+        ]
+
     def subscribe(self, callback):
         pass
 
@@ -35,7 +59,7 @@ class _FakeAgentProcess:
         pass
 
 
-def _make_runner(db: Database) -> SessionRunner:
+def _make_runner(db: Database, agent_process: _FakeAgentProcess | None = None) -> SessionRunner:
     manager = TaskManager(db)
     manager.load(None)
     manager.create_user_task("Build feature")
@@ -43,24 +67,17 @@ def _make_runner(db: Database) -> SessionRunner:
         session_id="session_a",
         db=db,
         task_manager=manager,
-        agent_process=_FakeAgentProcess(),
+        agent_process=agent_process or _FakeAgentProcess(),
         cancel_event=asyncio.Event(),
     )
 
 
 @pytest.mark.asyncio
-async def test_wrap_tool_records_runner_tool_call_success(tmp_path):
+async def test_runner_records_tool_call_after_tool_step_success(tmp_path):
     db = Database(str(tmp_path / "session.db"))
-    tool = AgentTool(name="example", description="Example", parameters={"type": "object", "properties": {}})
-
-    async def execute(tool_call_id, params, cancel_event=None, on_update=None):
-        return AgentToolResult(content=[TextContent(text="hello")])
-
-    tool.execute = execute
     runner = _make_runner(db)
-    wrapped = runner.wrap_tool(tool)
 
-    await wrapped.execute("call_1", {"name": "Ada"})
+    await runner.run("Build feature")
 
     records = db.list_runner_tool_calls("session_a")
     assert len(records) == 1
@@ -72,21 +89,14 @@ async def test_wrap_tool_records_runner_tool_call_success(tmp_path):
 
 
 @pytest.mark.asyncio
-async def test_wrap_tool_records_dataclass_details_as_json(tmp_path):
+async def test_runner_records_dataclass_tool_result_details_as_json(tmp_path):
     db = Database(str(tmp_path / "session.db"))
-    tool = AgentTool(name="bash", description="Bash", parameters={"type": "object", "properties": {}})
+    runner = _make_runner(
+        db,
+        _FakeAgentProcess(result_details=_ToolDetails(exit_code=0, nested=_NestedDetails(truncated=False))),
+    )
 
-    async def execute(tool_call_id, params, cancel_event=None, on_update=None):
-        return AgentToolResult(
-            content=[TextContent(text="hello")],
-            details=_ToolDetails(exit_code=0, nested=_NestedDetails(truncated=False)),
-        )
-
-    tool.execute = execute
-    runner = _make_runner(db)
-    wrapped = runner.wrap_tool(tool)
-
-    await wrapped.execute("call_1", {"command": "echo hello"})
+    await runner.run("Build feature")
 
     records = db.list_runner_tool_calls("session_a")
     payload = json.loads(records[0].result_json)
@@ -97,23 +107,15 @@ async def test_wrap_tool_records_dataclass_details_as_json(tmp_path):
 
 
 @pytest.mark.asyncio
-async def test_wrap_tool_records_runner_tool_call_error_and_reraises(tmp_path):
+async def test_runner_records_tool_call_error_result(tmp_path):
     db = Database(str(tmp_path / "session.db"))
-    tool = AgentTool(name="explode", description="Explode", parameters={"type": "object", "properties": {}})
+    runner = _make_runner(db, _FakeAgentProcess(is_error=True))
 
-    async def execute(tool_call_id, params, cancel_event=None, on_update=None):
-        raise RuntimeError("boom")
-
-    tool.execute = execute
-    runner = _make_runner(db)
-    wrapped = runner.wrap_tool(tool)
-
-    with pytest.raises(RuntimeError, match="boom"):
-        await wrapped.execute("call_2", {"x": 1})
+    await runner.run("Build feature")
 
     records = db.list_runner_tool_calls("session_a")
     assert len(records) == 1
-    assert records[0].tool_call_id == "call_2"
-    assert records[0].tool_name == "explode"
+    assert records[0].tool_call_id == "call_1"
+    assert records[0].tool_name == "example"
     assert records[0].status == "error"
     assert records[0].error == "boom"

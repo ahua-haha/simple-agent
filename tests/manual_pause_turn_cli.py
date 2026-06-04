@@ -56,21 +56,15 @@ async def run_session_from_command_line() -> None:
 
 
 async def _run_until_paused(session: Session, user_input: str | None) -> None:
-    def pause_on_turn_end(event: AgentEvent) -> None:
-        if getattr(event, "type", None) == "turn_end":
-            session.pause()
-
-    session._runner.add_hook("turn_end", pause_on_turn_end)
     queue = session.run(user_input)
 
-    try:
-        while True:
-            event = await queue.get()
-            if event is None:
-                break
-            _print_event(event)
-    finally:
-        session._runner.remove_hook("turn_end", pause_on_turn_end)
+    while True:
+        event = await queue.get()
+        if event is None:
+            break
+        _print_event(event)
+        if getattr(event, "type", None) == "message_end":
+            session.pause()
 
 
 def _print_event(event: AgentEvent | dict) -> None:
@@ -84,9 +78,6 @@ def _print_event(event: AgentEvent | dict) -> None:
         return
     if event_type == "message_end":
         _print_message(event.message)
-        return
-    if event_type == "turn_end":
-        print("[event] turn_end, paused")
         return
     if event_type == "agent_end":
         print("[event] agent_end")

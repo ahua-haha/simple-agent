@@ -18,6 +18,7 @@ from simple_agent.task_manager import TaskManager
 class FakeAgentProcess:
     def __init__(self):
         self.calls = []
+        self.tool_step_calls = []
         self.subscribers = []
         self.count_persisted = None
         self.persisted_after_turn = None
@@ -25,36 +26,49 @@ class FakeAgentProcess:
         self.phase_at_run_start = None
         self.observe_metadata_phase = None
         self.metadata_phase_after_turn = None
+        self.pause_on_tool_step = None
 
-    async def run(self, system_prompt, messages, tools, user_prompt="", cancel_event=None, hooks=None):
-        message = AssistantMessage(role="assistant", content=[TextContent(text="done")])
-        tool_result = ToolResultMessage(
-            toolCallId="tool_1",
-            toolName="example_tool",
-            content=[TextContent(text="tool done")],
-            timestamp=1,
+    async def call_llm_step(self, system_prompt, messages, tools, cancel_event=None):
+        message = AssistantMessage(
+            role="assistant",
+            content=[
+                TextContent(text="done"),
+                ToolCall(id="tool_1", name="example_tool", arguments={}),
+            ],
         )
         self.calls.append(
             {
                 "system_prompt": system_prompt,
                 "messages": messages,
                 "tools": [tool.name for tool in tools],
-                "user_prompt": user_prompt,
                 "cancel_event": cancel_event,
-                "hooks": hooks,
             }
         )
         if self.observe_phase is not None:
             self.phase_at_run_start = self.observe_phase()
-        from pi.agent.types import TurnEndEvent
+        return message
 
-        for hook in hooks["turn_end"]:
-            hook(TurnEndEvent(message=message, tool_results=[tool_result]))
+    async def run_tool_calls_step(self, tools, assistant_message, cancel_event=None):
+        tool_result = ToolResultMessage(
+            toolCallId="tool_1",
+            toolName="example_tool",
+            content=[TextContent(text="tool done")],
+            timestamp=1,
+        )
+        self.tool_step_calls.append(
+            {
+                "tools": [tool.name for tool in tools],
+                "assistant_message": assistant_message,
+                "cancel_event": cancel_event,
+            }
+        )
+        if self.pause_on_tool_step is not None:
+            self.pause_on_tool_step()
         if self.count_persisted is not None:
             self.persisted_after_turn = self.count_persisted()
         if self.observe_metadata_phase is not None:
             self.metadata_phase_after_turn = self.observe_metadata_phase()
-        return [message, tool_result]
+        return [tool_result]
 
     def subscribe(self, callback):
         self.subscribers.append(callback)
@@ -65,7 +79,7 @@ class FakeAgentProcess:
 
 
 class FakeCompactAgentProcess(FakeAgentProcess):
-    async def run(self, system_prompt, messages, tools, user_prompt="", cancel_event=None, hooks=None):
+    async def run(self, system_prompt, messages, tools, user_prompt="", cancel_event=None):
         self.calls.append({"tools": [tool.name for tool in tools], "messages": messages})
         by_name = {tool.name: tool for tool in tools}
         await by_name["create_compacted_todo"].execute("compact_create", {"description": "Compact summary"})
@@ -106,27 +120,28 @@ async def test_session_runner_creates_task_runs_agent_and_persists_messages(tmp_
     assert result.title == "Build feature"
     assert result.status == "done"
     assert len(agent_process.calls) == 1
-    assert agent_process.calls[0]["messages"] == []
+    assert agent_process.calls[0]["messages"][0].content[0].text == "Build feature"
     assert agent_process.calls[0]["messages"] is not runner._messages
-    assert agent_process.calls[0]["user_prompt"] == "Build feature"
     assert agent_process.calls[0]["cancel_event"] is cancel_event
-    assert set(agent_process.calls[0]["hooks"]) == {"turn_end"}
     assert "create_todo" in agent_process.calls[0]["tools"]
     assert "finish_todo" in agent_process.calls[0]["tools"]
     assert "error_todo" in agent_process.calls[0]["tools"]
+    assert len(agent_process.tool_step_calls) == 1
 
     metadata = db.get_runner_state_metadata("session_a")
     assert metadata.phase == "done"
     assert metadata.status == "done"
     assert metadata.active_user_task_id == result.id
     persisted_messages = db.list_runner_messages("session_a")
-    assert agent_process.persisted_after_turn == 3
+    tool_calls = db.list_runner_tool_calls("session_a")
     assert agent_process.phase_at_run_start == "new_user_task"
-    assert agent_process.metadata_phase_after_turn == "running"
     assert len(persisted_messages) == 3
     assert persisted_messages[0].content[0].text == "Build feature"
     assert persisted_messages[1].content[0].text == "done"
     assert persisted_messages[2].content[0].text == "tool done"
+    assert len(tool_calls) == 1
+    assert tool_calls[0].tool_call_id == "tool_1"
+    assert tool_calls[0].tool_name == "example_tool"
 
 
 @pytest.mark.asyncio
@@ -146,7 +161,7 @@ async def test_session_runner_run_after_done_starts_new_user_task(tmp_path):
     assert first.title == "First request"
     assert second.title == "Second request"
     assert len(runner._agent_process.calls) == 2
-    assert runner._agent_process.calls[1]["user_prompt"] == "Second request"
+    assert runner._agent_process.calls[1]["messages"][-1].content[0].text == "Second request"
 
 
 @pytest.mark.asyncio
@@ -175,11 +190,11 @@ async def test_session_runner_run_none_continues_running_task_without_user_promp
 
     assert result.title == "Paused request"
     assert len(agent_process.calls) == 1
-    assert agent_process.calls[0]["user_prompt"] is None
+    assert agent_process.calls[0]["messages"] == []
 
 
 @pytest.mark.asyncio
-async def test_session_runner_stops_after_turn_end_pause_hook(tmp_path):
+async def test_session_runner_stops_after_step_pause(tmp_path):
     db = Database(str(tmp_path / "session.db"))
     task_manager = TaskManager(db)
     task_manager.load(None)
@@ -201,10 +216,7 @@ async def test_session_runner_stops_after_turn_end_pause_hook(tmp_path):
         cancel_event=asyncio.Event(),
     )
 
-    def pause_on_turn_end(event):
-        runner.pause()
-
-    runner.add_hook("turn_end", pause_on_turn_end)
+    agent_process.pause_on_tool_step = runner.pause
 
     result = await runner.run(None)
 
@@ -215,7 +227,7 @@ async def test_session_runner_stops_after_turn_end_pause_hook(tmp_path):
 
 
 @pytest.mark.asyncio
-async def test_session_runner_finishes_completed_task_even_when_turn_end_pauses(tmp_path):
+async def test_session_runner_finishes_completed_task_even_when_step_pauses(tmp_path):
     db = Database(str(tmp_path / "session.db"))
     agent_process = FakeAgentProcess()
     runner = SessionRunner(
@@ -226,10 +238,7 @@ async def test_session_runner_finishes_completed_task_even_when_turn_end_pauses(
         cancel_event=asyncio.Event(),
     )
 
-    def pause_on_turn_end(event):
-        runner.pause()
-
-    runner.add_hook("turn_end", pause_on_turn_end)
+    agent_process.pause_on_tool_step = runner.pause
 
     result = await runner.run("Build feature")
     continued = await runner.run(None)
@@ -269,12 +278,15 @@ async def test_session_runner_new_input_closes_previous_task_and_creates_new_tas
     assert reloaded_previous.status == "done"
     assert result.title == "New request"
     assert len(agent_process.calls) == 1
-    assert agent_process.calls[0]["user_prompt"] == "New request"
+    assert agent_process.calls[0]["messages"][-1].content[0].text == "New request"
 
 
 class FailingAgentProcess:
-    async def run(self, system_prompt, messages, tools, user_prompt="", cancel_event=None, hooks=None):
+    async def call_llm_step(self, system_prompt, messages, tools, cancel_event=None):
         raise RuntimeError("agent failed")
+
+    async def run_tool_calls_step(self, tools, assistant_message, cancel_event=None):
+        raise AssertionError("tool step should not run after llm failure")
 
     def subscribe(self, callback):
         pass
@@ -330,8 +342,61 @@ def test_session_runner_pause_controls_cancel_event(tmp_path):
     assert cancel_event.is_set()
 
 
+def test_append_messages_updates_memory_and_database(tmp_path):
+    db = Database(str(tmp_path / "session.db"))
+    runner = SessionRunner(
+        session_id="session_a",
+        db=db,
+        task_manager=TaskManager(db),
+        agent_process=FakeAgentProcess(),
+        cancel_event=asyncio.Event(),
+    )
+    runner.load()
+    message = UserMessage(content=[TextContent(text="hello")], timestamp=1)
+
+    runner.append_messages([message])
+
+    persisted = db.list_runner_messages("session_a")
+    assert len(runner._messages) == 1
+    assert runner._messages[0].message is message
+    assert persisted[0].content[0].text == "hello"
+
+
+def test_record_tool_call_updates_task_manager_and_database(tmp_path):
+    db = Database(str(tmp_path / "session.db"))
+    task_manager = TaskManager(db)
+    task_manager.load(None)
+    user_task = task_manager.create_user_task("Build feature")
+    todo = task_manager.create_todo("Inspect files")
+    task_manager.save()
+    runner = SessionRunner(
+        session_id="session_a",
+        db=db,
+        task_manager=task_manager,
+        agent_process=FakeAgentProcess(),
+        cancel_event=asyncio.Event(),
+    )
+    tool_call = ToolCall(id="call_1", name="example_tool", arguments={"path": "."})
+    tool_result = ToolResultMessage(
+        toolCallId="call_1",
+        toolName="example_tool",
+        content=[TextContent(text="done")],
+    )
+
+    runner.record_tool_call(tool_call, tool_result, started_at=1.0, finished_at=2.0)
+
+    records = db.list_runner_tool_calls("session_a")
+    loaded_manager = TaskManager(db)
+    loaded_manager.load(user_task.id)
+    loaded_todo = next(child for child in loaded_manager.active_user_task.children if child.id == todo.id)
+    assert len(records) == 1
+    assert records[0].id == 0
+    assert records[0].tool_call_id == "call_1"
+    assert loaded_todo.children[0].tool_call_log_id == 0
+
+
 @pytest.mark.asyncio
-async def test_turn_end_token_threshold_persists_compact_and_sets_cancel(tmp_path):
+async def test_step_token_threshold_persists_compact_and_sets_cancel(tmp_path):
     db = Database(str(tmp_path / "session.db"))
     cancel_event = asyncio.Event()
     task_manager = TaskManager(db)
@@ -359,7 +424,7 @@ async def test_turn_end_token_threshold_persists_compact_and_sets_cancel(tmp_pat
 
 
 @pytest.mark.asyncio
-async def test_turn_end_tool_call_threshold_persists_compact_and_sets_cancel(tmp_path):
+async def test_step_tool_call_threshold_persists_compact_and_sets_cancel(tmp_path):
     db = Database(str(tmp_path / "session.db"))
     cancel_event = asyncio.Event()
     task_manager = TaskManager(db)
@@ -587,7 +652,7 @@ async def test_session_runner_persists_error_and_reraises(tmp_path):
 
 
 @pytest.mark.asyncio
-async def test_turn_end_save_rolls_back_messages_when_task_save_fails(tmp_path):
+async def test_step_save_rolls_back_messages_when_task_save_fails(tmp_path):
     db = Database(str(tmp_path / "session.db"))
     task_manager = FailingSaveTaskManager(db)
     agent_process = FakeAgentProcess()

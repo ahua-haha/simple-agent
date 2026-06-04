@@ -123,21 +123,36 @@ async def test_session_run_creates_queue_and_runs_agent_once(tmp_path, monkeypat
 
     calls = []
 
-    async def fake_run(self, system_prompt, messages, tools, user_prompt="", cancel_event=None, hooks=None):
+    async def fake_call_llm_step(self, system_prompt, messages, tools, cancel_event=None):
         calls.append(
             {
                 "system_prompt": system_prompt,
                 "messages": messages,
                 "tools": [tool.name for tool in tools],
-                "user_prompt": user_prompt,
                 "cancel_event": cancel_event,
-                "hooks": hooks,
             }
         )
-        from pi.ai.types import AssistantMessage, TextContent
-        return [AssistantMessage(role="assistant", content=[TextContent(text="done")])]
+        from pi.ai.types import AssistantMessage, TextContent, ToolCall
+        return AssistantMessage(
+            role="assistant",
+            content=[
+                TextContent(text="done"),
+                ToolCall(id="tool_1", name="example_tool", arguments={}),
+            ],
+        )
 
-    monkeypatch.setattr("simple_agent.process.agent_process.AgentProcess.run", fake_run)
+    async def fake_run_tool_calls_step(self, tools, assistant_message, cancel_event=None):
+        from pi.ai.types import TextContent, ToolResultMessage
+        return [
+            ToolResultMessage(
+                toolCallId="tool_1",
+                toolName="example_tool",
+                content=[TextContent(text="tool done")],
+            )
+        ]
+
+    monkeypatch.setattr("simple_agent.process.agent_process.AgentProcess.call_llm_step", fake_call_llm_step)
+    monkeypatch.setattr("simple_agent.process.agent_process.AgentProcess.run_tool_calls_step", fake_run_tool_calls_step)
 
     session = Session(base_dir=str(tmp_path))
     queue = session.run("Build feature")
@@ -150,4 +165,3 @@ async def test_session_run_creates_queue_and_runs_agent_once(tmp_path, monkeypat
     assert "finish_todo" in calls[0]["tools"]
     assert "error_todo" in calls[0]["tools"]
     assert calls[0]["cancel_event"] is session._runner._cancel_event
-    assert set(calls[0]["hooks"]) == {"turn_end"}

@@ -7,7 +7,6 @@ import logging
 import time
 from typing import TYPE_CHECKING, Any, Callable, Literal
 
-from pi.agent import AgentTool, AgentToolResult, AgentToolUpdateCallback
 from pi.ai.types import AssistantMessage, TextContent, ToolCall, ToolResultMessage, UserMessage
 from simple_agent.fractional_index import key_after
 from simple_agent.json_utils import json_safe
@@ -19,7 +18,6 @@ if TYPE_CHECKING:
     from simple_agent.db.db import Database
     from simple_agent.process.agent_process import AgentProcess
     from simple_agent.task_manager import TaskManager
-    from pi.agent import AgentEvent
     from pi.agent.types import AgentMessage
 
 _log = logging.getLogger(__name__)
@@ -53,11 +51,22 @@ Use only the compact tools. Create exactly one compacted todo, record useful
 tool-call log IDs, then finish the compacted todo."""
 
 
-def _tool_result_payload(result: AgentToolResult) -> dict[str, Any]:
+def _tool_result_payload(result: ToolResultMessage) -> dict[str, Any]:
     return {
         "content": [json_safe(item) for item in result.content],
         "details": json_safe(result.details),
     }
+
+
+def _tool_result_error(result: ToolResultMessage) -> str | None:
+    if not result.is_error:
+        return None
+    text_parts = [
+        item.text
+        for item in result.content
+        if isinstance(item, TextContent)
+    ]
+    return "\n".join(text_parts) if text_parts else "Tool call failed"
 
 
 class SessionRunner:
@@ -75,7 +84,6 @@ class SessionRunner:
     _context_token_threshold: int
     _tool_call_threshold: int
     _user_paused: bool
-    _hooks: dict[str, list[Callable[[AgentEvent], None]]]
 
     def __init__(
         self,
@@ -100,25 +108,12 @@ class SessionRunner:
         self._context_token_threshold = context_token_threshold
         self._tool_call_threshold = tool_call_threshold
         self._user_paused = False
-        self._hooks = {}
 
     def subscribe(self, callback: Callable) -> None:
         self._agent_process.subscribe(callback)
 
     def unsubscribe(self, callback: Callable) -> None:
         self._agent_process.unsubscribe(callback)
-
-    def add_hook(self, event_type: str, hook: Callable[[AgentEvent], None]) -> None:
-        self._hooks.setdefault(event_type, []).append(hook)
-
-    def remove_hook(self, event_type: str, hook: Callable[[AgentEvent], None]) -> None:
-        hooks = self._hooks.get(event_type)
-        if hooks is None:
-            return
-        if hook in hooks:
-            hooks.remove(hook)
-        if not hooks:
-            self._hooks.pop(event_type)
 
     def pause(self) -> None:
         self._user_paused = True
@@ -147,6 +142,80 @@ class SessionRunner:
             session=session,
         )
 
+    def append_messages(self, messages: list[AgentMessage], *, session=None) -> None:
+        if session is None:
+            with self._db.create_session() as session:
+                self.append_messages(messages, session=session)
+                session.commit()
+            return
+
+        entries = self._create_message_entries(messages)
+        self._messages.extend(entries)
+        self._next_message_seq = key_after(self._messages[-1].seq if self._messages else None)
+        for entry in entries:
+            self._db.insert_runner_message_entry(self._session_id, entry, session=session)
+
+    def record_tool_call(
+        self,
+        tool_call: ToolCall | None,
+        tool_result: ToolResultMessage,
+        *,
+        started_at: float,
+        finished_at: float,
+        session=None,
+    ) -> int:
+        if session is None:
+            with self._db.create_session() as session:
+                log_id = self.record_tool_call(
+                    tool_call,
+                    tool_result,
+                    started_at=started_at,
+                    finished_at=finished_at,
+                    session=session,
+                )
+                self._task_manager.save(session=session)
+                session.commit()
+                return log_id
+
+        log_id = self._db.next_runner_tool_call_id(self._session_id, session=session)
+        self._task_manager.record_tool_call(log_id)
+        self._db.insert_runner_tool_call(
+            id=log_id,
+            session_id=self._session_id,
+            tool_call_id=tool_result.tool_call_id,
+            tool_name=tool_result.tool_name,
+            params=tool_call.arguments if tool_call is not None else {},
+            result=_tool_result_payload(tool_result),
+            status="error" if tool_result.is_error else "success",
+            started_at=started_at,
+            finished_at=finished_at,
+            error=_tool_result_error(tool_result),
+            session=session,
+        )
+        return log_id
+
+    def record_tool_calls(
+        self,
+        tool_call_records: list[tuple[ToolCall | None, ToolResultMessage, float, float]],
+        *,
+        session=None,
+    ) -> None:
+        if session is None:
+            with self._db.create_session() as session:
+                self.record_tool_calls(tool_call_records, session=session)
+                self._task_manager.save(session=session)
+                session.commit()
+            return
+
+        for tool_call, tool_result, started_at, finished_at in tool_call_records:
+            self.record_tool_call(
+                tool_call,
+                tool_result,
+                started_at=started_at,
+                finished_at=finished_at,
+                session=session,
+            )
+
     def save_current_data(
         self,
         messages: list[AgentMessage] | None = None,
@@ -154,73 +223,25 @@ class SessionRunner:
         status: str | None = None,
         last_error: str | None = None,
         save_tasks: bool = True,
+        tool_call_records: list[tuple[ToolCall | None, ToolResultMessage, float, float]] | None = None,
     ) -> None:
         messages = messages or []
-        entries = self._create_message_entries(messages)
+        tool_call_records = tool_call_records or []
         with self._db.create_session() as session:
-            for entry in entries:
-                self._db.insert_runner_message_entry(self._session_id, entry, session=session)
+            self.record_tool_calls(tool_call_records, session=session)
+            self.append_messages(messages, session=session)
             if save_tasks:
                 self._task_manager.save(session=session)
             self.save_metadata(status=status or self._phase, last_error=last_error, session=session)
             session.commit()
-        self._messages.extend(entries)
-        self._next_message_seq = key_after(self._messages[-1].seq if self._messages else None)
 
     def _create_tools(self):
-        tools = [
+        return [
             self._task_manager.create_create_todo_tool(),
             self._task_manager.create_finish_todo_tool(),
             self._task_manager.create_error_todo_tool(),
             *create_all_coding_tools("."),
         ]
-        return self.wrap_tools(tools)
-
-    def wrap_tool(self, tool: AgentTool) -> AgentTool:
-        original = tool.execute
-
-        async def execute(
-            tool_call_id: str,
-            params: dict[str, Any],
-            cancel_event: asyncio.Event | None = None,
-            on_update: AgentToolUpdateCallback | None = None,
-        ) -> AgentToolResult:
-            started_at = time.time()
-            try:
-                result = await original(tool_call_id, params, cancel_event, on_update)
-            except Exception as exc:
-                self._db.insert_runner_tool_call(
-                    session_id=self._session_id,
-                    tool_call_id=tool_call_id,
-                    tool_name=tool.name,
-                    params=params,
-                    result=None,
-                    status="error",
-                    started_at=started_at,
-                    finished_at=time.time(),
-                    error=str(exc),
-                )
-                raise
-
-            log_id = self._db.insert_runner_tool_call(
-                session_id=self._session_id,
-                tool_call_id=tool_call_id,
-                tool_name=tool.name,
-                params=params,
-                result=_tool_result_payload(result),
-                status="success",
-                started_at=started_at,
-                finished_at=time.time(),
-                error=None,
-            )
-            self._task_manager.record_tool_call(log_id)
-            return result
-
-        tool.execute = execute
-        return tool
-
-    def wrap_tools(self, tools: list[AgentTool]) -> list[AgentTool]:
-        return [self.wrap_tool(tool) for tool in tools]
 
     async def run(self, user_input: str | None):
         self._user_paused = False
@@ -273,41 +294,54 @@ class SessionRunner:
         self._active_user_task_id = None
 
     async def handle_running(self, user_input: str | None) -> None:
-        def save_current_data(event: AgentEvent) -> None:
-            messages = [event.message, *event.tool_results]
-            if self._phase == "new_user_task":
-                self._phase = "running"
-            self.save_current_data(messages, status=self._phase)
-            self.pause_for_compaction_if_needed()
-
-        hooks = self._merge_hooks({
-            "turn_end": [save_current_data],
-        })
-
         if self._phase == "new_user_task" and user_input is not None:
             self.save_current_data(messages=[self._create_user_message(user_input)], status="new_user_task")
 
-        agent_user_prompt = user_input if self._phase == "new_user_task" else None
-        agent_messages = self._agent_messages()
-        if self._phase == "new_user_task":
-            agent_messages = agent_messages[:-1]
-        await self._agent_process.run(
-            system_prompt=SYSTEM_PROMPT,
-            messages=agent_messages,
-            tools=self._create_tools(),
-            user_prompt=agent_user_prompt,
-            cancel_event=self._cancel_event,
-            hooks=hooks,
-        )
-        if self._phase == "compact":
-            return
-        if self._task_manager.active_todo_id is None:
-            self._task_manager.finish_user_task()
-            self._phase = "done"
-            self.save_current_data(status="done")
-            return
-        if self._user_paused:
-            return
+        while self._phase in ("new_user_task", "running"):
+            tools = self._create_tools()
+            assistant_message = await self._agent_process.call_llm_step(
+                system_prompt=SYSTEM_PROMPT,
+                messages=self._agent_messages(),
+                tools=tools,
+                cancel_event=self._cancel_event,
+            )
+            tool_results: list[ToolResultMessage] = []
+            tool_call_records: list[tuple[ToolCall | None, ToolResultMessage, float, float]] = []
+            if self._assistant_has_tool_calls(assistant_message) and not self._cancel_event.is_set():
+                tool_step_started_at = time.time()
+                tool_results = await self._agent_process.run_tool_calls_step(
+                    tools=tools,
+                    assistant_message=assistant_message,
+                    cancel_event=self._cancel_event,
+                )
+                tool_step_finished_at = time.time()
+                tool_call_records = self._create_tool_call_records(
+                    assistant_message,
+                    tool_results,
+                    tool_step_started_at,
+                    tool_step_finished_at,
+                )
+
+            if self._phase == "new_user_task":
+                self._phase = "running"
+            self.save_current_data(
+                [assistant_message, *tool_results],
+                status=self._phase,
+                tool_call_records=tool_call_records,
+            )
+            self.pause_for_compaction_if_needed()
+
+            if self._phase == "compact":
+                return
+            if self._task_manager.active_todo_id is None:
+                self._task_manager.finish_user_task()
+                self._phase = "done"
+                self.save_current_data(status="done")
+                return
+            if self._user_paused:
+                return
+            if not tool_results:
+                return
 
     def pause_for_compaction_if_needed(self) -> None:
         context_tokens = estimate_messages_tokens(self._agent_messages())
@@ -321,15 +355,6 @@ class SessionRunner:
         self._phase = "compact"
         self.save_current_data(messages=[], status="compact", save_tasks=False)
         self._cancel_event.set()
-
-    def _merge_hooks(self, built_in_hooks: dict[str, list[Callable[[AgentEvent], None]]]):
-        hooks = {
-            event_type: list(event_hooks)
-            for event_type, event_hooks in self._hooks.items()
-        }
-        for event_type, event_hooks in built_in_hooks.items():
-            hooks.setdefault(event_type, []).extend(event_hooks)
-        return hooks
 
     async def handle_compact(self, user_input: str | None) -> None:
         scope = self._task_manager.compact_scope()
@@ -361,7 +386,6 @@ class SessionRunner:
             tools=self._task_manager.create_compact_tools(),
             user_prompt=user_input,
             cancel_event=self._cancel_event,
-            hooks={},
         )
 
         with self._db.create_session() as session:
@@ -401,6 +425,26 @@ class SessionRunner:
             if isinstance(message, ToolResultMessage) and message.tool_call_id == tool_call_id:
                 return seq
         raise RuntimeError(f"Could not find tool result message for tool call {tool_call_id}")
+
+    def _assistant_has_tool_calls(self, message: AssistantMessage) -> bool:
+        return any(isinstance(content, ToolCall) for content in message.content)
+
+    def _create_tool_call_records(
+        self,
+        assistant_message: AssistantMessage,
+        tool_results: list[ToolResultMessage],
+        started_at: float,
+        finished_at: float,
+    ) -> list[tuple[ToolCall | None, ToolResultMessage, float, float]]:
+        tool_calls = {
+            content.id: content
+            for content in assistant_message.content
+            if isinstance(content, ToolCall)
+        }
+        return [
+            (tool_calls.get(result.tool_call_id), result, started_at, finished_at)
+            for result in tool_results
+        ]
 
     def format_compacted_todo_message(self, compacted_todo) -> AgentMessage:
         tool_refs = [
