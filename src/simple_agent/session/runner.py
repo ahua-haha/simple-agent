@@ -152,23 +152,6 @@ class SessionRunner:
         for message in self._uncommitted_messages:
             self._db.insert_runner_message(self._session_id, message, session=session)
 
-    def record_tool_call(
-        self,
-        tool_call: ToolCall | None,
-        tool_result: ToolResultMessage,
-    ) -> int:
-        log_id = self._next_tool_call_log_id
-        self._next_tool_call_log_id = log_id + 1
-        self._task_manager.record_tool_call(log_id)
-        self._uncommitted_tool_calls.append(
-            PendingToolCallRecord(
-                log_id=log_id,
-                tool_call=tool_call,
-                tool_result=tool_result,
-            )
-        )
-        return log_id
-
     def sync_tool_calls(self, *, session: Session) -> None:
         for pending in self._uncommitted_tool_calls:
             self._db.insert_runner_tool_call(
@@ -183,10 +166,25 @@ class SessionRunner:
 
     def record_tool_calls(
         self,
-        tool_call_records: list[tuple[ToolCall | None, ToolResultMessage]],
+        assistant_message: AssistantMessage,
+        tool_results: list[ToolResultMessage],
     ) -> None:
-        for tool_call, tool_result in tool_call_records:
-            self.record_tool_call(tool_call, tool_result)
+        tool_calls = {
+            content.id: content
+            for content in assistant_message.content
+            if isinstance(content, ToolCall)
+        }
+        for tool_result in tool_results:
+            log_id = self._next_tool_call_log_id
+            self._next_tool_call_log_id = log_id + 1
+            self._task_manager.record_tool_call(log_id)
+            self._uncommitted_tool_calls.append(
+                PendingToolCallRecord(
+                    log_id=log_id,
+                    tool_call=tool_calls.get(tool_result.tool_call_id),
+                    tool_result=tool_result,
+                )
+            )
 
     def save_current_data(
         self,
@@ -195,11 +193,8 @@ class SessionRunner:
         next_action: RunnerAction | None = None,
         last_error: str | None = None,
         save_tasks: bool = True,
-        tool_call_records: list[tuple[ToolCall | None, ToolResultMessage]] | None = None,
     ) -> None:
         messages = messages or []
-        tool_call_records = tool_call_records or []
-        self.record_tool_calls(tool_call_records)
         self.append_messages(messages)
         with self._db.create_session() as session:
             self.sync_tool_calls(session=session)
@@ -208,9 +203,6 @@ class SessionRunner:
                 self._task_manager.save(session=session)
             self.save_metadata(next_action=next_action, last_error=last_error, session=session)
             session.commit()
-        self._clear_uncommitted_buffers()
-
-    def _clear_uncommitted_buffers(self) -> None:
         self._uncommitted_messages.clear()
         self._uncommitted_tool_calls.clear()
 
@@ -262,7 +254,12 @@ class SessionRunner:
         self._next_action = "normal_run"
         self._cancel_event.clear()
         self.save_current_data(
-            messages=[self._create_user_message(user_input)],
+            messages=[
+                UserMessage(
+                    content=[TextContent(text=user_input)],
+                    timestamp=int(time.time() * 1000),
+                )
+            ],
             next_action=self._next_action,
         )
         return self._next_action
@@ -287,12 +284,11 @@ class SessionRunner:
         tools = self._create_tools()
         assistant_message = await self._agent_process.call_llm_step(
             system_prompt=SYSTEM_PROMPT,
-            messages=self._agent_messages(),
+            messages=list(self._messages),
             tools=tools,
             cancel_event=self._cancel_event,
         )
         tool_results: list[ToolResultMessage] = []
-        tool_call_records: list[tuple[ToolCall | None, ToolResultMessage]] = []
         has_tool_calls = self._assistant_has_tool_calls(assistant_message)
         if has_tool_calls:
             tool_results = await self._agent_process.run_tool_calls_step(
@@ -300,15 +296,11 @@ class SessionRunner:
                 assistant_message=assistant_message,
                 cancel_event=self._cancel_event,
             )
-            tool_call_records = self._create_tool_call_records(
-                assistant_message,
-                tool_results,
-            )
+            self.record_tool_calls(assistant_message, tool_results)
 
         self.save_current_data(
             [assistant_message, *tool_results],
             next_action=self._next_action,
-            tool_call_records=tool_call_records,
         )
 
         if not has_tool_calls:
@@ -321,7 +313,7 @@ class SessionRunner:
         return self._next_action
 
     def pause_for_compaction_if_needed(self) -> None:
-        context_tokens = estimate_messages_tokens(self._agent_messages())
+        context_tokens = estimate_messages_tokens(list(self._messages))
         with self._db.create_session() as session:
             tool_calls = len(self._db.list_runner_tool_calls(self._session_id, session=session))
         if (
@@ -398,21 +390,6 @@ class SessionRunner:
     def _assistant_has_tool_calls(self, message: AssistantMessage) -> bool:
         return any(isinstance(content, ToolCall) for content in message.content)
 
-    def _create_tool_call_records(
-        self,
-        assistant_message: AssistantMessage,
-        tool_results: list[ToolResultMessage],
-    ) -> list[tuple[ToolCall | None, ToolResultMessage]]:
-        tool_calls = {
-            content.id: content
-            for content in assistant_message.content
-            if isinstance(content, ToolCall)
-        }
-        return [
-            (tool_calls.get(result.tool_call_id), result)
-            for result in tool_results
-        ]
-
     def _tool_call_json(self, tool_call: ToolCall | None) -> str:
         return json.dumps(json_safe(tool_call), sort_keys=True, separators=(",", ":"))
 
@@ -437,12 +414,3 @@ class SessionRunner:
         with self._db.create_session() as session:
             self.save_metadata(next_action=self._next_action, last_error=str(exc), session=session)
             session.commit()
-
-    def _agent_messages(self) -> list[AgentMessage]:
-        return list(self._messages)
-
-    def _create_user_message(self, user_input: str) -> AgentMessage:
-        return UserMessage(
-            content=[TextContent(text=user_input)],
-            timestamp=int(time.time() * 1000),
-        )

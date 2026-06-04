@@ -459,7 +459,7 @@ def test_handle_input_appends_user_message(tmp_path):
     assert messages[0].content[0].text == "Build feature"
 
 
-def test_record_tool_call_buffers_until_sync(tmp_path):
+def test_record_tool_calls_buffers_results_until_sync(tmp_path):
     db = Database(str(tmp_path / "session.db"))
     task_manager = TaskManager(db)
     _load_task_manager(task_manager, None)
@@ -474,15 +474,21 @@ def test_record_tool_call_buffers_until_sync(tmp_path):
         cancel_event=asyncio.Event(),
     )
     tool_call = ToolCall(id="call_1", name="example_tool", arguments={"path": "."})
+    assistant_message = AssistantMessage(
+        role="assistant",
+        content=[TextContent(text="using tool"), tool_call],
+    )
     tool_result = ToolResultMessage(
         toolCallId="call_1",
         toolName="example_tool",
         content=[TextContent(text="done")],
     )
 
-    runner.record_tool_call(tool_call, tool_result)
+    runner.record_tool_calls(assistant_message, [tool_result])
 
     assert len(runner._uncommitted_tool_calls) == 1
+    assert runner._uncommitted_tool_calls[0].tool_call is tool_call
+    assert runner._uncommitted_tool_calls[0].tool_result is tool_result
     assert db.list_runner_tool_calls("session_a") == []
 
     with db.create_session() as session:
