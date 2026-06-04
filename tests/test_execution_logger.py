@@ -31,9 +31,13 @@ class _FakeAgentProcess:
         self.result_details = result_details
         self.is_error = is_error
         self.seen_tools = []
+        self.call_count = 0
 
     async def call_llm_step(self, system_prompt, messages, tools, cancel_event=None):
+        self.call_count += 1
         self.seen_tools = [tool.name for tool in tools]
+        if self.call_count > 1:
+            return AssistantMessage(role="assistant", content=[TextContent(text="done")])
         return AssistantMessage(
             role="assistant",
             content=[

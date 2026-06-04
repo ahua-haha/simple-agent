@@ -153,8 +153,7 @@ class Database:
         self,
         session_id: str,
         *,
-        phase: str,
-        status: str,
+        next_action: str,
         active_user_task_id: int | None = None,
         last_error: str | None = None,
         session: Session | None = None,
@@ -164,8 +163,7 @@ class Database:
         if record is None:
             record = RunnerStateMetadataRecord(session_id=session_id, created_at=now)
             session.add(record)
-        record.phase = phase
-        record.status = status
+        record.next_action = next_action
         record.active_user_task_id = active_user_task_id
         record.last_error = last_error
         record.updated_at = now

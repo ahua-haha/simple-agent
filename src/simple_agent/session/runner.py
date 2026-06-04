@@ -21,7 +21,7 @@ if TYPE_CHECKING:
 
 _log = logging.getLogger(__name__)
 
-RunnerPhase = Literal["idle", "new_user_task", "running", "compact", "done", "error"]
+RunnerAction = Literal["normal_run", "compact", "wait_user_input"]
 
 SYSTEM_PROMPT = """You are a helpful coding agent.
 
@@ -85,7 +85,7 @@ class SessionRunner:
     _task_manager: TaskManager
     _agent_process: AgentProcess
     _cancel_event: asyncio.Event
-    _phase: RunnerPhase
+    _next_action: RunnerAction
     _active_user_task_id: int | None
     _messages: list[AgentMessage]
     _context_token_threshold: int
@@ -111,7 +111,7 @@ class SessionRunner:
         self._task_manager = task_manager
         self._agent_process = agent_process
         self._cancel_event = cancel_event
-        self._phase = "idle"
+        self._next_action = "wait_user_input"
         self._active_user_task_id = None
         self._messages = []
         self._context_token_threshold = context_token_threshold
@@ -138,19 +138,24 @@ class SessionRunner:
         self._uncommitted_tool_calls = []
         self._next_tool_call_log_id = self._db.next_runner_tool_call_id(self._session_id)
         if metadata is None:
-            self._phase = "idle"
+            self._next_action = "wait_user_input"
             self._active_user_task_id = None
             self._task_manager.load(None)
             return
-        self._phase = metadata.phase
+        self._next_action = metadata.next_action
         self._active_user_task_id = metadata.active_user_task_id
         self._task_manager.load(metadata.active_user_task_id)
 
-    def save_metadata(self, *, status: str | None = None, last_error: str | None = None, session=None) -> None:
+    def save_metadata(
+        self,
+        *,
+        next_action: RunnerAction | None = None,
+        last_error: str | None = None,
+        session=None,
+    ) -> None:
         self._db.upsert_runner_state_metadata(
             self._session_id,
-            phase=self._phase,
-            status=status or self._phase,
+            next_action=next_action or self._next_action,
             active_user_task_id=self._active_user_task_id,
             last_error=last_error,
             session=session,
@@ -236,7 +241,7 @@ class SessionRunner:
         self,
         messages: list[AgentMessage] | None = None,
         *,
-        status: str | None = None,
+        next_action: RunnerAction | None = None,
         last_error: str | None = None,
         save_tasks: bool = True,
         tool_call_records: list[tuple[ToolCall | None, ToolResultMessage, float, float]] | None = None,
@@ -250,7 +255,7 @@ class SessionRunner:
             self.sync_messages(session=session)
             if save_tasks:
                 self._task_manager.save(session=session)
-            self.save_metadata(status=status or self._phase, last_error=last_error, session=session)
+            self.save_metadata(next_action=next_action, last_error=last_error, session=session)
             session.commit()
         self._clear_uncommitted_buffers()
 
@@ -270,20 +275,12 @@ class SessionRunner:
         self._user_paused = False
         self._cancel_event.clear()
         self.load()
-        self.handle_input(user_input)
+        next_action = self.handle_input(user_input)
         try:
-            while self._phase != "done":
+            while next_action != "wait_user_input":
                 if self._user_paused:
                     break
-                if self._phase in ("idle", "error"):
-                    break
-                if self._phase in ("new_user_task", "running"):
-                    await self.handle_running(user_input)
-                    continue
-                if self._phase == "compact":
-                    await self.handle_compact(user_input)
-                    continue
-                raise RuntimeError(f"Unknown runner phase: {self._phase}")
+                next_action = await self.route_next_action(next_action, user_input)
         except Exception as exc:
             self.handle_error(exc)
             raise
@@ -292,17 +289,30 @@ class SessionRunner:
             return None
         return self._db.get_managed_task(self._active_user_task_id)
 
-    def handle_input(self, user_input: str | None) -> None:
+    async def route_next_action(self, next_action: RunnerAction, user_input: str | None) -> RunnerAction:
+        if next_action == "normal_run":
+            return await self.handle_running(user_input)
+        if next_action == "compact":
+            return await self.handle_compact(user_input)
+        if next_action == "wait_user_input":
+            return next_action
+        raise RuntimeError(f"Unknown runner action: {next_action}")
+
+    def handle_input(self, user_input: str | None) -> RunnerAction:
         if user_input is None:
-            return
+            return self._next_action
 
         self.finish_previous_user_task()
         self._task_manager.load(None)
         user_task = self._task_manager.create_user_task(user_input)
         self._active_user_task_id = user_task.id
-        self._phase = "new_user_task"
+        self._next_action = "normal_run"
         self._cancel_event.clear()
-        self.save_current_data(status="new_user_task")
+        self.save_current_data(
+            messages=[self._create_user_message(user_input)],
+            next_action=self._next_action,
+        )
+        return self._next_action
 
     def finish_previous_user_task(self) -> None:
         previous_user_task = self._task_manager.active_user_task
@@ -313,58 +323,53 @@ class SessionRunner:
             if self._task_manager.active_todo_id is not None:
                 self._task_manager.error_task("Interrupted by new user input")
             self._task_manager.finish_user_task()
-            self.save_current_data(messages=[], status="done")
+            self._next_action = "wait_user_input"
+            self.save_current_data(messages=[], next_action=self._next_action)
         self._active_user_task_id = None
 
-    async def handle_running(self, user_input: str | None) -> None:
-        if self._phase == "new_user_task" and user_input is not None:
-            self.save_current_data(messages=[self._create_user_message(user_input)], status="new_user_task")
+    async def handle_running(self, user_input: str | None) -> RunnerAction:
+        if self._next_action != "normal_run":
+            return self._next_action
 
-        while self._phase in ("new_user_task", "running"):
-            tools = self._create_tools()
-            assistant_message = await self._agent_process.call_llm_step(
-                system_prompt=SYSTEM_PROMPT,
-                messages=self._agent_messages(),
+        tools = self._create_tools()
+        assistant_message = await self._agent_process.call_llm_step(
+            system_prompt=SYSTEM_PROMPT,
+            messages=self._agent_messages(),
+            tools=tools,
+            cancel_event=self._cancel_event,
+        )
+        tool_results: list[ToolResultMessage] = []
+        tool_call_records: list[tuple[ToolCall | None, ToolResultMessage, float, float]] = []
+        has_tool_calls = self._assistant_has_tool_calls(assistant_message)
+        if has_tool_calls:
+            tool_step_started_at = time.time()
+            tool_results = await self._agent_process.run_tool_calls_step(
                 tools=tools,
+                assistant_message=assistant_message,
                 cancel_event=self._cancel_event,
             )
-            tool_results: list[ToolResultMessage] = []
-            tool_call_records: list[tuple[ToolCall | None, ToolResultMessage, float, float]] = []
-            if self._assistant_has_tool_calls(assistant_message) and not self._cancel_event.is_set():
-                tool_step_started_at = time.time()
-                tool_results = await self._agent_process.run_tool_calls_step(
-                    tools=tools,
-                    assistant_message=assistant_message,
-                    cancel_event=self._cancel_event,
-                )
-                tool_step_finished_at = time.time()
-                tool_call_records = self._create_tool_call_records(
-                    assistant_message,
-                    tool_results,
-                    tool_step_started_at,
-                    tool_step_finished_at,
-                )
-
-            if self._phase == "new_user_task":
-                self._phase = "running"
-            self.save_current_data(
-                [assistant_message, *tool_results],
-                status=self._phase,
-                tool_call_records=tool_call_records,
+            tool_step_finished_at = time.time()
+            tool_call_records = self._create_tool_call_records(
+                assistant_message,
+                tool_results,
+                tool_step_started_at,
+                tool_step_finished_at,
             )
-            self.pause_for_compaction_if_needed()
 
-            if self._phase == "compact":
-                return
-            if self._task_manager.active_todo_id is None:
-                self._task_manager.finish_user_task()
-                self._phase = "done"
-                self.save_current_data(status="done")
-                return
-            if self._user_paused:
-                return
-            if not tool_results:
-                return
+        self.save_current_data(
+            [assistant_message, *tool_results],
+            next_action=self._next_action,
+            tool_call_records=tool_call_records,
+        )
+
+        if not has_tool_calls:
+            self._task_manager.finish_user_task()
+            self._next_action = "wait_user_input"
+            self.save_current_data(next_action=self._next_action)
+            return self._next_action
+
+        self.pause_for_compaction_if_needed()
+        return self._next_action
 
     def pause_for_compaction_if_needed(self) -> None:
         context_tokens = estimate_messages_tokens(self._agent_messages())
@@ -375,17 +380,17 @@ class SessionRunner:
         ):
             return
 
-        self._phase = "compact"
-        self.save_current_data(messages=[], status="compact", save_tasks=False)
+        self._next_action = "compact"
+        self.save_current_data(messages=[], next_action=self._next_action, save_tasks=False)
         self._cancel_event.set()
 
-    async def handle_compact(self, user_input: str | None) -> None:
+    async def handle_compact(self, user_input: str | None) -> RunnerAction:
         scope = self._task_manager.compact_scope()
         if scope is None:
-            self._phase = "running"
+            self._next_action = "normal_run"
             self._cancel_event.clear()
-            self.save_current_data(messages=[], status="running", save_tasks=False)
-            return
+            self.save_current_data(messages=[], next_action=self._next_action, save_tasks=False)
+            return self._next_action
 
         start_tool_call_id = scope.compact_todos[0].create_tool_call_id
         if start_tool_call_id is None:
@@ -416,13 +421,14 @@ class SessionRunner:
             compact_messages = [self.format_compacted_todo_message(compacted_todo)]
             replacement_messages = [*messages_before_start, *compact_messages, *preserved_messages]
             self._db.replace_runner_messages(self._session_id, replacement_messages, session=session)
-            self._phase = "running"
-            self.save_metadata(status="running", session=session)
+            self._next_action = "normal_run"
+            self.save_metadata(next_action=self._next_action, session=session)
             session.commit()
 
         self._messages = replacement_messages
         self._uncommitted_messages.clear()
         self._cancel_event.clear()
+        return self._next_action
 
     def find_assistant_message_index_for_tool_call(self, tool_call_id: str) -> int:
         for index, message in enumerate(self._messages):
@@ -473,9 +479,9 @@ class SessionRunner:
 
     def handle_error(self, exc: Exception) -> None:
         _log.exception("session runner failed: session=%s", self._session_id)
-        self._phase = "error"
+        self._next_action = "wait_user_input"
         with self._db.create_session() as session:
-            self.save_metadata(status="error", last_error=str(exc), session=session)
+            self.save_metadata(next_action=self._next_action, last_error=str(exc), session=session)
             session.commit()
 
     def _agent_messages(self) -> list[AgentMessage]:

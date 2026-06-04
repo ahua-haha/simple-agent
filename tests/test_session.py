@@ -124,6 +124,7 @@ async def test_session_run_creates_queue_and_runs_agent_once(tmp_path, monkeypat
     calls = []
 
     async def fake_call_llm_step(self, system_prompt, messages, tools, cancel_event=None):
+        from pi.ai.types import AssistantMessage, TextContent, ToolCall
         calls.append(
             {
                 "system_prompt": system_prompt,
@@ -132,7 +133,11 @@ async def test_session_run_creates_queue_and_runs_agent_once(tmp_path, monkeypat
                 "cancel_event": cancel_event,
             }
         )
-        from pi.ai.types import AssistantMessage, TextContent, ToolCall
+        if len(calls) > 1:
+            return AssistantMessage(
+                role="assistant",
+                content=[TextContent(text="final answer")],
+            )
         return AssistantMessage(
             role="assistant",
             content=[
@@ -160,7 +165,7 @@ async def test_session_run_creates_queue_and_runs_agent_once(tmp_path, monkeypat
 
     await queue.get()
 
-    assert len(calls) == 1
+    assert len(calls) == 2
     assert "create_todo" in calls[0]["tools"]
     assert "finish_todo" in calls[0]["tools"]
     assert "error_todo" in calls[0]["tools"]

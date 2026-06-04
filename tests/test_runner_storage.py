@@ -16,8 +16,7 @@ def test_runner_state_metadata_roundtrip(tmp_path):
 
     db.upsert_runner_state_metadata(
         session_id="session_a",
-        phase="running",
-        status="running",
+        next_action="normal_run",
         active_user_task_id=42,
         last_error=None,
     )
@@ -26,8 +25,7 @@ def test_runner_state_metadata_roundtrip(tmp_path):
 
     assert record is not None
     assert record.session_id == "session_a"
-    assert record.phase == "running"
-    assert record.status == "running"
+    assert record.next_action == "normal_run"
     assert record.active_user_task_id == 42
     assert record.last_error is None
     assert record.version == 1
