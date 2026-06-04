@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import json
 import time
 from functools import wraps
 
@@ -250,12 +249,8 @@ class Database:
         session_id: str,
         tool_call_id: str,
         tool_name: str,
-        params: dict,
-        result: dict | None,
-        status: str,
-        started_at: float,
-        finished_at: float | None,
-        error: str | None,
+        tool_call_json: str,
+        tool_result_json: str,
         session: Session | None = None,
     ) -> int:
         next_id = id if id is not None else self.next_runner_tool_call_id(session_id, session=session)
@@ -264,12 +259,8 @@ class Database:
             session_id=session_id,
             tool_call_id=tool_call_id,
             tool_name=tool_name,
-            params_json=json.dumps(params, sort_keys=True),
-            result_json=json.dumps(result, sort_keys=True) if result is not None else None,
-            status=status,
-            started_at=started_at,
-            finished_at=finished_at,
-            error=error,
+            tool_call_json=tool_call_json,
+            tool_result_json=tool_result_json,
         )
         session.add(record)
         return next_id

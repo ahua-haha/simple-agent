@@ -30,11 +30,8 @@ class TestToolInspect:
                     session_id="session_a",
                     tool_call_id="call_1",
                     tool_name="test",
-                    params_json="{}",
-                    result_json='{"content": "hello world"}',
-                    status="success",
-                    started_at=1.0,
-                    finished_at=2.0,
+                    tool_call_json='{"id": "call_1"}',
+                    tool_result_json='{"content": "hello world"}',
                 )
                 session.add(record)
                 session.commit()
@@ -87,11 +84,8 @@ class TestToolInspect:
                         session_id="session_a",
                         tool_call_id=f"call_{i}",
                         tool_name=f"tool_{i}",
-                        params_json="{}",
-                        result_json=f'{{"content": "result_{i}"}}',
-                        status="success",
-                        started_at=float(i),
-                        finished_at=float(i + 1),
+                        tool_call_json=f'{{"id": "call_{i}"}}',
+                        tool_result_json=f'{{"content": "result_{i}"}}',
                     )
                     session.add(record)
                 session.commit()

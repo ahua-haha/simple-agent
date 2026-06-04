@@ -452,7 +452,7 @@ def test_record_tool_call_buffers_until_sync(tmp_path):
         content=[TextContent(text="done")],
     )
 
-    runner.record_tool_call(tool_call, tool_result, started_at=1.0, finished_at=2.0)
+    runner.record_tool_call(tool_call, tool_result)
 
     assert len(runner._uncommitted_tool_calls) == 1
     assert db.list_runner_tool_calls("session_a") == []
@@ -589,12 +589,8 @@ async def test_step_tool_call_threshold_persists_compact_and_sets_cancel(tmp_pat
         session_id="session_a",
         tool_call_id="call_99",
         tool_name="example_tool",
-        params={},
-        result={"content": []},
-        status="success",
-        started_at=1.0,
-        finished_at=2.0,
-        error=None,
+        tool_call_json="{}",
+        tool_result_json='{"content":[]}',
     )
     runner._active_user_task_id = user_task.id
     runner._next_action = "normal_run"
@@ -694,12 +690,8 @@ async def test_handle_compact_replaces_messages_and_tasks(tmp_path):
         session_id="session_a",
         tool_call_id="tool_1",
         tool_name="read",
-        params={},
-        result={"content": []},
-        status="success",
-        started_at=1.0,
-        finished_at=2.0,
-        error=None,
+        tool_call_json="{}",
+        tool_result_json='{"content":[]}',
     )
 
     next_action = await runner.handle_compact("Build feature")

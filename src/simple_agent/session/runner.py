@@ -4,9 +4,10 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import json
 import time
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Any, Callable, Literal
+from typing import TYPE_CHECKING, Callable, Literal
 
 from pi.ai.types import AssistantMessage, TextContent, ToolCall, ToolResultMessage, UserMessage
 from simple_agent.json_utils import json_safe
@@ -50,31 +51,11 @@ Use only the compact tools. Create exactly one compacted todo, record useful
 tool-call log IDs, then finish the compacted todo."""
 
 
-def _tool_result_payload(result: ToolResultMessage) -> dict[str, Any]:
-    return {
-        "content": [json_safe(item) for item in result.content],
-        "details": json_safe(result.details),
-    }
-
-
-def _tool_result_error(result: ToolResultMessage) -> str | None:
-    if not result.is_error:
-        return None
-    text_parts = [
-        item.text
-        for item in result.content
-        if isinstance(item, TextContent)
-    ]
-    return "\n".join(text_parts) if text_parts else "Tool call failed"
-
-
 @dataclass(frozen=True)
 class PendingToolCallRecord:
     log_id: int
     tool_call: ToolCall | None
     tool_result: ToolResultMessage
-    started_at: float
-    finished_at: float
 
 
 class SessionRunner:
@@ -180,9 +161,6 @@ class SessionRunner:
         self,
         tool_call: ToolCall | None,
         tool_result: ToolResultMessage,
-        *,
-        started_at: float,
-        finished_at: float,
     ) -> int:
         log_id = max(
             self._next_tool_call_log_id,
@@ -195,8 +173,6 @@ class SessionRunner:
                 log_id=log_id,
                 tool_call=tool_call,
                 tool_result=tool_result,
-                started_at=started_at,
-                finished_at=finished_at,
             )
         )
         return log_id
@@ -216,26 +192,17 @@ class SessionRunner:
                 session_id=self._session_id,
                 tool_call_id=pending.tool_result.tool_call_id,
                 tool_name=pending.tool_result.tool_name,
-                params=pending.tool_call.arguments if pending.tool_call is not None else {},
-                result=_tool_result_payload(pending.tool_result),
-                status="error" if pending.tool_result.is_error else "success",
-                started_at=pending.started_at,
-                finished_at=pending.finished_at,
-                error=_tool_result_error(pending.tool_result),
+                tool_call_json=self._tool_call_json(pending.tool_call),
+                tool_result_json=self._tool_result_json(pending.tool_result),
                 session=session,
             )
 
     def record_tool_calls(
         self,
-        tool_call_records: list[tuple[ToolCall | None, ToolResultMessage, float, float]],
+        tool_call_records: list[tuple[ToolCall | None, ToolResultMessage]],
     ) -> None:
-        for tool_call, tool_result, started_at, finished_at in tool_call_records:
-            self.record_tool_call(
-                tool_call,
-                tool_result,
-                started_at=started_at,
-                finished_at=finished_at,
-            )
+        for tool_call, tool_result in tool_call_records:
+            self.record_tool_call(tool_call, tool_result)
 
     def save_current_data(
         self,
@@ -244,7 +211,7 @@ class SessionRunner:
         next_action: RunnerAction | None = None,
         last_error: str | None = None,
         save_tasks: bool = True,
-        tool_call_records: list[tuple[ToolCall | None, ToolResultMessage, float, float]] | None = None,
+        tool_call_records: list[tuple[ToolCall | None, ToolResultMessage]] | None = None,
     ) -> None:
         messages = messages or []
         tool_call_records = tool_call_records or []
@@ -339,21 +306,17 @@ class SessionRunner:
             cancel_event=self._cancel_event,
         )
         tool_results: list[ToolResultMessage] = []
-        tool_call_records: list[tuple[ToolCall | None, ToolResultMessage, float, float]] = []
+        tool_call_records: list[tuple[ToolCall | None, ToolResultMessage]] = []
         has_tool_calls = self._assistant_has_tool_calls(assistant_message)
         if has_tool_calls:
-            tool_step_started_at = time.time()
             tool_results = await self._agent_process.run_tool_calls_step(
                 tools=tools,
                 assistant_message=assistant_message,
                 cancel_event=self._cancel_event,
             )
-            tool_step_finished_at = time.time()
             tool_call_records = self._create_tool_call_records(
                 assistant_message,
                 tool_results,
-                tool_step_started_at,
-                tool_step_finished_at,
             )
 
         self.save_current_data(
@@ -452,18 +415,22 @@ class SessionRunner:
         self,
         assistant_message: AssistantMessage,
         tool_results: list[ToolResultMessage],
-        started_at: float,
-        finished_at: float,
-    ) -> list[tuple[ToolCall | None, ToolResultMessage, float, float]]:
+    ) -> list[tuple[ToolCall | None, ToolResultMessage]]:
         tool_calls = {
             content.id: content
             for content in assistant_message.content
             if isinstance(content, ToolCall)
         }
         return [
-            (tool_calls.get(result.tool_call_id), result, started_at, finished_at)
+            (tool_calls.get(result.tool_call_id), result)
             for result in tool_results
         ]
+
+    def _tool_call_json(self, tool_call: ToolCall | None) -> str:
+        return json.dumps(json_safe(tool_call), sort_keys=True, separators=(",", ":"))
+
+    def _tool_result_json(self, tool_result: ToolResultMessage) -> str:
+        return json.dumps(json_safe(tool_result), sort_keys=True, separators=(",", ":"))
 
     def format_compacted_todo_message(self, compacted_todo) -> AgentMessage:
         tool_refs = [

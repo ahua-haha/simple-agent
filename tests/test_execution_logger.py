@@ -87,9 +87,8 @@ async def test_runner_records_tool_call_after_tool_step_success(tmp_path):
     assert len(records) == 1
     assert records[0].tool_call_id == "call_1"
     assert records[0].tool_name == "example"
-    assert records[0].params_json == '{"name": "Ada"}'
-    assert records[0].status == "success"
-    assert records[0].error is None
+    assert json.loads(records[0].tool_call_json)["arguments"] == {"name": "Ada"}
+    assert json.loads(records[0].tool_result_json)["is_error"] is False
 
 
 @pytest.mark.asyncio
@@ -103,7 +102,7 @@ async def test_runner_records_dataclass_tool_result_details_as_json(tmp_path):
     await runner.run("Build feature")
 
     records = db.list_runner_tool_calls("session_a")
-    payload = json.loads(records[0].result_json)
+    payload = json.loads(records[0].tool_result_json)
     assert payload["details"] == {
         "exit_code": 0,
         "nested": {"truncated": False},
@@ -121,5 +120,6 @@ async def test_runner_records_tool_call_error_result(tmp_path):
     assert len(records) == 1
     assert records[0].tool_call_id == "call_1"
     assert records[0].tool_name == "example"
-    assert records[0].status == "error"
-    assert records[0].error == "boom"
+    payload = json.loads(records[0].tool_result_json)
+    assert payload["is_error"] is True
+    assert payload["content"][0]["text"] == "boom"

@@ -49,7 +49,7 @@ def main():
                 .limit(args.limit)
             ).all()
         for record in records:
-            content = record.result_json or record.error or ""
+            content = record.tool_result_json or ""
             content_preview = content[:50]
             if len(content) > 50:
                 content_preview += "..."
@@ -65,7 +65,7 @@ def main():
         record = session.get(RunnerToolCallRecord, args.id)
 
     if record:
-        sys.stdout.write(record.result_json or record.error or "")
+        sys.stdout.write(record.tool_result_json or "")
         sys.exit(0)
 
     # ID not found

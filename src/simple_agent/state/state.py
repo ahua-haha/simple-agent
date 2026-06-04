@@ -71,12 +71,8 @@ class RunnerToolCallRecord(SQLModel, table=True):
     session_id: str = Field(index=True)
     tool_call_id: str = Field(index=True)
     tool_name: str = Field(index=True)
-    params_json: str
-    result_json: str | None = None
-    status: str = Field(index=True)
-    started_at: float
-    finished_at: float | None = None
-    error: str | None = None
+    tool_call_json: str
+    tool_result_json: str
 
 
 # ── Domain models ────────────────────────────────────────────────────

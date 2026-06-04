@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import sqlite3
 
 from pi.ai.types import AssistantMessage, TextContent
@@ -115,12 +116,8 @@ def test_runner_tool_call_roundtrip_success(tmp_path):
         session_id="session_a",
         tool_call_id="call_1",
         tool_name="example",
-        params={"value": 1},
-        result={"content": "ok"},
-        status="success",
-        started_at=10.0,
-        finished_at=11.0,
-        error=None,
+        tool_call_json='{"arguments":{"value":1},"id":"call_1","name":"example"}',
+        tool_result_json='{"content":"ok"}',
     )
 
     records = db.list_runner_tool_calls("session_a")
@@ -129,6 +126,33 @@ def test_runner_tool_call_roundtrip_success(tmp_path):
     assert len(records) == 1
     assert records[0].tool_call_id == "call_1"
     assert records[0].tool_name == "example"
-    assert records[0].params_json == '{"value": 1}'
-    assert records[0].result_json == '{"content": "ok"}'
-    assert records[0].status == "success"
+    assert json.loads(records[0].tool_call_json) == {
+        "arguments": {"value": 1},
+        "id": "call_1",
+        "name": "example",
+    }
+    assert json.loads(records[0].tool_result_json) == {"content": "ok"}
+
+
+def test_runner_tool_call_record_has_simplified_columns(tmp_path):
+    db_path = tmp_path / "session.db"
+    Database(str(db_path))
+
+    with sqlite3.connect(db_path) as conn:
+        columns = conn.execute("PRAGMA table_info(runnertoolcallrecord)").fetchall()
+
+    names = {column[1] for column in columns}
+    assert {
+        "id",
+        "session_id",
+        "tool_call_id",
+        "tool_name",
+        "tool_call_json",
+        "tool_result_json",
+    }.issubset(names)
+    assert "params_json" not in names
+    assert "result_json" not in names
+    assert "status" not in names
+    assert "started_at" not in names
+    assert "finished_at" not in names
+    assert "error" not in names
