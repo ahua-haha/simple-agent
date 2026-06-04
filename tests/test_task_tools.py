@@ -14,10 +14,21 @@ def _make_db() -> Database:
         return Database(f.name)
 
 
+def _load(manager: TaskManager, active_user_task_id: int | None) -> None:
+    with manager._db.create_session() as session:
+        manager.load(active_user_task_id, session=session)
+
+
+def _save(manager: TaskManager) -> None:
+    with manager._db.create_session() as session:
+        manager.save(session=session)
+        session.commit()
+
+
 def test_create_todo_tool_creates_active_todo():
     db = _make_db()
     manager = TaskManager(db)
-    manager.load(None)
+    _load(manager, None)
     manager.create_user_task("Build feature")
     tool = manager.create_create_todo_tool()
 
@@ -34,7 +45,7 @@ def test_create_todo_tool_creates_active_todo():
 def test_finish_todo_tool_finishes_active_todo():
     db = _make_db()
     manager = TaskManager(db)
-    manager.load(None)
+    _load(manager, None)
     manager.create_user_task("Build feature")
     todo = manager.create_todo("Inspect files")
     tool = manager.create_finish_todo_tool()
@@ -43,7 +54,7 @@ def test_finish_todo_tool_finishes_active_todo():
         return await tool.execute("call_1", {"result": "Inspected files"})
 
     result = asyncio.run(run())
-    manager.save()
+    _save(manager)
     loaded = db.get_managed_task(todo.id)
 
     assert loaded.status == "done"
@@ -56,7 +67,7 @@ def test_finish_todo_tool_finishes_active_todo():
 def test_error_todo_tool_returns_latest_todo_status():
     db = _make_db()
     manager = TaskManager(db)
-    manager.load(None)
+    _load(manager, None)
     manager.create_user_task("Build feature")
     todo = manager.create_todo("Inspect files")
     tool = manager.create_error_todo_tool()
@@ -65,7 +76,7 @@ def test_error_todo_tool_returns_latest_todo_status():
         return await tool.execute("call_1", {"error": "Missing dependency"})
 
     result = asyncio.run(run())
-    manager.save()
+    _save(manager)
     loaded = db.get_managed_task(todo.id)
 
     assert loaded.status == "error"
@@ -77,7 +88,7 @@ def test_error_todo_tool_returns_latest_todo_status():
 def test_todo_tools_do_not_require_runner_wrapping():
     db = _make_db()
     manager = TaskManager(db)
-    manager.load(None)
+    _load(manager, None)
     manager.create_user_task("Build feature")
     tool = manager.create_create_todo_tool()
 

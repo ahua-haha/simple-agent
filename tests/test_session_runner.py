@@ -121,6 +121,17 @@ class FakeCompactAgentProcess(FakeAgentProcess):
         return []
 
 
+def _load_task_manager(manager: TaskManager, active_user_task_id: int | None) -> None:
+    with manager._db.create_session() as session:
+        manager.load(active_user_task_id, session=session)
+
+
+def _save_task_manager(manager: TaskManager) -> None:
+    with manager._db.create_session() as session:
+        manager.save(session=session)
+        session.commit()
+
+
 @pytest.mark.asyncio
 async def test_session_runner_creates_task_runs_agent_and_persists_messages(tmp_path):
     db = Database(str(tmp_path / "session.db"))
@@ -217,9 +228,9 @@ async def test_session_runner_run_after_done_starts_new_user_task(tmp_path):
 async def test_session_runner_run_none_continues_running_task_without_user_prompt(tmp_path):
     db = Database(str(tmp_path / "session.db"))
     task_manager = TaskManager(db)
-    task_manager.load(None)
+    _load_task_manager(task_manager, None)
     user_task = task_manager.create_user_task("Paused request")
-    task_manager.save()
+    _save_task_manager(task_manager)
     db.upsert_runner_state_metadata(
         "session_a",
         next_action="normal_run",
@@ -245,10 +256,10 @@ async def test_session_runner_run_none_continues_running_task_without_user_promp
 async def test_session_runner_stops_after_step_pause(tmp_path):
     db = Database(str(tmp_path / "session.db"))
     task_manager = TaskManager(db)
-    task_manager.load(None)
+    _load_task_manager(task_manager, None)
     user_task = task_manager.create_user_task("Paused request")
     task_manager.create_todo("Active todo")
-    task_manager.save()
+    _save_task_manager(task_manager)
     db.upsert_runner_state_metadata(
         "session_a",
         next_action="normal_run",
@@ -299,9 +310,9 @@ async def test_session_runner_run_none_returns_done_task_without_agent_call(tmp_
 async def test_session_runner_new_input_closes_previous_task_and_creates_new_task(tmp_path):
     db = Database(str(tmp_path / "session.db"))
     task_manager = TaskManager(db)
-    task_manager.load(None)
+    _load_task_manager(task_manager, None)
     previous_task = task_manager.create_user_task("Previous request")
-    task_manager.save()
+    _save_task_manager(task_manager)
     db.upsert_runner_state_metadata(
         "session_a",
         next_action="normal_run",
@@ -341,7 +352,7 @@ class FailingSaveTaskManager(TaskManager):
         super().__init__(db)
         self.save_calls = 0
 
-    def save(self, session=None):
+    def save(self, *, session):
         self.save_calls += 1
         if self.save_calls > 1:
             raise RuntimeError("task save failed")
@@ -405,11 +416,28 @@ def test_append_messages_buffers_until_sync(tmp_path):
     assert len(runner._uncommitted_messages) == 1
     assert db.list_runner_messages("session_a") == []
 
-    runner.sync_messages()
+    with db.create_session() as session:
+        runner.sync_messages(session=session)
+        session.commit()
+    runner._uncommitted_messages.clear()
 
     persisted = db.list_runner_messages("session_a")
     assert persisted[0].content[0].text == "hello"
     assert runner._uncommitted_messages == []
+
+
+def test_sync_messages_requires_session(tmp_path):
+    db = Database(str(tmp_path / "session.db"))
+    runner = SessionRunner(
+        session_id="session_a",
+        db=db,
+        task_manager=TaskManager(db),
+        agent_process=FakeAgentProcess(),
+        cancel_event=asyncio.Event(),
+    )
+
+    with pytest.raises(TypeError):
+        runner.sync_messages()
 
 
 def test_handle_input_appends_user_message(tmp_path):
@@ -434,10 +462,10 @@ def test_handle_input_appends_user_message(tmp_path):
 def test_record_tool_call_buffers_until_sync(tmp_path):
     db = Database(str(tmp_path / "session.db"))
     task_manager = TaskManager(db)
-    task_manager.load(None)
+    _load_task_manager(task_manager, None)
     user_task = task_manager.create_user_task("Build feature")
     todo = task_manager.create_todo("Inspect files")
-    task_manager.save()
+    _save_task_manager(task_manager)
     runner = SessionRunner(
         session_id="session_a",
         db=db,
@@ -457,11 +485,15 @@ def test_record_tool_call_buffers_until_sync(tmp_path):
     assert len(runner._uncommitted_tool_calls) == 1
     assert db.list_runner_tool_calls("session_a") == []
 
-    runner.sync_tool_calls()
+    with db.create_session() as session:
+        runner.sync_tool_calls(session=session)
+        task_manager.save(session=session)
+        session.commit()
+    runner._uncommitted_tool_calls.clear()
 
     records = db.list_runner_tool_calls("session_a")
     loaded_manager = TaskManager(db)
-    loaded_manager.load(user_task.id)
+    _load_task_manager(loaded_manager, user_task.id)
     loaded_todo = next(child for child in loaded_manager.active_user_task.children if child.id == todo.id)
     assert len(records) == 1
     assert records[0].id == 0
@@ -470,10 +502,27 @@ def test_record_tool_call_buffers_until_sync(tmp_path):
     assert runner._uncommitted_tool_calls == []
 
 
+def test_sync_tool_calls_requires_session(tmp_path):
+    db = Database(str(tmp_path / "session.db"))
+    task_manager = TaskManager(db)
+    _load_task_manager(task_manager, None)
+    task_manager.create_user_task("Build feature")
+    runner = SessionRunner(
+        session_id="session_a",
+        db=db,
+        task_manager=task_manager,
+        agent_process=FakeAgentProcess(),
+        cancel_event=asyncio.Event(),
+    )
+
+    with pytest.raises(TypeError):
+        runner.sync_tool_calls()
+
+
 def test_failed_save_keeps_uncommitted_buffers(tmp_path):
     db = Database(str(tmp_path / "session.db"))
     task_manager = FailingSaveTaskManager(db)
-    task_manager.load(None)
+    _load_task_manager(task_manager, None)
     task_manager.create_user_task("Build feature")
     task_manager.save_calls = 1
     runner = SessionRunner(
@@ -507,7 +556,7 @@ async def test_step_token_threshold_persists_compact_and_sets_cancel(tmp_path):
         context_token_threshold=0,
         tool_call_threshold=100,
     )
-    task_manager.load(None)
+    _load_task_manager(task_manager, None)
     user_task = task_manager.create_user_task("Build feature")
     runner._active_user_task_id = user_task.id
     runner._next_action = "normal_run"
@@ -532,7 +581,7 @@ async def test_handle_running_with_tool_calls_returns_normal_run_without_compact
         agent_process=FakeAgentProcess(),
         cancel_event=asyncio.Event(),
     )
-    task_manager.load(None)
+    _load_task_manager(task_manager, None)
     user_task = task_manager.create_user_task("Build feature")
     runner._active_user_task_id = user_task.id
     runner._next_action = "normal_run"
@@ -556,7 +605,7 @@ async def test_handle_running_without_tool_calls_returns_done(tmp_path):
         agent_process=FakeFinalAgentProcess(),
         cancel_event=asyncio.Event(),
     )
-    task_manager.load(None)
+    _load_task_manager(task_manager, None)
     user_task = task_manager.create_user_task("Build feature")
     runner._active_user_task_id = user_task.id
     runner._next_action = "normal_run"
@@ -583,7 +632,7 @@ async def test_step_tool_call_threshold_persists_compact_and_sets_cancel(tmp_pat
         context_token_threshold=1000,
         tool_call_threshold=0,
     )
-    task_manager.load(None)
+    _load_task_manager(task_manager, None)
     user_task = task_manager.create_user_task("Build feature")
     db.insert_runner_tool_call(
         session_id="session_a",
@@ -592,6 +641,8 @@ async def test_step_tool_call_threshold_persists_compact_and_sets_cancel(tmp_pat
         tool_call_json="{}",
         tool_result_json='{"content":[]}',
     )
+    with db.create_session() as session:
+        runner._next_tool_call_log_id = db.next_runner_tool_call_id("session_a", session=session)
     runner._active_user_task_id = user_task.id
     runner._next_action = "normal_run"
 
@@ -615,7 +666,7 @@ async def test_handle_compact_without_finished_todo_returns_running(tmp_path):
         agent_process=FakeAgentProcess(),
         cancel_event=cancel_event,
     )
-    runner._task_manager.load(None)
+    _load_task_manager(runner._task_manager, None)
     user_task = runner._task_manager.create_user_task("Build feature")
     runner._task_manager.create_todo("Still active", tool_call_id="call_active")
     runner._active_user_task_id = user_task.id
@@ -643,12 +694,12 @@ async def test_handle_compact_replaces_messages_and_tasks(tmp_path):
         agent_process=compact_agent,
         cancel_event=asyncio.Event(),
     )
-    task_manager.load(None)
+    _load_task_manager(task_manager, None)
     user_task = task_manager.create_user_task("Build feature")
     todo = task_manager.create_todo("Inspect files", tool_call_id="call_create")
     task_manager.finish_task("Done", tool_call_id="call_finish")
     active = task_manager.create_todo("Continue work")
-    task_manager.save()
+    _save_task_manager(task_manager)
     runner._active_user_task_id = user_task.id
     runner._next_action = "compact"
     runner._messages = [
@@ -698,7 +749,7 @@ async def test_handle_compact_replaces_messages_and_tasks(tmp_path):
 
     messages = db.list_runner_messages("session_a")
     loaded_task_manager = TaskManager(db)
-    loaded_task_manager.load(user_task.id)
+    _load_task_manager(loaded_task_manager, user_task.id)
     assert compact_agent.calls[0]["tools"] == [
         "create_compacted_todo",
         "record_compacted_tool_call",

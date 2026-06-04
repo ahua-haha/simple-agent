@@ -12,6 +12,7 @@ from simple_agent.task_manager.models import ManagedTask
 
 if TYPE_CHECKING:
     from simple_agent.db.db import Database
+    from sqlmodel import Session
 
 
 @dataclass(frozen=True)
@@ -49,16 +50,16 @@ class TaskManager:
         self._next_task_id: int | None = None
         self._compact_buffer: CompactBuffer | None = None
 
-    def load(self, active_user_task_id: int | None) -> None:
+    def load(self, active_user_task_id: int | None, *, session: Session) -> None:
         self._user_task = None
         self._active_todo = None
         self.active_user_task_id = active_user_task_id
         self.active_todo_id = None
-        self._next_task_id = self._db.next_managed_task_id()
+        self._next_task_id = self._db.next_managed_task_id(session=session)
         self._compact_buffer = None
         if active_user_task_id is None:
             return
-        self._user_task = self.build_task_tree(active_user_task_id)
+        self._user_task = self.build_task_tree(active_user_task_id, session=session)
         if self._user_task is None:
             raise TaskManagerError("Active user task is missing")
         for task in self._walk_tasks():
@@ -67,13 +68,7 @@ class TaskManager:
                 self.active_todo_id = task.id
                 break
 
-    def save(self, session=None) -> None:
-        if session is None:
-            with self._db.create_session() as session:
-                self.save(session=session)
-                session.commit()
-            return
-
+    def save(self, *, session: Session) -> None:
         for task in sorted(self._walk_tasks(), key=lambda item: item.id or 0):
             self._db.upsert_managed_task(task, session=session)
 
@@ -356,13 +351,7 @@ class TaskManager:
         finish_tool.execute = finish_execute
         return [create_tool, record_tool, finish_tool]
 
-    def replace_compact_scope(self, *, session=None) -> ManagedTask:
-        if session is None:
-            with self._db.create_session() as session:
-                compacted_todo = self.replace_compact_scope(session=session)
-                session.commit()
-                return compacted_todo
-
+    def replace_compact_scope(self, *, session: Session) -> ManagedTask:
         user_task = self._require_active_user_task()
 
         scope = self.compact_scope()
@@ -388,14 +377,14 @@ class TaskManager:
         self._db.replace_managed_task_tree(user_task, session=session)
         return compacted_todo
 
-    def build_task_tree(self, root_task_id: int) -> ManagedTask | None:
-        root = self._db.get_managed_task(root_task_id)
+    def build_task_tree(self, root_task_id: int, *, session: Session) -> ManagedTask | None:
+        root = self._db.get_managed_task(root_task_id, session=session)
         if root is None or root.id is None:
             return None
 
         def attach_children(task: ManagedTask) -> None:
             task.children = []
-            for child in self._db.list_managed_task_children(task.id):
+            for child in self._db.list_managed_task_children(task.id, session=session):
                 if child.id is not None:
                     attach_children(child)
                     task.children.append(child)

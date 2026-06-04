@@ -19,6 +19,7 @@ if TYPE_CHECKING:
     from simple_agent.process.agent_process import AgentProcess
     from simple_agent.task_manager import TaskManager
     from pi.agent.types import AgentMessage
+    from sqlmodel import Session
 
 _log = logging.getLogger(__name__)
 
@@ -113,26 +114,27 @@ class SessionRunner:
         self._cancel_event.set()
 
     def load(self) -> None:
-        metadata = self._db.get_runner_state_metadata(self._session_id)
-        self._messages = self._db.list_runner_messages(self._session_id)
-        self._uncommitted_messages = []
-        self._uncommitted_tool_calls = []
-        self._next_tool_call_log_id = self._db.next_runner_tool_call_id(self._session_id)
-        if metadata is None:
-            self._next_action = "wait_user_input"
-            self._active_user_task_id = None
-            self._task_manager.load(None)
-            return
-        self._next_action = metadata.next_action
-        self._active_user_task_id = metadata.active_user_task_id
-        self._task_manager.load(metadata.active_user_task_id)
+        with self._db.create_session() as session:
+            metadata = self._db.get_runner_state_metadata(self._session_id, session=session)
+            self._messages = self._db.list_runner_messages(self._session_id, session=session)
+            self._uncommitted_messages = []
+            self._uncommitted_tool_calls = []
+            self._next_tool_call_log_id = self._db.next_runner_tool_call_id(self._session_id, session=session)
+            if metadata is None:
+                self._next_action = "wait_user_input"
+                self._active_user_task_id = None
+                self._task_manager.load(None, session=session)
+                return
+            self._next_action = metadata.next_action
+            self._active_user_task_id = metadata.active_user_task_id
+            self._task_manager.load(metadata.active_user_task_id, session=session)
 
     def save_metadata(
         self,
         *,
         next_action: RunnerAction | None = None,
         last_error: str | None = None,
-        session=None,
+        session: Session,
     ) -> None:
         self._db.upsert_runner_state_metadata(
             self._session_id,
@@ -146,14 +148,7 @@ class SessionRunner:
         self._messages.extend(messages)
         self._uncommitted_messages.extend(messages)
 
-    def sync_messages(self, *, session=None) -> None:
-        if session is None:
-            with self._db.create_session() as session:
-                self.sync_messages(session=session)
-                session.commit()
-            self._uncommitted_messages.clear()
-            return
-
+    def sync_messages(self, *, session: Session) -> None:
         for message in self._uncommitted_messages:
             self._db.insert_runner_message(self._session_id, message, session=session)
 
@@ -162,10 +157,7 @@ class SessionRunner:
         tool_call: ToolCall | None,
         tool_result: ToolResultMessage,
     ) -> int:
-        log_id = max(
-            self._next_tool_call_log_id,
-            self._db.next_runner_tool_call_id(self._session_id),
-        )
+        log_id = self._next_tool_call_log_id
         self._next_tool_call_log_id = log_id + 1
         self._task_manager.record_tool_call(log_id)
         self._uncommitted_tool_calls.append(
@@ -177,15 +169,7 @@ class SessionRunner:
         )
         return log_id
 
-    def sync_tool_calls(self, *, session=None) -> None:
-        if session is None:
-            with self._db.create_session() as session:
-                self.sync_tool_calls(session=session)
-                self._task_manager.save(session=session)
-                session.commit()
-            self._uncommitted_tool_calls.clear()
-            return
-
+    def sync_tool_calls(self, *, session: Session) -> None:
         for pending in self._uncommitted_tool_calls:
             self._db.insert_runner_tool_call(
                 id=pending.log_id,
@@ -254,7 +238,8 @@ class SessionRunner:
 
         if self._active_user_task_id is None:
             return None
-        return self._db.get_managed_task(self._active_user_task_id)
+        with self._db.create_session() as session:
+            return self._db.get_managed_task(self._active_user_task_id, session=session)
 
     async def route_next_action(self, next_action: RunnerAction, user_input: str | None) -> RunnerAction:
         if next_action == "normal_run":
@@ -270,7 +255,8 @@ class SessionRunner:
             return self._next_action
 
         self.finish_previous_user_task()
-        self._task_manager.load(None)
+        with self._db.create_session() as session:
+            self._task_manager.load(None, session=session)
         user_task = self._task_manager.create_user_task(user_input)
         self._active_user_task_id = user_task.id
         self._next_action = "normal_run"
@@ -336,7 +322,8 @@ class SessionRunner:
 
     def pause_for_compaction_if_needed(self) -> None:
         context_tokens = estimate_messages_tokens(self._agent_messages())
-        tool_calls = len(self._db.list_runner_tool_calls(self._session_id))
+        with self._db.create_session() as session:
+            tool_calls = len(self._db.list_runner_tool_calls(self._session_id, session=session))
         if (
             context_tokens <= self._context_token_threshold
             and tool_calls <= self._tool_call_threshold
