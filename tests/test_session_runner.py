@@ -446,6 +446,81 @@ def test_append_messages_buffers_until_sync(tmp_path):
     assert runner._uncommitted_messages == []
 
 
+def test_save_current_data_only_syncs_existing_buffers(tmp_path):
+    db = Database(str(tmp_path / "session.db"))
+    runner = SessionRunner(
+        session_id="session_a",
+        db=db,
+        task_manager=TaskManager(db),
+        agent_process=FakeAgentProcess(),
+        cancel_event=asyncio.Event(),
+    )
+    runner.load()
+    runner._next_action = "normal_run"
+
+    runner.save_current_data()
+
+    assert runner._messages == []
+    assert runner._uncommitted_messages == []
+    assert db.list_runner_messages("session_a") == []
+    assert db.get_runner_state_metadata("session_a").next_action == "normal_run"
+
+
+def test_save_current_data_rejects_message_mutation(tmp_path):
+    db = Database(str(tmp_path / "session.db"))
+    runner = SessionRunner(
+        session_id="session_a",
+        db=db,
+        task_manager=TaskManager(db),
+        agent_process=FakeAgentProcess(),
+        cancel_event=asyncio.Event(),
+    )
+    message = UserMessage(content=[TextContent(text="hello")], timestamp=1)
+
+    with pytest.raises(TypeError):
+        runner.save_current_data(messages=[message])
+
+
+def test_save_current_data_rejects_metadata_mutation_args(tmp_path):
+    db = Database(str(tmp_path / "session.db"))
+    runner = SessionRunner(
+        session_id="session_a",
+        db=db,
+        task_manager=TaskManager(db),
+        agent_process=FakeAgentProcess(),
+        cancel_event=asyncio.Event(),
+    )
+
+    with pytest.raises(TypeError):
+        runner.save_current_data(next_action="normal_run")
+
+    with pytest.raises(TypeError):
+        runner.save_current_data(last_error="failed")
+
+
+def test_sync_metadata_uses_runner_fields(tmp_path):
+    db = Database(str(tmp_path / "session.db"))
+    runner = SessionRunner(
+        session_id="session_a",
+        db=db,
+        task_manager=TaskManager(db),
+        agent_process=FakeAgentProcess(),
+        cancel_event=asyncio.Event(),
+    )
+    runner._next_action = "compact"
+    runner._active_user_task_id = 42
+    runner._last_error = "boom"
+
+    with db.create_session() as session:
+        runner.sync_metadata(session=session)
+        session.commit()
+
+    metadata = db.get_runner_state_metadata("session_a")
+    assert metadata.next_action == "compact"
+    assert metadata.active_user_task_id == 42
+    assert metadata.last_error == "boom"
+
+
 def test_sync_messages_requires_session(tmp_path):
     db = Database(str(tmp_path / "session.db"))
     runner = SessionRunner(
@@ -560,9 +635,10 @@ def test_failed_save_keeps_uncommitted_buffers(tmp_path):
     )
     runner.load()
     message = UserMessage(content=[TextContent(text="hello")], timestamp=1)
+    runner.append_messages([message])
 
     with pytest.raises(RuntimeError, match="task save failed"):
-        runner.save_current_data(messages=[message])
+        runner.save_current_data()
 
     assert len(runner._uncommitted_messages) == 1
     assert db.list_runner_messages("session_a") == []
@@ -635,6 +711,14 @@ async def test_handle_running_without_tool_calls_returns_done(tmp_path):
     user_task = task_manager.create_user_task("Build feature")
     runner._active_user_task_id = user_task.id
     runner._next_action = "normal_run"
+    save_calls = []
+    original_save_current_data = runner.save_current_data
+
+    def spy_save_current_data(*args, **kwargs):
+        save_calls.append((args, kwargs))
+        return original_save_current_data(*args, **kwargs)
+
+    runner.save_current_data = spy_save_current_data
 
     next_action = await runner.handle_running(None)
 
@@ -642,6 +726,7 @@ async def test_handle_running_without_tool_calls_returns_done(tmp_path):
     assert metadata.next_action == "wait_user_input"
     assert runner._next_action == "wait_user_input"
     assert next_action == "wait_user_input"
+    assert len(save_calls) == 1
 
 
 @pytest.mark.asyncio

@@ -69,6 +69,7 @@ class SessionRunner:
     _cancel_event: asyncio.Event
     _next_action: RunnerAction
     _active_user_task_id: int | None
+    _last_error: str | None
     _messages: list[AgentMessage]
     _context_token_threshold: int
     _tool_call_threshold: int
@@ -95,6 +96,7 @@ class SessionRunner:
         self._cancel_event = cancel_event
         self._next_action = "wait_user_input"
         self._active_user_task_id = None
+        self._last_error = None
         self._messages = []
         self._context_token_threshold = context_token_threshold
         self._tool_call_threshold = tool_call_threshold
@@ -123,24 +125,20 @@ class SessionRunner:
             if metadata is None:
                 self._next_action = "wait_user_input"
                 self._active_user_task_id = None
+                self._last_error = None
                 self._task_manager.load(None, session=session)
                 return
             self._next_action = metadata.next_action
             self._active_user_task_id = metadata.active_user_task_id
+            self._last_error = metadata.last_error
             self._task_manager.load(metadata.active_user_task_id, session=session)
 
-    def save_metadata(
-        self,
-        *,
-        next_action: RunnerAction | None = None,
-        last_error: str | None = None,
-        session: Session,
-    ) -> None:
+    def sync_metadata(self, *, session: Session) -> None:
         self._db.upsert_runner_state_metadata(
             self._session_id,
-            next_action=next_action or self._next_action,
+            next_action=self._next_action,
             active_user_task_id=self._active_user_task_id,
-            last_error=last_error,
+            last_error=self._last_error,
             session=session,
         )
 
@@ -188,20 +186,15 @@ class SessionRunner:
 
     def save_current_data(
         self,
-        messages: list[AgentMessage] | None = None,
         *,
-        next_action: RunnerAction | None = None,
-        last_error: str | None = None,
         save_tasks: bool = True,
     ) -> None:
-        messages = messages or []
-        self.append_messages(messages)
         with self._db.create_session() as session:
             self.sync_tool_calls(session=session)
             self.sync_messages(session=session)
             if save_tasks:
                 self._task_manager.save(session=session)
-            self.save_metadata(next_action=next_action, last_error=last_error, session=session)
+            self.sync_metadata(session=session)
             session.commit()
         self._uncommitted_messages.clear()
         self._uncommitted_tool_calls.clear()
@@ -252,16 +245,17 @@ class SessionRunner:
         user_task = self._task_manager.create_user_task(user_input)
         self._active_user_task_id = user_task.id
         self._next_action = "normal_run"
+        self._last_error = None
         self._cancel_event.clear()
-        self.save_current_data(
-            messages=[
+        self.append_messages(
+            [
                 UserMessage(
                     content=[TextContent(text=user_input)],
                     timestamp=int(time.time() * 1000),
                 )
-            ],
-            next_action=self._next_action,
+            ]
         )
+        self.save_current_data()
         return self._next_action
 
     def finish_previous_user_task(self) -> None:
@@ -274,7 +268,7 @@ class SessionRunner:
                 self._task_manager.error_task("Interrupted by new user input")
             self._task_manager.finish_user_task()
             self._next_action = "wait_user_input"
-            self.save_current_data(messages=[], next_action=self._next_action)
+            self.save_current_data()
         self._active_user_task_id = None
 
     async def handle_running(self, user_input: str | None) -> RunnerAction:
@@ -298,24 +292,22 @@ class SessionRunner:
             )
             self.record_tool_calls(assistant_message, tool_results)
 
-        self.save_current_data(
-            [assistant_message, *tool_results],
-            next_action=self._next_action,
-        )
+        self.append_messages([assistant_message, *tool_results])
 
         if not has_tool_calls:
             self._task_manager.finish_user_task()
             self._next_action = "wait_user_input"
-            self.save_current_data(next_action=self._next_action)
-            return self._next_action
+        else:
+            self.pause_for_compaction_if_needed()
 
-        self.pause_for_compaction_if_needed()
+        self.save_current_data()
         return self._next_action
 
     def pause_for_compaction_if_needed(self) -> None:
         context_tokens = estimate_messages_tokens(list(self._messages))
         with self._db.create_session() as session:
             tool_calls = len(self._db.list_runner_tool_calls(self._session_id, session=session))
+        tool_calls += len(self._uncommitted_tool_calls)
         if (
             context_tokens <= self._context_token_threshold
             and tool_calls <= self._tool_call_threshold
@@ -323,7 +315,6 @@ class SessionRunner:
             return
 
         self._next_action = "compact"
-        self.save_current_data(messages=[], next_action=self._next_action, save_tasks=False)
         self._cancel_event.set()
 
     async def handle_compact(self, user_input: str | None) -> RunnerAction:
@@ -331,7 +322,7 @@ class SessionRunner:
         if scope is None:
             self._next_action = "normal_run"
             self._cancel_event.clear()
-            self.save_current_data(messages=[], next_action=self._next_action, save_tasks=False)
+            self.save_current_data(save_tasks=False)
             return self._next_action
 
         start_tool_call_id = scope.compact_todos[0].create_tool_call_id
@@ -375,7 +366,7 @@ class SessionRunner:
             replacement_messages = [*messages_before_start, *compact_messages, *preserved_messages]
             self._db.replace_runner_messages(self._session_id, replacement_messages, session=session)
             self._next_action = "normal_run"
-            self.save_metadata(next_action=self._next_action, session=session)
+            self.sync_metadata(session=session)
             session.commit()
 
         self._messages = replacement_messages
@@ -422,6 +413,7 @@ class SessionRunner:
     def handle_error(self, exc: Exception) -> None:
         _log.exception("session runner failed: session=%s", self._session_id)
         self._next_action = "wait_user_input"
+        self._last_error = str(exc)
         with self._db.create_session() as session:
-            self.save_metadata(next_action=self._next_action, last_error=str(exc), session=session)
+            self.sync_metadata(session=session)
             session.commit()
