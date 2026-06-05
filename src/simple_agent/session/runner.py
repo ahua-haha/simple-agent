@@ -5,12 +5,14 @@ from __future__ import annotations
 import asyncio
 import logging
 import json
+import sys
 import time
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Callable, Literal
 
 from pi.ai.types import AssistantMessage, TextContent, ToolCall, ToolResultMessage, UserMessage
 from simple_agent.json_utils import json_safe
+from simple_agent.task_manager import ToolCallReview
 from simple_agent.token_estimation import estimate_messages_tokens
 from simple_agent.tool.common_tools import create_all_coding_tools
 
@@ -217,7 +219,7 @@ class SessionRunner:
         if next_action == "normal_run":
             return await self.handle_running(user_input)
         if next_action == "compact":
-            return await self.handle_compact(user_input)
+            return await self.handle_compact(user_input, run_done=self._user_task_is_done())
         if next_action == "wait_user_input":
             return next_action
         raise RuntimeError(f"Unknown runner action: {next_action}")
@@ -290,7 +292,7 @@ class SessionRunner:
 
         if not has_tool_calls:
             self._task_manager.finish_user_task()
-            self._next_action = "wait_user_input"
+            self._next_action = "compact"
         else:
             self.pause_for_compaction_if_needed()
 
@@ -311,31 +313,26 @@ class SessionRunner:
         self._next_action = "compact"
         self._cancel_event.set()
 
-    async def handle_compact(self, user_input: str | None) -> RunnerAction:
-        scope = self._task_manager.compact_scope()
+    async def handle_compact(self, user_input: str | None, *, run_done: bool = False) -> RunnerAction:
+        scope = self._task_manager.compact_scope(run_done=run_done)
         if scope is None:
-            self._next_action = "normal_run"
+            self._next_action = "wait_user_input" if run_done else "normal_run"
             self._cancel_event.clear()
             self.save_current_data(save_tasks=False)
             return self._next_action
 
-        start_tool_call_id = scope.compact_todos[0].create_tool_call_id
-        if start_tool_call_id is None:
-            raise RuntimeError("Compact start todo is missing create_tool_call_id")
-        start_index = self.find_assistant_message_index_for_tool_call(start_tool_call_id)
-
-        end_tool_call_id = scope.compact_todos[-1].end_tool_call_id
-        if end_tool_call_id is None:
-            raise RuntimeError("Compact end todo is missing end_tool_call_id")
-        end_index = self.find_tool_result_message_index_for_tool_call(end_tool_call_id)
-        if end_index < start_index:
-            raise RuntimeError("Compact end message is before start message")
-
-        messages_before_start = self._messages[:start_index]
-        preserved_messages = self._messages[end_index + 1:]
-
         self._task_manager.begin_compact_buffer()
-        compact_messages = list(self._messages[start_index:end_index + 1])
+        compact_instruction = self._task_manager.compact_instruction_text(
+            scope,
+            tool_calls=self._compact_tool_call_reviews(),
+        )
+        compact_messages = [
+            *self._messages,
+            UserMessage(
+                content=[TextContent(text=compact_instruction)],
+                timestamp=int(time.time() * 1000),
+            ),
+        ]
         compact_tools = self._task_manager.create_compact_tools()
         while True:
             assistant_message = await self._agent_process.call_llm_step(
@@ -344,7 +341,12 @@ class SessionRunner:
                 tools=compact_tools,
                 cancel_event=self._cancel_event,
             )
-            compact_messages.append(assistant_message)
+            if not compact_messages or compact_messages[-1] is not assistant_message:
+                compact_messages.append(assistant_message)
+            if self._assistant_is_error(assistant_message):
+                error = assistant_message.error_message or "assistant response stopped with error"
+                print(f"SessionRunner.handle_compact error: {error}", file=sys.stderr)
+                break
             if not self._assistant_has_tool_calls(assistant_message):
                 break
             tool_results = await self._agent_process.run_tool_calls_step(
@@ -355,16 +357,10 @@ class SessionRunner:
             compact_messages.extend(tool_results)
 
         with self._db.create_session() as session:
-            compacted_todo = self._task_manager.replace_compact_scope(session=session)
-            compact_messages = [self.format_compacted_todo_message(compacted_todo)]
-            replacement_messages = [*messages_before_start, *compact_messages, *preserved_messages]
-            self._db.replace_runner_messages(self._session_id, replacement_messages, session=session)
-            self._next_action = "normal_run"
+            self._next_action = "wait_user_input" if run_done else "normal_run"
             self.sync_metadata(session=session)
             session.commit()
 
-        self._messages = replacement_messages
-        self._uncommitted_messages.clear()
         self._cancel_event.clear()
         return self._next_action
 
@@ -386,11 +382,39 @@ class SessionRunner:
     def _assistant_has_tool_calls(self, message: AssistantMessage) -> bool:
         return any(isinstance(content, ToolCall) for content in message.content)
 
+    def _assistant_is_error(self, message: AssistantMessage) -> bool:
+        return message.stop_reason == "error" or bool(message.error_message)
+
     def _tool_call_json(self, tool_call: ToolCall | None) -> str:
         return json.dumps(json_safe(tool_call), sort_keys=True, separators=(",", ":"))
 
     def _tool_result_json(self, tool_result: ToolResultMessage) -> str:
         return json.dumps(json_safe(tool_result), sort_keys=True, separators=(",", ":"))
+
+    def _user_task_is_done(self) -> bool:
+        user_task = self._task_manager.active_user_task
+        return user_task is not None and user_task.status == "done"
+
+    def _compact_tool_call_reviews(self) -> dict[int, ToolCallReview]:
+        with self._db.create_session() as session:
+            records = self._db.list_runner_tool_calls(self._session_id, session=session)
+        return {
+            record.id: ToolCallReview(
+                name=record.tool_name,
+                arguments=self._tool_call_arguments(record.tool_call_json),
+            )
+            for record in records
+            if record.id is not None
+        }
+
+    def _tool_call_arguments(self, tool_call_json: str) -> object | None:
+        try:
+            payload = json.loads(tool_call_json)
+        except json.JSONDecodeError:
+            return None
+        if not isinstance(payload, dict):
+            return None
+        return payload.get("arguments")
 
     def format_compacted_todo_message(self, compacted_todo) -> AgentMessage:
         tool_refs = [

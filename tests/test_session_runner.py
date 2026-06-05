@@ -115,8 +115,10 @@ class FakeCompactAgentProcess(FakeAgentProcess):
     async def call_llm_step(self, system_prompt, messages, tools, cancel_event=None):
         self.calls.append({"tools": [tool.name for tool in tools], "messages": list(messages)})
         if len(self.calls) > 1:
-            return AssistantMessage(role="assistant", content=[TextContent(text="compact done")])
-        return AssistantMessage(
+            message = AssistantMessage(role="assistant", content=[TextContent(text="compact done")])
+            messages.append(message)
+            return message
+        message = AssistantMessage(
             role="assistant",
             content=[
                 ToolCall(id="compact_create", name="create_compacted_todo", arguments={"description": "Compact summary"}),
@@ -124,6 +126,8 @@ class FakeCompactAgentProcess(FakeAgentProcess):
                 ToolCall(id="compact_finish", name="finish_compacted_todo", arguments={}),
             ],
         )
+        messages.append(message)
+        return message
 
     async def run_tool_calls_step(self, tools, assistant_message, cancel_event=None):
         by_name = {tool.name: tool for tool in tools}
@@ -139,6 +143,22 @@ class FakeCompactAgentProcess(FakeAgentProcess):
                     )
                 )
         return results
+
+
+class FakeCompactErrorAgentProcess(FakeAgentProcess):
+    async def call_llm_step(self, system_prompt, messages, tools, cancel_event=None):
+        message = AssistantMessage(
+            role="assistant",
+            content=[],
+            stopReason="error",
+            errorMessage="HTTP 400 Bad Request",
+        )
+        messages.append(message)
+        self.calls.append({"tools": [tool.name for tool in tools], "messages": list(messages)})
+        return message
+
+    async def run_tool_calls_step(self, tools, assistant_message, cancel_event=None):
+        raise AssertionError("tool step should not run for compact error message")
 
 
 def _load_task_manager(manager: TaskManager, active_user_task_id: int | None) -> None:
@@ -214,8 +234,13 @@ async def test_session_runner_routes_normal_run_until_waiting_for_input(tmp_path
     persisted_messages = db.list_runner_messages("session_a")
     assert result.status == "done"
     assert metadata.next_action == "wait_user_input"
-    assert len(agent_process.calls) == 2
+    assert len(agent_process.calls) == 3
     assert len(agent_process.tool_step_calls) == 1
+    assert agent_process.calls[2]["tools"] == [
+        "create_compacted_todo",
+        "record_compacted_tool_call",
+        "finish_compacted_todo",
+    ]
     assert [message.content[0].text for message in persisted_messages] == [
         "Build feature",
         "done",
@@ -738,7 +763,7 @@ async def test_handle_running_adds_transient_steering_user_message(tmp_path):
 
 
 @pytest.mark.asyncio
-async def test_handle_running_without_tool_calls_returns_done(tmp_path):
+async def test_handle_running_without_tool_calls_finishes_user_task_then_compacts(tmp_path):
     db = Database(str(tmp_path / "session.db"))
     task_manager = TaskManager(db)
     runner = SessionRunner(
@@ -764,9 +789,9 @@ async def test_handle_running_without_tool_calls_returns_done(tmp_path):
     next_action = await runner.handle_running(None)
 
     metadata = db.get_runner_state_metadata("session_a")
-    assert metadata.next_action == "wait_user_input"
-    assert runner._next_action == "wait_user_input"
-    assert next_action == "wait_user_input"
+    assert metadata.next_action == "compact"
+    assert runner._next_action == "compact"
+    assert next_action == "compact"
     assert len(save_calls) == 1
 
 
@@ -835,7 +860,7 @@ async def test_handle_compact_without_finished_todo_returns_running(tmp_path):
 
 
 @pytest.mark.asyncio
-async def test_handle_compact_replaces_messages_and_tasks(tmp_path):
+async def test_handle_compact_runs_loop_without_replacing_messages(tmp_path):
     db = Database(str(tmp_path / "session.db"))
     task_manager = TaskManager(db)
     compact_agent = FakeCompactAgentProcess()
@@ -889,6 +914,7 @@ async def test_handle_compact_replaces_messages_and_tasks(tmp_path):
         ),
     ]
     db.replace_runner_messages("session_a", runner._messages)
+    original_messages = list(runner._messages)
     db.insert_runner_tool_call(
         session_id="session_a",
         tool_call_id="tool_1",
@@ -907,15 +933,79 @@ async def test_handle_compact_replaces_messages_and_tasks(tmp_path):
         "record_compacted_tool_call",
         "finish_compacted_todo",
     ]
-    assert len(compact_agent.calls[0]["messages"]) == 4
-    assert compact_agent.calls[0]["messages"][0].content[1].id == "call_create"
-    assert compact_agent.calls[0]["messages"][-1].tool_call_id == "call_finish"
-    assert messages[0].content[0].text == "original request"
-    assert "Compact summary" in messages[1].content[0].text
-    assert "active todo" in messages[2].content[0].text
-    assert len(loaded_task_manager.active_user_task.children) == 2
+    assert len(compact_agent.calls[0]["messages"]) == len(original_messages) + 1
+    assert compact_agent.calls[0]["messages"][:-1] == original_messages
+    compact_instruction = compact_agent.calls[0]["messages"][-1].content[0].text
+    assert "Runtime instruction for compacting phase" in compact_instruction
+    assert "Task view to compact:" in compact_instruction
+    assert "- todo [done] Inspect files" in compact_instruction
+    assert len(compact_agent.calls[1]["messages"]) == len(original_messages) + 5
+    assert runner._messages == original_messages
+    assert [message.content for message in messages] == [message.content for message in original_messages]
+    assert [task.id for task in loaded_task_manager.active_user_task.children] == [todo.id, active.id]
     assert db.get_runner_state_metadata("session_a").next_action == "normal_run"
     assert next_action == "normal_run"
+
+
+@pytest.mark.asyncio
+async def test_handle_compact_done_user_task_waits_for_user_input(tmp_path):
+    db = Database(str(tmp_path / "session.db"))
+    task_manager = TaskManager(db)
+    compact_agent = FakeFinalAgentProcess()
+    runner = SessionRunner(
+        session_id="session_a",
+        db=db,
+        task_manager=task_manager,
+        agent_process=compact_agent,
+        cancel_event=asyncio.Event(),
+    )
+    _load_task_manager(task_manager, None)
+    user_task = task_manager.create_user_task("Build feature")
+    task_manager.record_tool_call(1)
+    task_manager.finish_user_task()
+    _save_task_manager(task_manager)
+    runner._active_user_task_id = user_task.id
+    runner._next_action = "compact"
+    runner._messages = [UserMessage(content=[TextContent(text="Build feature")], timestamp=1)]
+
+    next_action = await runner.handle_compact("Build feature", run_done=True)
+
+    metadata = db.get_runner_state_metadata("session_a")
+    assert next_action == "wait_user_input"
+    assert runner._next_action == "wait_user_input"
+    assert metadata.next_action == "wait_user_input"
+    assert len(compact_agent.calls) == 1
+
+
+@pytest.mark.asyncio
+async def test_handle_compact_reports_error_assistant_message(tmp_path, capsys):
+    db = Database(str(tmp_path / "session.db"))
+    task_manager = TaskManager(db)
+    compact_agent = FakeCompactErrorAgentProcess()
+    runner = SessionRunner(
+        session_id="session_a",
+        db=db,
+        task_manager=task_manager,
+        agent_process=compact_agent,
+        cancel_event=asyncio.Event(),
+    )
+    _load_task_manager(task_manager, None)
+    user_task = task_manager.create_user_task("Build feature")
+    task_manager.record_tool_call(1)
+    task_manager.finish_user_task()
+    _save_task_manager(task_manager)
+    runner._active_user_task_id = user_task.id
+    runner._next_action = "compact"
+    runner._messages = [UserMessage(content=[TextContent(text="Build feature")], timestamp=1)]
+
+    next_action = await runner.handle_compact("Build feature", run_done=True)
+
+    captured = capsys.readouterr()
+    metadata = db.get_runner_state_metadata("session_a")
+    assert "SessionRunner.handle_compact error: HTTP 400 Bad Request" in captured.err
+    assert next_action == "wait_user_input"
+    assert metadata.next_action == "wait_user_input"
+    assert len(compact_agent.calls) == 1
 
 
 @pytest.mark.asyncio

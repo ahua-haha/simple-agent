@@ -393,7 +393,7 @@ def test_mixed_user_task_order_is_preserved():
     ]
 
 
-def test_compact_scope_selects_first_todo_through_latest_finished_todo():
+def test_compact_scope_selects_first_todo_through_latest_finished_todo_when_running():
     db = _make_db()
     manager = TaskManager(db)
     _load(manager, None)
@@ -404,20 +404,69 @@ def test_compact_scope_selects_first_todo_through_latest_finished_todo():
     manager.finish_task("done")
     manager.create_todo("Three")
 
-    scope = manager.compact_scope()
+    scope = manager.compact_scope(run_done=False)
 
     assert [task.id for task in scope.compact_todos] == [first.id, second.id]
     assert [task.title for task in scope.preserved_todos] == ["Three"]
+    assert [task.id for task in scope.compact_tasks] == [first.id, second.id]
+    assert [task.title for task in scope.preserved_tasks] == ["Three"]
 
 
-def test_compact_scope_returns_none_without_finished_todo():
+def test_compact_scope_returns_none_without_finished_todo_when_running():
     db = _make_db()
     manager = TaskManager(db)
     _load(manager, None)
     manager.create_user_task("Build feature")
     manager.create_todo("Still active")
 
-    assert manager.compact_scope() is None
+    assert manager.compact_scope(run_done=False) is None
+
+
+def test_compact_scope_selects_whole_user_task_when_done():
+    db = _make_db()
+    manager = TaskManager(db)
+    _load(manager, None)
+    manager.create_user_task("Build feature")
+    first_tool = manager.record_tool_call(10)
+    first = manager.create_todo("One")
+    manager.finish_task("done")
+    second_tool = manager.record_tool_call(11)
+
+    scope = manager.compact_scope(run_done=True)
+
+    assert [task.id for task in scope.compact_tasks] == [first_tool.id, first.id, second_tool.id]
+    assert [task.id for task in scope.compact_todos] == [first.id]
+    assert scope.preserved_tasks == []
+    assert scope.preserved_todos == []
+
+
+def test_compact_instruction_text_includes_task_view_and_tool_call_directives():
+    db = _make_db()
+    manager = TaskManager(db)
+    _load(manager, None)
+    manager.create_user_task("Build feature")
+    manager.record_tool_call(10)
+    todo = manager.create_todo("Inspect files")
+    manager.record_tool_call(11)
+    manager.finish_task("Found manager.py")
+    scope = manager.compact_scope(run_done=False)
+
+    instruction = manager.compact_instruction_text(
+        scope,
+        tool_calls={
+            10: ToolCallReview(name="ls", arguments={"path": "."}),
+            11: ToolCallReview(name="sed", arguments={"file": "manager.py"}),
+        },
+    )
+
+    assert "Complete the compacted task information first" in instruction
+    assert "define the compacted task and its result" in instruction
+    assert "Record every must-include tool call" in instruction
+    assert "Task view to compact:" in instruction
+    assert "- user_task [active] Build feature" in instruction
+    assert "- todo [done] Inspect files" in instruction
+    assert 'tool_call 1. sed args: {"file":"manager.py"}' in instruction
+    assert 'tool_call 1. ls args: {"path":"."}' not in instruction
 
 
 def test_compact_tools_create_one_finished_compacted_todo():
@@ -456,7 +505,7 @@ def test_replace_compact_scope_persists_rebuilt_task_tree():
     manager.finish_compacted_todo()
 
     with db.create_session() as session:
-        compacted = manager.replace_compact_scope(session=session)
+        compacted = manager.replace_compact_scope(run_done=False, session=session)
         session.commit()
 
     loaded_compacted = db.get_managed_task(compacted.id)
@@ -470,6 +519,36 @@ def test_replace_compact_scope_persists_rebuilt_task_tree():
     assert loaded_active.id == active.id
     assert [task.id for task in loaded_manager.active_user_task.children] == [compacted.id, active.id]
     assert loaded_compacted.parent_id == user_task.id
+
+
+def test_replace_compact_scope_replaces_whole_user_task_when_done():
+    db = _make_db()
+    manager = TaskManager(db)
+    _load(manager, None)
+    user_task = manager.create_user_task("Build feature")
+    first_tool = manager.record_tool_call(10)
+    todo = manager.create_todo("One")
+    manager.finish_task("done", tool_call_id="call_finish")
+    second_tool = manager.record_tool_call(11)
+    _save(manager)
+    manager.begin_compact_buffer()
+    compacted = manager.create_compacted_todo("Whole task summary")
+    compacted_buffer_id = compacted.id
+    manager.finish_compacted_todo()
+
+    with db.create_session() as session:
+        compacted = manager.replace_compact_scope(run_done=True, session=session)
+        session.commit()
+
+    loaded_manager = TaskManager(db)
+    _load(loaded_manager, user_task.id)
+
+    assert compacted.id == first_tool.id
+    assert db.get_managed_task(compacted_buffer_id) is None
+    assert db.get_managed_task(todo.id) is None
+    assert db.get_managed_task(second_tool.id) is None
+    assert [task.id for task in loaded_manager.active_user_task.children] == [compacted.id]
+    assert loaded_manager.active_user_task.children[0].result == "Whole task summary"
 
 
 def test_load_loads_children_and_active_todo():

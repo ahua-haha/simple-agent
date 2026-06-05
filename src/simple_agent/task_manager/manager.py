@@ -21,6 +21,8 @@ if TYPE_CHECKING:
 class CompactScope:
     compact_todos: list[ManagedTask]
     preserved_todos: list[ManagedTask]
+    compact_tasks: list[ManagedTask]
+    preserved_tasks: list[ManagedTask]
 
 
 @dataclass
@@ -309,8 +311,20 @@ class TaskManager:
     # Compact phase
     # ------------------------------------------------------------------
 
-    def compact_scope(self) -> CompactScope | None:
-        user_task = self._require_active_user_task()
+    def compact_scope(self, *, run_done: bool) -> CompactScope | None:
+        user_task = self._require_loaded_user_task() if run_done else self._require_active_user_task()
+
+        if run_done:
+            compact_tasks = list(user_task.children)
+            if not compact_tasks:
+                return None
+            compact_todos = [task for task in compact_tasks if task.kind == "todo"]
+            return CompactScope(
+                compact_todos=compact_todos,
+                preserved_todos=[],
+                compact_tasks=compact_tasks,
+                preserved_tasks=[],
+            )
 
         todos = [task for task in user_task.children if task.kind == "todo"]
         finished = [todo for todo in todos if todo.status == "done"]
@@ -321,7 +335,45 @@ class TaskManager:
         end_index = todos.index(latest_finished)
         compact_todos = todos[: end_index + 1]
         preserved_todos = todos[end_index + 1:]
-        return CompactScope(compact_todos, preserved_todos)
+        return CompactScope(
+            compact_todos=compact_todos,
+            preserved_todos=preserved_todos,
+            compact_tasks=compact_todos,
+            preserved_tasks=preserved_todos,
+        )
+
+    def compact_instruction_text(
+        self,
+        scope: CompactScope,
+        *,
+        tool_calls: Mapping[int, ToolCallReview] | None = None,
+    ) -> str:
+        user_task = self._require_loaded_user_task()
+        compact_root = ManagedTask(
+            id=user_task.id,
+            kind=user_task.kind,
+            title=user_task.title,
+            status=user_task.status,
+            result=user_task.result,
+            error=user_task.error,
+            children=list(scope.compact_tasks),
+            created_at=user_task.created_at,
+            updated_at=user_task.updated_at,
+        )
+        task_view = _TaskTreeReviewRenderer(
+            format="tree",
+            depth=None,
+            tool_calls=tool_calls or {},
+        ).render(compact_root)
+        return (
+            "Runtime instruction for compacting phase:\n"
+            "- Complete the compacted task information first: define the compacted task and its result.\n"
+            "- Record every must-include tool call based on the compacted task result to avoid context loss.\n"
+            "- Use only compact tools: create one compacted todo, record must-include tool calls, then finish it.\n"
+            "\n"
+            "Task view to compact:\n"
+            f"{task_view.text}"
+        )
 
     def begin_compact_buffer(self) -> None:
         self._compact_buffer = CompactBuffer()
@@ -415,22 +467,22 @@ class TaskManager:
         finish_tool.execute = finish_execute
         return [create_tool, record_tool, finish_tool]
 
-    def replace_compact_scope(self, *, session: Session) -> ManagedTask:
-        user_task = self._require_active_user_task()
+    def replace_compact_scope(self, *, run_done: bool, session: Session) -> ManagedTask:
+        user_task = self._require_loaded_user_task() if run_done else self._require_active_user_task()
 
-        scope = self.compact_scope()
+        scope = self.compact_scope(run_done=run_done)
         if scope is None:
             raise TaskManagerError("No compact scope")
         compacted_todo = self.consume_compact_buffer()
         compacted_original_id = compacted_todo.id
-        compacted_todo.id = scope.compact_todos[0].id
+        compacted_todo.id = scope.compact_tasks[0].id
         compacted_todo.parent_id = user_task.id
         for child in compacted_todo.children:
             if child.parent_id == compacted_original_id:
                 child.parent_id = compacted_todo.id
 
-        compacted_scope_id_set = {todo.id for todo in scope.compact_todos}
-        insert_index = self._first_child_index(user_task, scope.compact_todos)
+        compacted_scope_id_set = {task.id for task in scope.compact_tasks}
+        insert_index = self._first_child_index(user_task, scope.compact_tasks)
         user_task.children = [
             child for child in user_task.children
             if child.id not in compacted_scope_id_set
@@ -481,6 +533,11 @@ class TaskManager:
     def _require_active_user_task(self) -> ManagedTask:
         if self._user_task is None or self.active_user_task_id is None:
             raise TaskManagerError("No active user task")
+        return self._user_task
+
+    def _require_loaded_user_task(self) -> ManagedTask:
+        if self._user_task is None:
+            raise TaskManagerError("No loaded user task")
         return self._user_task
 
     def _require_active_todo(self) -> ManagedTask:
