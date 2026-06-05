@@ -198,6 +198,15 @@ class Database:
         session.add(record)
 
     @standalone_or_compose
+    def next_runner_message_id(
+        self,
+        *,
+        session: Session | None = None,
+    ) -> int:
+        record = session.exec(select(RunnerMessageRecord).order_by(RunnerMessageRecord.id.desc())).first()
+        return (record.id + 1) if record and record.id is not None else 1
+
+    @standalone_or_compose
     def replace_runner_messages(
         self,
         session_id: str,

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import sqlite3
 
 import pytest
 
@@ -131,6 +132,41 @@ class FakeToolThenFinalAgentProcess(FakeAgentProcess):
             }
         )
         return message
+
+
+class FakeCreateTodoAgentProcess(FakeAgentProcess):
+    async def call_llm_step(self, system_prompt, messages, tools, cancel_event=None):
+        message = AssistantMessage(
+            role="assistant",
+            content=[
+                TextContent(text="creating todo"),
+                ToolCall(id="call_create", name="create_todo", arguments={"title": "Inspect files"}),
+            ],
+        )
+        self.calls.append(
+            {
+                "system_prompt": system_prompt,
+                "messages": messages,
+                "tools": [tool.name for tool in tools],
+                "cancel_event": cancel_event,
+            }
+        )
+        return message
+
+    async def run_tool_calls_step(self, tools, assistant_message, cancel_event=None):
+        by_name = {tool.name: tool for tool in tools}
+        results = []
+        for content in assistant_message.content:
+            if isinstance(content, ToolCall):
+                result = await by_name[content.name].execute(content.id, content.arguments)
+                results.append(
+                    ToolResultMessage(
+                        toolCallId=content.id,
+                        toolName=content.name,
+                        content=result.content,
+                    )
+                )
+        return results
 
 
 class FakeCompactAgentProcess(FakeAgentProcess):
@@ -773,6 +809,45 @@ async def test_handle_running_with_tool_calls_returns_normal_run_without_compact
 
 
 @pytest.mark.asyncio
+async def test_handle_running_sets_current_assistant_message_id_for_task_tools(tmp_path):
+    db_path = tmp_path / "session.db"
+    db = Database(str(db_path))
+    task_manager = TaskManager(db)
+    agent_process = FakeCreateTodoAgentProcess()
+    runner = SessionRunner(
+        session_id="session_a",
+        db=db,
+        task_manager=task_manager,
+        agent_process=agent_process,
+        cancel_event=asyncio.Event(),
+    )
+    _load_task_manager(task_manager, None)
+    user_task = task_manager.create_user_task("Build feature")
+    runner._active_user_task_id = user_task.id
+    runner._next_action = "normal_run"
+
+    next_action = await runner.handle_running(None)
+
+    loaded_manager = TaskManager(db)
+    _load_task_manager(loaded_manager, user_task.id)
+    todo = next(child for child in loaded_manager.active_user_task.children if child.kind == "todo")
+    with sqlite3.connect(db_path) as conn:
+        assistant_message_id = conn.execute(
+            """
+            SELECT id
+            FROM runnermessagerecord
+            WHERE session_id = ? AND role = ?
+            ORDER BY seq
+            """,
+            ("session_a", "assistant"),
+        ).fetchone()[0]
+
+    assert next_action == "normal_run"
+    assert todo.start_message_id == assistant_message_id
+    assert task_manager.current_assistant_message_id is None
+
+
+@pytest.mark.asyncio
 async def test_handle_running_adds_transient_steering_user_message(tmp_path):
     db = Database(str(tmp_path / "session.db"))
     task_manager = TaskManager(db)
@@ -915,7 +990,7 @@ async def test_handle_compact_without_finished_todo_returns_running(tmp_path):
     )
     _load_task_manager(runner._task_manager, None)
     user_task = runner._task_manager.create_user_task("Build feature")
-    runner._task_manager.create_todo("Still active", tool_call_id="call_active")
+    runner._task_manager.create_todo("Still active", start_message_id=1)
     runner._active_user_task_id = user_task.id
     runner._next_action = "compact"
     cancel_event.set()
@@ -943,8 +1018,8 @@ async def test_handle_compact_runs_loop_without_replacing_messages(tmp_path):
     )
     _load_task_manager(task_manager, None)
     user_task = task_manager.create_user_task("Build feature")
-    todo = task_manager.create_todo("Inspect files", tool_call_id="call_create")
-    task_manager.finish_task("Done", tool_call_id="call_finish")
+    todo = task_manager.create_todo("Inspect files", start_message_id=2)
+    task_manager.finish_task("Done", end_message_id=4)
     active = task_manager.create_todo("Continue work")
     _save_task_manager(task_manager)
     runner._active_user_task_id = user_task.id

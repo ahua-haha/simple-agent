@@ -76,20 +76,20 @@ def test_managed_task_roundtrip_preserves_parent():
     assert loaded.children == []
 
 
-def test_managed_task_roundtrip_preserves_create_tool_call_id():
+def test_managed_task_roundtrip_preserves_message_boundaries():
     db = _make_db()
     task = ManagedTask(
         kind="todo",
         title="Inspect files",
-        create_tool_call_id="call_create",
-        end_tool_call_id="call_finish",
+        start_message_id=12,
+        end_message_id=15,
     )
 
     task.id = db.upsert_managed_task(task)
     loaded = db.get_managed_task(task.id)
 
-    assert loaded.create_tool_call_id == "call_create"
-    assert loaded.end_tool_call_id == "call_finish"
+    assert loaded.start_message_id == 12
+    assert loaded.end_message_id == 15
 
 
 def test_create_user_task_sets_active_user_task():
@@ -145,12 +145,12 @@ def test_finish_todo_marks_done_and_clears_active_todo():
     manager.create_user_task("Build feature")
     todo = manager.create_todo("Inspect files")
 
-    finished = manager.finish_task("Found app.py", tool_call_id="call_finish")
+    finished = manager.finish_task("Found app.py", end_message_id=21)
 
     assert finished.id == todo.id
     assert finished.status == "done"
     assert finished.result == "Found app.py"
-    assert finished.end_tool_call_id == "call_finish"
+    assert finished.end_message_id == 21
     assert manager.active_todo_id is None
 
 
@@ -164,29 +164,43 @@ def test_finish_todo_rejects_missing_active_todo():
         manager.finish_task()
 
 
-def test_create_todo_stores_create_tool_call_id():
+def test_create_todo_stores_start_message_id():
     db = _make_db()
     manager = TaskManager(db)
     _load(manager, None)
     manager.create_user_task("Build feature")
 
-    todo = manager.create_todo("Inspect files", tool_call_id="call_create")
+    todo = manager.create_todo("Inspect files", start_message_id=12)
 
-    assert todo.create_tool_call_id == "call_create"
+    assert todo.start_message_id == 12
 
 
-def test_error_todo_stores_end_tool_call_id():
+def test_error_todo_stores_end_message_id():
     db = _make_db()
     manager = TaskManager(db)
     _load(manager, None)
     manager.create_user_task("Build feature")
     todo = manager.create_todo("Inspect files")
 
-    errored = manager.error_task("failed", tool_call_id="call_error")
+    errored = manager.error_task("failed", end_message_id=13)
 
     assert errored.id == todo.id
     assert errored.status == "error"
-    assert errored.end_tool_call_id == "call_error"
+    assert errored.end_message_id == 13
+
+
+def test_task_tools_use_current_assistant_message_id_for_boundaries():
+    db = _make_db()
+    manager = TaskManager(db)
+    _load(manager, None)
+    manager.create_user_task("Build feature")
+    manager.current_assistant_message_id = 22
+
+    todo = manager.create_todo("Inspect files")
+    finished = manager.finish_task("Done")
+
+    assert todo.start_message_id == 22
+    assert finished.end_message_id == 22
 
 
 def test_record_tool_call_without_active_todo_attaches_to_user_task():
@@ -507,9 +521,9 @@ def test_replace_compact_scope_persists_rebuilt_task_tree():
     _load(manager, None)
     user_task = manager.create_user_task("Build feature")
     first = manager.create_todo("One")
-    manager.finish_task("done", tool_call_id="call_finish_1")
+    manager.finish_task("done", end_message_id=1)
     second = manager.create_todo("Two")
-    manager.finish_task("done", tool_call_id="call_finish_2")
+    manager.finish_task("done", end_message_id=2)
     active = manager.create_todo("Three")
     _save(manager)
     manager.begin_compact_buffer()
@@ -541,7 +555,7 @@ def test_replace_compact_scope_replaces_whole_user_task_when_done():
     user_task = manager.create_user_task("Build feature")
     first_tool = manager.record_tool_call(10)
     todo = manager.create_todo("One")
-    manager.finish_task("done", tool_call_id="call_finish")
+    manager.finish_task("done", end_message_id=1)
     second_tool = manager.record_tool_call(11)
     _save(manager)
     manager.begin_compact_buffer()

@@ -34,8 +34,8 @@ class ManagedTaskRecord(SQLModel, table=True):
     status: str = Field(default="active", index=True)
     result: str | None = None
     error: str | None = None
-    create_tool_call_id: str | None = Field(default=None, index=True)
-    end_tool_call_id: str | None = Field(default=None, index=True)
+    start_message_id: int | None = Field(default=None, index=True)
+    end_message_id: int | None = Field(default=None, index=True)
     tool_call_log_id: int | None = Field(default=None, index=True)
     created_at: float = Field(default_factory=time.time)
     updated_at: float = Field(default_factory=time.time)
@@ -113,8 +113,8 @@ def managed_task_to_record(task: ManagedTask) -> ManagedTaskRecord:
         status=task.status,
         result=task.result,
         error=task.error,
-        create_tool_call_id=task.create_tool_call_id,
-        end_tool_call_id=task.end_tool_call_id,
+        start_message_id=task.start_message_id,
+        end_message_id=task.end_message_id,
         tool_call_log_id=task.tool_call_log_id,
         created_at=task.created_at,
         updated_at=task.updated_at,
@@ -130,8 +130,8 @@ def managed_task_from_record(record: ManagedTaskRecord) -> ManagedTask:
         status=record.status,
         result=record.result,
         error=record.error,
-        create_tool_call_id=record.create_tool_call_id,
-        end_tool_call_id=record.end_tool_call_id,
+        start_message_id=record.start_message_id,
+        end_message_id=record.end_message_id,
         tool_call_log_id=record.tool_call_log_id,
         created_at=record.created_at,
         updated_at=record.updated_at,

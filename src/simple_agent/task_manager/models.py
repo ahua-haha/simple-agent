@@ -19,8 +19,8 @@ class ManagedTask(BaseModel):
     status: TaskStatus = "active"
     result: str | None = None
     error: str | None = None
-    create_tool_call_id: str | None = None
-    end_tool_call_id: str | None = None
+    start_message_id: int | None = None
+    end_message_id: int | None = None
     tool_call_log_id: int | None = None
     children: list["ManagedTask"] = Field(default_factory=list, exclude=True)
     created_at: float = Field(default_factory=time.time)

@@ -59,6 +59,7 @@ class TaskManager:
     _active_todo: ManagedTask | None
     _next_task_id: int | None
     _compact_buffer: CompactBuffer | None
+    current_assistant_message_id: int | None
 
     def __init__(self, db: Database):
         self._db = db
@@ -68,6 +69,7 @@ class TaskManager:
         self._active_todo: ManagedTask | None = None
         self._next_task_id: int | None = None
         self._compact_buffer: CompactBuffer | None = None
+        self.current_assistant_message_id: int | None = None
 
     def load(self, active_user_task_id: int | None, *, session: Session) -> None:
         self._user_task = None
@@ -76,6 +78,7 @@ class TaskManager:
         self.active_todo_id = None
         self._next_task_id = self._db.next_managed_task_id(session=session)
         self._compact_buffer = None
+        self.current_assistant_message_id = None
         if active_user_task_id is None:
             return
         self._user_task = self.build_task_tree(active_user_task_id, session=session)
@@ -134,7 +137,7 @@ class TaskManager:
         )
 
         async def execute(tool_call_id, params, cancel_event=None, on_update=None):
-            self.create_todo(params["title"], tool_call_id=tool_call_id)
+            self.create_todo(params["title"])
             return AgentToolResult(content=[TextContent(text=self.todo_status_text())])
 
         tool.execute = execute
@@ -157,7 +160,7 @@ class TaskManager:
         )
 
         async def execute(tool_call_id, params, cancel_event=None, on_update=None):
-            self.finish_task(params.get("result"), tool_call_id=tool_call_id)
+            self.finish_task(params.get("result"))
             return AgentToolResult(content=[TextContent(text=self.todo_status_text())])
 
         tool.execute = execute
@@ -180,13 +183,13 @@ class TaskManager:
         )
 
         async def execute(tool_call_id, params, cancel_event=None, on_update=None):
-            self.error_task(params["error"], tool_call_id=tool_call_id)
+            self.error_task(params["error"])
             return AgentToolResult(content=[TextContent(text=self.todo_status_text())])
 
         tool.execute = execute
         return tool
 
-    def create_todo(self, title: str, tool_call_id: str | None = None) -> ManagedTask:
+    def create_todo(self, title: str, start_message_id: int | None = None) -> ManagedTask:
         user_task = self._require_active_user_task()
         if self._active_todo is not None:
             raise TaskManagerError("Cannot create todo while another active todo exists")
@@ -195,7 +198,7 @@ class TaskManager:
             kind="todo",
             title=title,
             parent_id=user_task.id,
-            create_tool_call_id=tool_call_id,
+            start_message_id=start_message_id if start_message_id is not None else self.current_assistant_message_id,
         )
         todo.id = self._allocate_task_id()
 
@@ -205,21 +208,21 @@ class TaskManager:
         self.active_todo_id = todo.id
         return todo
 
-    def finish_task(self, result: str | None = None, tool_call_id: str | None = None) -> ManagedTask:
+    def finish_task(self, result: str | None = None, end_message_id: int | None = None) -> ManagedTask:
         todo = self._require_active_todo()
         todo.status = "done"
         todo.result = result
-        todo.end_tool_call_id = tool_call_id
+        todo.end_message_id = end_message_id if end_message_id is not None else self.current_assistant_message_id
         todo.touch()
         self._active_todo = None
         self.active_todo_id = None
         return todo
 
-    def error_task(self, error: str, tool_call_id: str | None = None) -> ManagedTask:
+    def error_task(self, error: str, end_message_id: int | None = None) -> ManagedTask:
         todo = self._require_active_todo()
         todo.status = "error"
         todo.error = error
-        todo.end_tool_call_id = tool_call_id
+        todo.end_message_id = end_message_id if end_message_id is not None else self.current_assistant_message_id
         todo.touch()
         self._active_todo = None
         self.active_todo_id = None
