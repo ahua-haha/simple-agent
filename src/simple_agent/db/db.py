@@ -84,8 +84,9 @@ class Database:
     @standalone_or_compose
     def upsert_managed_task(self, task, *, session: Session | None = None) -> int:
         """Insert or update a replacement task-manager row."""
+        if task.id is None:
+            task.id = self.next_managed_task_id(session=session)
         record = session.merge(managed_task_to_record(task))
-        session.flush()
         task.id = record.id
         return record.id
 
@@ -188,14 +189,16 @@ class Database:
         id: int | None = None,
         session: Session | None = None,
     ) -> int:
+        stable_id = id if id is not None else self.next_runner_message_id(session=session)
         record = RunnerMessageRecord(
-            id=id,
+            id=stable_id,
             session_id=session_id,
             role=message.role,
             content_json=agent_message_to_json(message),
             timestamp_ms=getattr(message, "timestamp", None),
         )
         session.add(record)
+        return stable_id
 
     @standalone_or_compose
     def next_runner_message_id(
@@ -212,14 +215,22 @@ class Database:
         session_id: str,
         messages: list[AgentMessage],
         *,
+        ids: list[int] | None = None,
         session: Session | None = None,
     ) -> None:
+        if ids is not None and len(ids) != len(messages):
+            raise ValueError("Message ids must match messages length")
         session.exec(
             delete(RunnerMessageRecord)
             .where(RunnerMessageRecord.session_id == session_id)
         )
-        for message in messages:
-            self.insert_runner_message(session_id, message, session=session)
+        for index, message in enumerate(messages):
+            self.insert_runner_message(
+                session_id,
+                message,
+                id=ids[index] if ids is not None else None,
+                session=session,
+            )
 
     @standalone_or_compose
     def list_runner_messages(
@@ -236,6 +247,27 @@ class Database:
             ).all()
         )
         return [agent_message_from_json(record.content_json) for record in records]
+
+    @standalone_or_compose
+    def list_runner_message_entries(
+        self,
+        session_id: str,
+        *,
+        session: Session | None = None,
+    ) -> list[tuple[int, AgentMessage]]:
+        records = list(
+            session.exec(
+                select(RunnerMessageRecord)
+                .where(RunnerMessageRecord.session_id == session_id)
+                .order_by(RunnerMessageRecord.seq)
+            ).all()
+        )
+        entries: list[tuple[int, AgentMessage]] = []
+        for record in records:
+            if record.id is None:
+                raise RuntimeError("Runner message record is missing stable id")
+            entries.append((record.id, agent_message_from_json(record.content_json)))
+        return entries
 
     @standalone_or_compose
     def next_runner_tool_call_id(

@@ -45,7 +45,7 @@ class PendingToolCallRecord:
 
 
 @dataclass(frozen=True)
-class PendingMessageRecord:
+class MessageEntry:
     id: int
     message: AgentMessage
 
@@ -61,11 +61,11 @@ class SessionRunner:
     _next_action: RunnerAction
     _active_user_task_id: int | None
     _last_error: str | None
-    _messages: list[AgentMessage]
+    _messages: list[MessageEntry]
     _context_token_threshold: int
     _tool_call_threshold: int
     _user_paused: bool
-    _uncommitted_messages: list[PendingMessageRecord]
+    _uncommitted_messages: list[MessageEntry]
     _uncommitted_tool_calls: list[PendingToolCallRecord]
     _next_message_id: int
     _next_tool_call_log_id: int
@@ -111,7 +111,10 @@ class SessionRunner:
     def load(self) -> None:
         with self._db.create_session() as session:
             metadata = self._db.get_runner_state_metadata(self._session_id, session=session)
-            self._messages = self._db.list_runner_messages(self._session_id, session=session)
+            self._messages = [
+                MessageEntry(id=message_id, message=message)
+                for message_id, message in self._db.list_runner_message_entries(self._session_id, session=session)
+            ]
             self._uncommitted_messages = []
             self._uncommitted_tool_calls = []
             self._next_message_id = self._db.next_runner_message_id(session=session)
@@ -140,13 +143,14 @@ class SessionRunner:
         if ids is not None and len(ids) != len(messages):
             raise ValueError("Message ids must match messages length")
         message_ids: list[int] = []
-        self._messages.extend(messages)
         for index, message in enumerate(messages):
             message_id = ids[index] if ids is not None else None
             if message_id is None:
                 message_id = self._allocate_message_id()
             message_ids.append(message_id)
-            self._uncommitted_messages.append(PendingMessageRecord(id=message_id, message=message))
+            entry = MessageEntry(id=message_id, message=message)
+            self._messages.append(entry)
+            self._uncommitted_messages.append(entry)
         return message_ids
 
     def sync_messages(self, *, session: Session) -> None:
@@ -161,14 +165,13 @@ class SessionRunner:
     def sync_replaced_messages(
         self,
         *,
-        messages: list[AgentMessage],
-        message_ids: list[int],
+        messages: list[MessageEntry],
         session: Session,
     ) -> None:
         self._db.replace_runner_messages(
             self._session_id,
-            messages,
-            ids=message_ids,
+            [entry.message for entry in messages],
+            ids=[entry.id for entry in messages],
             session=session,
         )
 
@@ -305,7 +308,7 @@ class SessionRunner:
 
         tools = self._create_tools()
         llm_messages = [
-            *self._messages,
+            *self._message_values(),
             UserMessage(
                 content=[TextContent(text=self._task_manager.user_instruction_text())],
                 timestamp=int(time.time() * 1000),
@@ -349,7 +352,7 @@ class SessionRunner:
         return self._next_action
 
     def pause_for_compaction_if_needed(self) -> None:
-        context_tokens = estimate_messages_tokens(list(self._messages))
+        context_tokens = estimate_messages_tokens(self._message_values())
         with self._db.create_session() as session:
             tool_calls = len(self._db.list_runner_tool_calls(self._session_id, session=session))
         tool_calls += len(self._uncommitted_tool_calls)
@@ -376,7 +379,7 @@ class SessionRunner:
             session_id=self._session_id,
         )
         compact_messages = [
-            *self._messages,
+            *self._message_values(),
             UserMessage(
                 content=[TextContent(text=compact_instruction)],
                 timestamp=int(time.time() * 1000),
@@ -411,18 +414,14 @@ class SessionRunner:
             self.save_current_data(save_tasks=False)
             return self._next_action
         compacted_messages = self._task_manager.format_compacted_messages()
-        with self._db.create_session() as session:
-            message_ids = self._db.list_runner_message_ids(self._session_id, session=session)
-        if message_ids:
-            self._next_message_id = max(self._next_message_id, max(message_ids) + 1)
-        compacted_message_ids = [self._allocate_message_id() for _ in compacted_messages]
-        replacement_messages, replacement_message_ids = self._replace_message_range(
+        replacement_messages = self._replace_message_range(
             messages=list(self._messages),
-            message_ids=message_ids,
             start_message_id=message_scope.start_message_id,
             end_message_id=message_scope.end_message_id,
-            replacement_messages=compacted_messages,
-            replacement_ids=compacted_message_ids,
+            replacement_messages=[
+                MessageEntry(id=self._allocate_message_id(), message=message)
+                for message in compacted_messages
+            ],
         )
         self._messages = replacement_messages
 
@@ -431,7 +430,6 @@ class SessionRunner:
             self.sync_tool_calls(session=session)
             self.sync_replaced_messages(
                 messages=replacement_messages,
-                message_ids=replacement_message_ids,
                 session=session,
             )
             self._task_manager.replace_compact_scope(run_done=run_done, session=session)
@@ -454,39 +452,32 @@ class SessionRunner:
         self._next_message_id += 1
         return message_id
 
+    def _message_values(self) -> list[AgentMessage]:
+        return [entry.message for entry in self._messages]
+
     def _replace_message_range(
         self,
         *,
-        messages: list[AgentMessage],
-        message_ids: list[int],
+        messages: list[MessageEntry],
         start_message_id: int,
         end_message_id: int,
-        replacement_messages: list[AgentMessage],
-        replacement_ids: list[int],
-    ) -> tuple[list[AgentMessage], list[int]]:
-        if len(messages) != len(message_ids):
-            raise RuntimeError("Runner message ids are out of sync with messages")
-        if len(replacement_messages) != len(replacement_ids):
-            raise ValueError("Replacement message ids must match replacement messages length")
+        replacement_messages: list[MessageEntry],
+    ) -> list[MessageEntry]:
         start_index, end_index = self._message_range_indices(
             messages=messages,
-            message_ids=message_ids,
             start_message_id=start_message_id,
             end_message_id=end_message_id,
         )
-        return (
-            messages[:start_index] + replacement_messages + messages[end_index + 1:],
-            message_ids[:start_index] + replacement_ids + message_ids[end_index + 1:],
-        )
+        return messages[:start_index] + replacement_messages + messages[end_index + 1:]
 
     def _message_range_indices(
         self,
         *,
-        messages: list[AgentMessage],
-        message_ids: list[int],
+        messages: list[MessageEntry],
         start_message_id: int,
         end_message_id: int,
     ) -> tuple[int, int]:
+        message_ids = [entry.id for entry in messages]
         try:
             start_index = message_ids.index(start_message_id)
         except ValueError as exc:
@@ -498,7 +489,7 @@ class SessionRunner:
         if end_index < start_index:
             raise RuntimeError("Compact end message is before compact start message")
 
-        end_message = messages[end_index]
+        end_message = messages[end_index].message
         if isinstance(end_message, AssistantMessage):
             tool_call_ids = {
                 content.id
@@ -508,8 +499,8 @@ class SessionRunner:
             while (
                 tool_call_ids
                 and end_index + 1 < len(messages)
-                and isinstance(messages[end_index + 1], ToolResultMessage)
-                and messages[end_index + 1].tool_call_id in tool_call_ids
+                and isinstance(messages[end_index + 1].message, ToolResultMessage)
+                and messages[end_index + 1].message.tool_call_id in tool_call_ids
             ):
                 end_index += 1
         return start_index, end_index

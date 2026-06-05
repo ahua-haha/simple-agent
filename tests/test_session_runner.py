@@ -10,7 +10,7 @@ import pytest
 from pi.ai.types import AssistantMessage, TextContent, ToolCall, ToolResultMessage, UserMessage
 
 from simple_agent.db.db import Database
-from simple_agent.session.runner import SessionRunner
+from simple_agent.session.runner import MessageEntry, SessionRunner
 from simple_agent.task_manager import TaskManager
 
 
@@ -516,7 +516,7 @@ def test_append_messages_buffers_until_sync(tmp_path):
     runner.append_messages([message])
 
     assert len(runner._messages) == 1
-    assert runner._messages[0] is message
+    assert runner._messages[0].message is message
     assert len(runner._uncommitted_messages) == 1
     assert db.list_runner_messages("session_a") == []
 
@@ -864,7 +864,8 @@ async def test_handle_running_adds_transient_steering_user_message(tmp_path):
     request_message = UserMessage(content=[TextContent(text="Build feature")], timestamp=1)
     runner._active_user_task_id = user_task.id
     runner._next_action = "normal_run"
-    runner._messages = [request_message]
+    runner._messages = [MessageEntry(id=1, message=request_message)]
+    runner._next_message_id = 2
 
     await runner.handle_running(None)
 
@@ -873,7 +874,7 @@ async def test_handle_running_adds_transient_steering_user_message(tmp_path):
     assert llm_messages[:-1] == [request_message]
     assert llm_messages[-1].role == "user"
     assert "determine whether the user task is complex" in llm_messages[-1].content[0].text.lower()
-    assert [message.role for message in runner._messages] == ["user", "assistant"]
+    assert [entry.message.role for entry in runner._messages] == ["user", "assistant"]
     assert [message.role for message in persisted_messages] == ["assistant"]
     assert persisted_messages[0].content[0].text == "final answer"
 
@@ -1024,7 +1025,7 @@ async def test_handle_compact_runs_loop_then_replaces_scoped_messages_and_tasks(
     _save_task_manager(task_manager)
     runner._active_user_task_id = user_task.id
     runner._next_action = "compact"
-    runner._messages = [
+    seeded_messages = [
         UserMessage(content=[TextContent(text="original request")], timestamp=1),
         AssistantMessage(
             role="assistant",
@@ -1058,8 +1059,13 @@ async def test_handle_compact_runs_loop_then_replaces_scoped_messages_and_tasks(
             ],
         ),
     ]
-    db.replace_runner_messages("session_a", runner._messages)
-    original_messages = list(runner._messages)
+    runner._messages = [
+        MessageEntry(id=index, message=message)
+        for index, message in enumerate(seeded_messages, start=1)
+    ]
+    db.replace_runner_messages("session_a", seeded_messages)
+    runner._next_message_id = 7
+    original_messages = list(seeded_messages)
     db.insert_runner_tool_call(
         id=1,
         session_id="session_a",
@@ -1086,12 +1092,12 @@ async def test_handle_compact_runs_loop_then_replaces_scoped_messages_and_tasks(
     assert "Task view to compact:" in compact_instruction
     assert "- todo [done] Inspect files" in compact_instruction
     assert len(compact_agent.calls[1]["messages"]) == len(original_messages) + 5
-    assert [message.content[0].text for message in runner._messages] == [
+    assert [entry.message.content[0].text for entry in runner._messages] == [
         "original request",
         "Compacted todo: Compact summary\nUseful tool calls: [1]",
         "active todo",
     ]
-    assert [message.content for message in messages] == [message.content for message in runner._messages]
+    assert [message.content for message in messages] == [entry.message.content for entry in runner._messages]
     assert [task.id for task in loaded_task_manager.active_user_task.children] == [todo.id, active.id]
     assert loaded_task_manager.active_user_task.children[0].result == "Compact summary"
     assert db.get_runner_state_metadata("session_a").next_action == "normal_run"
@@ -1117,8 +1123,10 @@ async def test_handle_compact_done_user_task_waits_for_user_input(tmp_path):
     _save_task_manager(task_manager)
     runner._active_user_task_id = user_task.id
     runner._next_action = "compact"
-    runner._messages = [UserMessage(content=[TextContent(text="Build feature")], timestamp=1)]
-    db.replace_runner_messages("session_a", runner._messages, ids=[1])
+    request_message = UserMessage(content=[TextContent(text="Build feature")], timestamp=1)
+    runner._messages = [MessageEntry(id=1, message=request_message)]
+    runner._next_message_id = 2
+    db.replace_runner_messages("session_a", [request_message], ids=[1])
 
     next_action = await runner.handle_compact("Build feature", run_done=True)
 
@@ -1151,7 +1159,7 @@ async def test_handle_compact_routes_error_assistant_message_to_handle_error(tmp
     _save_task_manager(task_manager)
     runner._active_user_task_id = user_task.id
     runner._next_action = "compact"
-    runner._messages = [UserMessage(content=[TextContent(text="Build feature")], timestamp=1)]
+    runner._messages = [MessageEntry(id=1, message=UserMessage(content=[TextContent(text="Build feature")], timestamp=1))]
     handle_error = runner.handle_error
 
     def fail_if_handled(error=None):
