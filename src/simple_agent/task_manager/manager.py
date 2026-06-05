@@ -346,7 +346,7 @@ class TaskManager:
         self,
         scope: CompactScope,
         *,
-        tool_calls: Mapping[int, ToolCallReview] | None = None,
+        session_id: str,
     ) -> str:
         user_task = self._require_loaded_user_task()
         compact_root = ManagedTask(
@@ -363,7 +363,7 @@ class TaskManager:
         task_view = _TaskTreeReviewRenderer(
             format="tree",
             depth=None,
-            tool_calls=tool_calls or {},
+            tool_calls=self._load_tool_call_reviews(session_id),
         ).render(compact_root)
         return (
             "Runtime instruction for compacting phase:\n"
@@ -568,6 +568,26 @@ class TaskManager:
 
     def _count_tool_calls(self, tasks: list[ManagedTask]) -> int:
         return sum(1 for task in tasks if task.kind == "tool_call")
+
+    def _load_tool_call_reviews(self, session_id: str) -> dict[int, ToolCallReview]:
+        records = self._db.list_runner_tool_calls(session_id)
+        return {
+            record.id: ToolCallReview(
+                name=record.tool_name,
+                arguments=self._tool_call_arguments(record.tool_call_json),
+            )
+            for record in records
+            if record.id is not None
+        }
+
+    def _tool_call_arguments(self, tool_call_json: str) -> object | None:
+        try:
+            payload = json.loads(tool_call_json)
+        except json.JSONDecodeError:
+            return None
+        if not isinstance(payload, dict):
+            return None
+        return payload.get("arguments")
 
     def _first_child_index(self, user_task: ManagedTask, tasks: list[ManagedTask]) -> int:
         task_ids = {task.id for task in tasks}

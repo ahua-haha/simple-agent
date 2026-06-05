@@ -11,7 +11,6 @@ from typing import TYPE_CHECKING, Callable, Literal
 
 from pi.ai.types import AssistantMessage, TextContent, ToolCall, ToolResultMessage, UserMessage
 from simple_agent.json_utils import json_safe
-from simple_agent.task_manager import ToolCallReview
 from simple_agent.token_estimation import estimate_messages_tokens
 from simple_agent.tool.common_tools import create_all_coding_tools
 
@@ -333,7 +332,7 @@ class SessionRunner:
         self._task_manager.begin_compact_buffer()
         compact_instruction = self._task_manager.compact_instruction_text(
             scope,
-            tool_calls=self._compact_tool_call_reviews(),
+            session_id=self._session_id,
         )
         compact_messages = [
             *self._messages,
@@ -402,27 +401,6 @@ class SessionRunner:
     def _user_task_is_done(self) -> bool:
         user_task = self._task_manager.active_user_task
         return user_task is not None and user_task.status == "done"
-
-    def _compact_tool_call_reviews(self) -> dict[int, ToolCallReview]:
-        with self._db.create_session() as session:
-            records = self._db.list_runner_tool_calls(self._session_id, session=session)
-        return {
-            record.id: ToolCallReview(
-                name=record.tool_name,
-                arguments=self._tool_call_arguments(record.tool_call_json),
-            )
-            for record in records
-            if record.id is not None
-        }
-
-    def _tool_call_arguments(self, tool_call_json: str) -> object | None:
-        try:
-            payload = json.loads(tool_call_json)
-        except json.JSONDecodeError:
-            return None
-        if not isinstance(payload, dict):
-            return None
-        return payload.get("arguments")
 
     def format_compacted_todo_message(self, compacted_todo) -> AgentMessage:
         tool_refs = [

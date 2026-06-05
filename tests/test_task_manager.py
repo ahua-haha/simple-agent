@@ -450,13 +450,26 @@ def test_compact_instruction_text_includes_task_view_and_tool_call_directives():
     manager.record_tool_call(11)
     manager.finish_task("Found manager.py")
     scope = manager.compact_scope(run_done=False)
+    db.insert_runner_tool_call(
+        id=10,
+        session_id="session_a",
+        tool_call_id="call_10",
+        tool_name="ls",
+        tool_call_json='{"arguments":{"path":"."}}',
+        tool_result_json="{}",
+    )
+    db.insert_runner_tool_call(
+        id=11,
+        session_id="session_a",
+        tool_call_id="call_11",
+        tool_name="sed",
+        tool_call_json='{"arguments":{"file":"manager.py"}}',
+        tool_result_json="{}",
+    )
 
     instruction = manager.compact_instruction_text(
         scope,
-        tool_calls={
-            10: ToolCallReview(name="ls", arguments={"path": "."}),
-            11: ToolCallReview(name="sed", arguments={"file": "manager.py"}),
-        },
+        session_id="session_a",
     )
 
     assert "Complete the compacted task information first" in instruction
