@@ -89,6 +89,10 @@ class TaskManager:
         for task in sorted(self._walk_tasks(), key=lambda item: item.id or 0):
             self._db.upsert_managed_task(task, session=session)
 
+    # ------------------------------------------------------------------
+    # Normal running phase
+    # ------------------------------------------------------------------
+
     def create_user_task(self, input: str) -> ManagedTask:
         if self.active_user_task_id is not None:
             raise TaskManagerError("Cannot create a second active user task")
@@ -199,72 +203,6 @@ class TaskManager:
         self.active_todo_id = todo.id
         return todo
 
-    def todo_status_text(self) -> str:
-        user_task = self._require_active_user_task()
-        todos = [child for child in user_task.children if child.kind == "todo"]
-        if not todos:
-            return "Todos: []"
-
-        lines = ["Todos:"]
-        for todo in todos:
-            line = f"- [{todo.status}] {todo.title}"
-            if todo.result:
-                line += f" result={todo.result}"
-            if todo.error:
-                line += f" error={todo.error}"
-            lines.append(line)
-        return "\n".join(lines)
-
-    def review_task_tree(
-        self,
-        *,
-        format: TaskTreeReviewFormat = "tree",
-        depth: int | None = None,
-        tool_calls: Mapping[int, ToolCallReview] | None = None,
-    ) -> TaskTreeReview:
-        user_task = self._require_active_user_task()
-        renderer = _TaskTreeReviewRenderer(format=format, depth=depth, tool_calls=tool_calls or {})
-        return renderer.render(user_task)
-
-    def user_instruction_text(self) -> str:
-        if self._user_task is None:
-            return (
-                "Runtime instruction for this turn:\n"
-                "- Wait for the user to provide a task before creating todos or doing tool work."
-            )
-
-        if self._active_todo is None:
-            tool_calls_after_previous_todo = self._count_tool_calls_after_latest_todo(self._user_task)
-            if tool_calls_after_previous_todo > 5:
-                return (
-                    "Runtime instruction for this turn:\n"
-                    "- More than 5 tool calls have run since the previous todo.\n"
-                    "- Stop and create a small atomic todo before doing more work.\n"
-                    "- The todo should describe only the next coherent unit of work."
-                )
-            return (
-                "Runtime instruction for this turn:\n"
-                "- Determine whether the user task is complex before doing more work.\n"
-                "- If it is complex or long-running, create the next small atomic todo first.\n"
-                "- If it is simple, answer directly or use the needed tools."
-            )
-
-        active_todo_tool_calls = self._count_tool_calls(self._active_todo.children)
-        if active_todo_tool_calls > 10:
-            return (
-                "Runtime instruction for this turn:\n"
-                "- More than 10 tool calls have run for the active todo.\n"
-                "- Determine whether the active todo is finished.\n"
-                "- If it is finished, call finish_todo now with a concise result.\n"
-                "- If it is not finished, do only the next action needed to complete it."
-            )
-        return (
-            "Runtime instruction for this turn:\n"
-            f"- Focus on the active todo: {self._active_todo.title}\n"
-            "- Use tools only for work needed by this todo.\n"
-            "- Call finish_todo immediately when it is complete."
-        )
-
     def finish_task(self, result: str | None = None, tool_call_id: str | None = None) -> ManagedTask:
         todo = self._require_active_todo()
         todo.status = "done"
@@ -311,6 +249,65 @@ class TaskManager:
         user_task.touch()
         self.active_user_task_id = None
         return user_task
+
+    def todo_status_text(self) -> str:
+        user_task = self._require_active_user_task()
+        todos = [child for child in user_task.children if child.kind == "todo"]
+        if not todos:
+            return "Todos: []"
+
+        lines = ["Todos:"]
+        for todo in todos:
+            line = f"- [{todo.status}] {todo.title}"
+            if todo.result:
+                line += f" result={todo.result}"
+            if todo.error:
+                line += f" error={todo.error}"
+            lines.append(line)
+        return "\n".join(lines)
+
+    def user_instruction_text(self) -> str:
+        if self._user_task is None:
+            return (
+                "Runtime instruction for this turn:\n"
+                "- Wait for the user to provide a task before creating todos or doing tool work."
+            )
+
+        if self._active_todo is None:
+            tool_calls_after_previous_todo = self._count_tool_calls_after_latest_todo(self._user_task)
+            if tool_calls_after_previous_todo > 5:
+                return (
+                    "Runtime instruction for this turn:\n"
+                    "- More than 5 tool calls have run since the previous todo.\n"
+                    "- Stop and create a small atomic todo before doing more work.\n"
+                    "- The todo should describe only the next coherent unit of work."
+                )
+            return (
+                "Runtime instruction for this turn:\n"
+                "- Determine whether the user task is complex before doing more work.\n"
+                "- If it is complex or long-running, create the next small atomic todo first.\n"
+                "- If it is simple, answer directly or use the needed tools."
+            )
+
+        active_todo_tool_calls = self._count_tool_calls(self._active_todo.children)
+        if active_todo_tool_calls > 10:
+            return (
+                "Runtime instruction for this turn:\n"
+                "- More than 10 tool calls have run for the active todo.\n"
+                "- Determine whether the active todo is finished.\n"
+                "- If it is finished, call finish_todo now with a concise result.\n"
+                "- If it is not finished, do only the next action needed to complete it."
+            )
+        return (
+            "Runtime instruction for this turn:\n"
+            f"- Focus on the active todo: {self._active_todo.title}\n"
+            "- Use tools only for work needed by this todo.\n"
+            "- Call finish_todo immediately when it is complete."
+        )
+
+    # ------------------------------------------------------------------
+    # Compact phase
+    # ------------------------------------------------------------------
 
     def compact_scope(self) -> CompactScope | None:
         user_task = self._require_active_user_task()
@@ -443,6 +440,21 @@ class TaskManager:
 
         self._db.replace_managed_task_tree(user_task, session=session)
         return compacted_todo
+
+    # ------------------------------------------------------------------
+    # Task tree and helper utilities
+    # ------------------------------------------------------------------
+
+    def review_task_tree(
+        self,
+        *,
+        format: TaskTreeReviewFormat = "tree",
+        depth: int | None = None,
+        tool_calls: Mapping[int, ToolCallReview] | None = None,
+    ) -> TaskTreeReview:
+        user_task = self._require_active_user_task()
+        renderer = _TaskTreeReviewRenderer(format=format, depth=depth, tool_calls=tool_calls or {})
+        return renderer.render(user_task)
 
     def build_task_tree(self, root_task_id: int, *, session: Session) -> ManagedTask | None:
         root = self._db.get_managed_task(root_task_id, session=session)
