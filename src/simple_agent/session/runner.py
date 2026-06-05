@@ -188,14 +188,15 @@ class SessionRunner:
         *,
         messages: list[MessageEntry] | None = None,
         tool_calls: list[ToolCallLogRecord] | None = None,
-        session: Session,
     ) -> None:
         messages = messages or []
         tool_calls = tool_calls or []
-        self.sync_tool_calls(tool_calls, session=session)
-        self.sync_messages(messages, session=session)
-        self._task_manager.save(session=session)
-        self.sync_metadata(session=session)
+        with self._db.create_session() as session:
+            self.sync_tool_calls(tool_calls, session=session)
+            self.sync_messages(messages, session=session)
+            self._task_manager.save(session=session)
+            self.sync_metadata(session=session)
+            session.commit()
 
     def _create_tools(self):
         return [
@@ -259,9 +260,7 @@ class SessionRunner:
         ]
         self.append_messages(pending_messages)
         user_task.start_message_id = pending_messages[0].id
-        with self._db.create_session() as session:
-            self.sync_current_data(messages=pending_messages, session=session)
-            session.commit()
+        self.sync_current_data(messages=pending_messages)
         return self._next_action
 
     def finish_previous_user_task(self) -> None:
@@ -274,9 +273,7 @@ class SessionRunner:
                 self._task_manager.error_task("Interrupted by new user input")
             self._task_manager.finish_user_task()
             self._next_action = "wait_user_input"
-            with self._db.create_session() as session:
-                self.sync_current_data(session=session)
-                session.commit()
+            self.sync_current_data()
         self._active_user_task_id = None
 
     async def handle_running(self, user_input: str | None) -> RunnerAction:
@@ -333,13 +330,10 @@ class SessionRunner:
         else:
             self.pause_for_compaction_if_needed(tool_call_records=tool_call_records)
 
-        with self._db.create_session() as session:
-            self.sync_current_data(
-                messages=pending_messages,
-                tool_calls=tool_call_records,
-                session=session,
-            )
-            session.commit()
+        self.sync_current_data(
+            messages=pending_messages,
+            tool_calls=tool_call_records,
+        )
         return self._next_action
 
     def pause_for_compaction_if_needed(self, *, tool_call_records: list[ToolCallLogRecord] | None = None) -> None:

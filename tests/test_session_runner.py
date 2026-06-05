@@ -542,9 +542,7 @@ def test_sync_current_data_syncs_empty_explicit_data(tmp_path):
     runner.load()
     runner._next_action = "normal_run"
 
-    with db.create_session() as session:
-        runner.sync_current_data(session=session)
-        session.commit()
+    runner.sync_current_data()
 
     assert runner._messages == []
     assert db.list_runner_messages("session_a") == []
@@ -565,9 +563,7 @@ def test_sync_current_data_syncs_explicit_messages(tmp_path):
     entries = [MessageEntry(id=1, message=message)]
     runner.append_messages(entries)
 
-    with db.create_session() as session:
-        runner.sync_current_data(messages=entries, session=session)
-        session.commit()
+    runner.sync_current_data(messages=entries)
 
     messages = db.list_runner_messages("session_a")
     assert len(messages) == 1
@@ -739,9 +735,7 @@ def test_failed_save_keeps_explicit_pending_data_unsynced(tmp_path):
     runner.append_messages(entries)
 
     with pytest.raises(RuntimeError, match="task save failed"):
-        with db.create_session() as session:
-            runner.sync_current_data(messages=entries, session=session)
-            session.commit()
+        runner.sync_current_data(messages=entries)
 
     assert len(entries) == 1
     assert db.list_runner_messages("session_a") == []
