@@ -95,6 +95,28 @@ class FakeFinalAgentProcess(FakeAgentProcess):
         raise AssertionError("tool step should not run for a final assistant response")
 
 
+class FakeAssistantErrorAgentProcess(FakeAgentProcess):
+    async def call_llm_step(self, system_prompt, messages, tools, cancel_event=None):
+        message = AssistantMessage(
+            role="assistant",
+            content=[],
+            stopReason="error",
+            errorMessage="HTTP 400 Bad Request",
+        )
+        self.calls.append(
+            {
+                "system_prompt": system_prompt,
+                "messages": messages,
+                "tools": [tool.name for tool in tools],
+                "cancel_event": cancel_event,
+            }
+        )
+        return message
+
+    async def run_tool_calls_step(self, tools, assistant_message, cancel_event=None):
+        raise AssertionError("tool step should not run after assistant error")
+
+
 class FakeToolThenFinalAgentProcess(FakeAgentProcess):
     async def call_llm_step(self, system_prompt, messages, tools, cancel_event=None):
         if not self.calls:
@@ -115,10 +137,8 @@ class FakeCompactAgentProcess(FakeAgentProcess):
     async def call_llm_step(self, system_prompt, messages, tools, cancel_event=None):
         self.calls.append({"tools": [tool.name for tool in tools], "messages": list(messages)})
         if len(self.calls) > 1:
-            message = AssistantMessage(role="assistant", content=[TextContent(text="compact done")])
-            messages.append(message)
-            return message
-        message = AssistantMessage(
+            return AssistantMessage(role="assistant", content=[TextContent(text="compact done")])
+        return AssistantMessage(
             role="assistant",
             content=[
                 ToolCall(id="compact_create", name="create_compacted_todo", arguments={"description": "Compact summary"}),
@@ -126,8 +146,6 @@ class FakeCompactAgentProcess(FakeAgentProcess):
                 ToolCall(id="compact_finish", name="finish_compacted_todo", arguments={}),
             ],
         )
-        messages.append(message)
-        return message
 
     async def run_tool_calls_step(self, tools, assistant_message, cancel_event=None):
         by_name = {tool.name: tool for tool in tools}
@@ -153,7 +171,6 @@ class FakeCompactErrorAgentProcess(FakeAgentProcess):
             stopReason="error",
             errorMessage="HTTP 400 Bad Request",
         )
-        messages.append(message)
         self.calls.append({"tools": [tool.name for tool in tools], "messages": list(messages)})
         return message
 
@@ -552,6 +569,30 @@ def test_sync_metadata_uses_runner_fields(tmp_path):
     assert metadata.last_error == "boom"
 
 
+def test_handle_error_sets_action_then_persists_error(tmp_path):
+    db = Database(str(tmp_path / "session.db"))
+    cancel_event = asyncio.Event()
+    runner = SessionRunner(
+        session_id="session_a",
+        db=db,
+        task_manager=TaskManager(db),
+        agent_process=FakeAgentProcess(),
+        cancel_event=cancel_event,
+    )
+    cancel_event.set()
+
+    next_action = runner.handle_error(RuntimeError("boom"))
+    persisted_action = runner.handle_error()
+
+    metadata = db.get_runner_state_metadata("session_a")
+    assert next_action == "handle_error"
+    assert persisted_action == "wait_user_input"
+    assert runner._next_action == "wait_user_input"
+    assert metadata.next_action == "wait_user_input"
+    assert metadata.last_error == "boom"
+    assert cancel_event.is_set() is False
+
+
 def test_sync_messages_requires_session(tmp_path):
     db = Database(str(tmp_path / "session.db"))
     runner = SessionRunner(
@@ -796,6 +837,35 @@ async def test_handle_running_without_tool_calls_finishes_user_task_then_compact
 
 
 @pytest.mark.asyncio
+async def test_handle_running_error_message_sets_handle_error_action_without_handling(tmp_path):
+    db = Database(str(tmp_path / "session.db"))
+    task_manager = TaskManager(db)
+    runner = SessionRunner(
+        session_id="session_a",
+        db=db,
+        task_manager=task_manager,
+        agent_process=FakeAssistantErrorAgentProcess(),
+        cancel_event=asyncio.Event(),
+    )
+    _load_task_manager(task_manager, None)
+    user_task = task_manager.create_user_task("Build feature")
+    runner._active_user_task_id = user_task.id
+    runner._next_action = "normal_run"
+
+    def fail_if_handled(error=None):
+        raise AssertionError("handle_running should not call handle_error")
+
+    runner.handle_error = fail_if_handled
+
+    next_action = await runner.handle_running(None)
+
+    assert next_action == "handle_error"
+    assert runner._next_action == "handle_error"
+    assert runner._last_error == "HTTP 400 Bad Request"
+    assert db.get_runner_state_metadata("session_a") is None
+
+
+@pytest.mark.asyncio
 async def test_step_tool_call_threshold_persists_compact_and_sets_cancel(tmp_path):
     db = Database(str(tmp_path / "session.db"))
     cancel_event = asyncio.Event()
@@ -978,7 +1048,7 @@ async def test_handle_compact_done_user_task_waits_for_user_input(tmp_path):
 
 
 @pytest.mark.asyncio
-async def test_handle_compact_reports_error_assistant_message(tmp_path, capsys):
+async def test_handle_compact_routes_error_assistant_message_to_handle_error(tmp_path):
     db = Database(str(tmp_path / "session.db"))
     task_manager = TaskManager(db)
     compact_agent = FakeCompactErrorAgentProcess()
@@ -997,14 +1067,22 @@ async def test_handle_compact_reports_error_assistant_message(tmp_path, capsys):
     runner._active_user_task_id = user_task.id
     runner._next_action = "compact"
     runner._messages = [UserMessage(content=[TextContent(text="Build feature")], timestamp=1)]
+    handle_error = runner.handle_error
+
+    def fail_if_handled(error=None):
+        raise AssertionError("handle_compact should not call handle_error")
+
+    runner.handle_error = fail_if_handled
 
     next_action = await runner.handle_compact("Build feature", run_done=True)
+    runner.handle_error = handle_error
+    routed_action = await runner.route_next_action(next_action, "Build feature")
 
-    captured = capsys.readouterr()
     metadata = db.get_runner_state_metadata("session_a")
-    assert "SessionRunner.handle_compact error: HTTP 400 Bad Request" in captured.err
-    assert next_action == "wait_user_input"
+    assert next_action == "handle_error"
+    assert routed_action == "wait_user_input"
     assert metadata.next_action == "wait_user_input"
+    assert metadata.last_error == "HTTP 400 Bad Request"
     assert len(compact_agent.calls) == 1
 
 
@@ -1063,7 +1141,7 @@ async def test_session_runner_finds_tool_result_message_index_for_tool_call_id(t
 
 
 @pytest.mark.asyncio
-async def test_session_runner_persists_error_and_reraises(tmp_path):
+async def test_session_runner_routes_runtime_error_to_handle_error(tmp_path):
     db = Database(str(tmp_path / "session.db"))
     task_manager = TaskManager(db)
     runner = SessionRunner(
@@ -1074,12 +1152,35 @@ async def test_session_runner_persists_error_and_reraises(tmp_path):
         cancel_event=asyncio.Event(),
     )
 
-    with pytest.raises(RuntimeError, match="agent failed"):
-        await runner.run("Build feature")
+    result = await runner.run("Build feature")
 
     metadata = db.get_runner_state_metadata("session_a")
+    assert result.title == "Build feature"
     assert metadata.next_action == "wait_user_input"
     assert metadata.last_error == "agent failed"
+
+
+@pytest.mark.asyncio
+async def test_session_runner_routes_assistant_error_message_to_handle_error(tmp_path):
+    db = Database(str(tmp_path / "session.db"))
+    task_manager = TaskManager(db)
+    runner = SessionRunner(
+        session_id="session_a",
+        db=db,
+        task_manager=task_manager,
+        agent_process=FakeAssistantErrorAgentProcess(),
+        cancel_event=asyncio.Event(),
+    )
+
+    result = await runner.run("Build feature")
+
+    metadata = db.get_runner_state_metadata("session_a")
+    messages = db.list_runner_messages("session_a")
+    assert result.title == "Build feature"
+    assert metadata.next_action == "wait_user_input"
+    assert metadata.last_error == "HTTP 400 Bad Request"
+    assert len(messages) == 1
+    assert messages[0].content[0].text == "Build feature"
 
 
 @pytest.mark.asyncio
@@ -1095,9 +1196,12 @@ async def test_step_save_rolls_back_messages_when_task_save_fails(tmp_path):
         cancel_event=asyncio.Event(),
     )
 
-    with pytest.raises(RuntimeError, match="task save failed"):
-        await runner.run("Build feature")
+    result = await runner.run("Build feature")
 
+    metadata = db.get_runner_state_metadata("session_a")
     messages = db.list_runner_messages("session_a")
+    assert result.title == "Build feature"
+    assert metadata.next_action == "wait_user_input"
+    assert metadata.last_error == "task save failed"
     assert len(messages) == 1
     assert messages[0].content[0].text == "Build feature"

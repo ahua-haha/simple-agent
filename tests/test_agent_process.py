@@ -13,7 +13,7 @@ from simple_agent.process.agent_process import AgentProcess
 
 
 @pytest.mark.asyncio
-async def test_agent_process_call_llm_step_returns_one_assistant_message_and_emits_events(monkeypatch):
+async def test_agent_process_call_llm_step_copies_messages_and_emits_events(monkeypatch):
     from pi.agent.types import MessageEndEvent
 
     message = AssistantMessage(role="assistant", content=[TextContent(text="done")])
@@ -24,6 +24,7 @@ async def test_agent_process_call_llm_step_returns_one_assistant_message_and_emi
     async def fake_stream_assistant_response(context, loop_config, cancel_event, stream, stream_fn):
         captured["context_messages"] = context.messages
         captured["on_event"] = loop_config.on_event
+        context.messages.append(message)
         stream.push(MessageEndEvent(message=message))
         return message
 
@@ -45,7 +46,9 @@ async def test_agent_process_call_llm_step_returns_one_assistant_message_and_emi
     )
 
     assert result is message
-    assert captured["context_messages"] is messages
+    assert captured["context_messages"] is not messages
+    assert captured["context_messages"] == [existing_message, message]
+    assert messages == [existing_message]
     assert captured["on_event"] is None
     assert calls == [("listener", "message_end")]
 

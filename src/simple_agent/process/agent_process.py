@@ -56,7 +56,7 @@ class AgentProcess:
         """Call the LLM once and return the assistant message without running tools."""
         context = AgentContext(
             system_prompt=system_prompt,
-            messages=messages,
+            messages=list(messages),
             tools=tools,
         )
         stream = _create_agent_stream()

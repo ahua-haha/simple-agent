@@ -5,7 +5,6 @@ from __future__ import annotations
 import asyncio
 import logging
 import json
-import sys
 import time
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Callable, Literal
@@ -25,7 +24,7 @@ if TYPE_CHECKING:
 
 _log = logging.getLogger(__name__)
 
-RunnerAction = Literal["normal_run", "compact", "wait_user_input"]
+RunnerAction = Literal["normal_run", "compact", "handle_error", "wait_user_input"]
 
 SYSTEM_PROMPT = """You are a helpful coding agent.
 
@@ -200,15 +199,18 @@ class SessionRunner:
         self._user_paused = False
         self._cancel_event.clear()
         self.load()
-        next_action = self.handle_input(user_input)
         try:
-            while next_action != "wait_user_input":
-                if self._user_paused:
-                    break
-                next_action = await self.route_next_action(next_action, user_input)
+            next_action = self.handle_input(user_input)
         except Exception as exc:
-            self.handle_error(exc)
-            raise
+            next_action = self.handle_error(exc)
+
+        while next_action != "wait_user_input":
+            if self._user_paused:
+                break
+            try:
+                next_action = await self.route_next_action(next_action, user_input)
+            except Exception as exc:
+                next_action = self.handle_error(exc)
 
         if self._active_user_task_id is None:
             return None
@@ -220,6 +222,8 @@ class SessionRunner:
             return await self.handle_running(user_input)
         if next_action == "compact":
             return await self.handle_compact(user_input, run_done=self._user_task_is_done())
+        if next_action == "handle_error":
+            return self.handle_error()
         if next_action == "wait_user_input":
             return next_action
         raise RuntimeError(f"Unknown runner action: {next_action}")
@@ -278,6 +282,11 @@ class SessionRunner:
             tools=tools,
             cancel_event=self._cancel_event,
         )
+        if self._assistant_is_error(assistant_message):
+            self._last_error = self._error_message(assistant_message)
+            self._next_action = "handle_error"
+            return self._next_action
+
         tool_results: list[ToolResultMessage] = []
         has_tool_calls = self._assistant_has_tool_calls(assistant_message)
         if has_tool_calls:
@@ -341,12 +350,11 @@ class SessionRunner:
                 tools=compact_tools,
                 cancel_event=self._cancel_event,
             )
-            if not compact_messages or compact_messages[-1] is not assistant_message:
-                compact_messages.append(assistant_message)
+            compact_messages.append(assistant_message)
             if self._assistant_is_error(assistant_message):
-                error = assistant_message.error_message or "assistant response stopped with error"
-                print(f"SessionRunner.handle_compact error: {error}", file=sys.stderr)
-                break
+                self._last_error = self._error_message(assistant_message)
+                self._next_action = "handle_error"
+                return self._next_action
             if not self._assistant_has_tool_calls(assistant_message):
                 break
             tool_results = await self._agent_process.run_tool_calls_step(
@@ -428,10 +436,26 @@ class SessionRunner:
         )
         return AssistantMessage(role="assistant", content=[TextContent(text=text)])
 
-    def handle_error(self, exc: Exception) -> None:
-        _log.exception("session runner failed: session=%s", self._session_id)
+    def handle_error(self, error: Exception | AssistantMessage | str | None = None) -> RunnerAction:
+        if error is not None:
+            self._last_error = self._error_message(error)
+            if isinstance(error, Exception):
+                _log.error(
+                    "session runner failed: session=%s",
+                    self._session_id,
+                    exc_info=(type(error), error, error.__traceback__),
+                )
+            self._next_action = "handle_error"
+            return self._next_action
+
         self._next_action = "wait_user_input"
-        self._last_error = str(exc)
+        self._cancel_event.clear()
         with self._db.create_session() as session:
             self.sync_metadata(session=session)
             session.commit()
+        return self._next_action
+
+    def _error_message(self, error: Exception | AssistantMessage | str) -> str:
+        if isinstance(error, AssistantMessage):
+            return error.error_message or "assistant response stopped with error"
+        return str(error)
