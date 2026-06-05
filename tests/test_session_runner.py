@@ -1162,60 +1162,6 @@ async def test_handle_compact_routes_error_assistant_message_to_handle_error(tmp
 
 
 @pytest.mark.asyncio
-async def test_session_runner_finds_assistant_message_index_for_tool_call_id(tmp_path):
-    db = Database(str(tmp_path / "session.db"))
-    runner = SessionRunner(
-        session_id="session_a",
-        db=db,
-        task_manager=TaskManager(db),
-        agent_process=FakeAgentProcess(),
-        cancel_event=asyncio.Event(),
-    )
-    runner._messages = [
-        UserMessage(content=[TextContent(text="request")], timestamp=1),
-        AssistantMessage(role="assistant", content=[TextContent(text="thinking")]),
-        AssistantMessage(
-            role="assistant",
-            content=[
-                TextContent(text="create todo"),
-                ToolCall(id="call_create", name="create_todo", arguments={"title": "Inspect files"}),
-            ],
-        ),
-    ]
-
-    assert runner.find_assistant_message_index_for_tool_call("call_create") == 2
-
-
-@pytest.mark.asyncio
-async def test_session_runner_finds_tool_result_message_index_for_tool_call_id(tmp_path):
-    db = Database(str(tmp_path / "session.db"))
-    runner = SessionRunner(
-        session_id="session_a",
-        db=db,
-        task_manager=TaskManager(db),
-        agent_process=FakeAgentProcess(),
-        cancel_event=asyncio.Event(),
-    )
-    runner._messages = [
-        UserMessage(content=[TextContent(text="request")], timestamp=1),
-        AssistantMessage(
-            role="assistant",
-            content=[
-                TextContent(text="finish todo"),
-                ToolCall(id="call_finish", name="finish_todo", arguments={}),
-            ],
-        ),
-        ToolResultMessage(
-            toolCallId="call_finish",
-            toolName="finish_todo",
-            content=[TextContent(text="finished")],
-        ),
-    ]
-
-    assert runner.find_tool_result_message_index_for_tool_call("call_finish") == 2
-
-
-@pytest.mark.asyncio
 async def test_session_runner_routes_runtime_error_to_handle_error(tmp_path):
     db = Database(str(tmp_path / "session.db"))
     task_manager = TaskManager(db)

@@ -399,21 +399,6 @@ class SessionRunner:
         self._cancel_event.clear()
         return self._next_action
 
-    def find_assistant_message_index_for_tool_call(self, tool_call_id: str) -> int:
-        for index, message in enumerate(self._messages):
-            if not isinstance(message, AssistantMessage):
-                continue
-            for content in message.content:
-                if isinstance(content, ToolCall) and content.id == tool_call_id:
-                    return index
-        raise RuntimeError(f"Could not find assistant message for tool call {tool_call_id}")
-
-    def find_tool_result_message_index_for_tool_call(self, tool_call_id: str) -> int:
-        for index, message in enumerate(self._messages):
-            if isinstance(message, ToolResultMessage) and message.tool_call_id == tool_call_id:
-                return index
-        raise RuntimeError(f"Could not find tool result message for tool call {tool_call_id}")
-
     def _assistant_has_tool_calls(self, message: AssistantMessage) -> bool:
         return any(isinstance(content, ToolCall) for content in message.content)
 
@@ -434,18 +419,6 @@ class SessionRunner:
     def _user_task_is_done(self) -> bool:
         user_task = self._task_manager.active_user_task
         return user_task is not None and user_task.status == "done"
-
-    def format_compacted_todo_message(self, compacted_todo) -> AgentMessage:
-        tool_refs = [
-            child.tool_call_log_id
-            for child in compacted_todo.children
-            if child.kind == "tool_call" and child.tool_call_log_id is not None
-        ]
-        text = (
-            f"Compacted todo: {compacted_todo.result or compacted_todo.title}\n"
-            f"Useful tool calls: {tool_refs}"
-        )
-        return AssistantMessage(role="assistant", content=[TextContent(text=text)])
 
     def handle_error(self, error: Exception | AssistantMessage | str | None = None) -> RunnerAction:
         if error is not None:
