@@ -158,6 +158,20 @@ class SessionRunner:
                 session=session,
             )
 
+    def sync_replaced_messages(
+        self,
+        *,
+        messages: list[AgentMessage],
+        message_ids: list[int],
+        session: Session,
+    ) -> None:
+        self._db.replace_runner_messages(
+            self._session_id,
+            messages,
+            ids=message_ids,
+            session=session,
+        )
+
     def sync_tool_calls(self, *, session: Session) -> None:
         for pending in self._uncommitted_tool_calls:
             self._db.insert_runner_tool_call(
@@ -260,7 +274,7 @@ class SessionRunner:
         self._next_action = "normal_run"
         self._last_error = None
         self._cancel_event.clear()
-        self.append_messages(
+        message_ids = self.append_messages(
             [
                 UserMessage(
                     content=[TextContent(text=user_input)],
@@ -268,6 +282,7 @@ class SessionRunner:
                 )
             ]
         )
+        user_task.start_message_id = message_ids[0]
         self.save_current_data()
         return self._next_action
 
@@ -325,7 +340,7 @@ class SessionRunner:
         self.append_messages([assistant_message, *tool_results], ids=[assistant_message_id, *([None] * len(tool_results))])
 
         if not has_tool_calls:
-            self._task_manager.finish_user_task()
+            self._task_manager.finish_user_task(end_message_id=assistant_message_id)
             self._next_action = "compact"
         else:
             self.pause_for_compaction_if_needed()
@@ -389,11 +404,42 @@ class SessionRunner:
             )
             compact_messages.extend(tool_results)
 
+        message_scope = self._task_manager.compact_message_scope(run_done=run_done)
+        if message_scope is None:
+            self._next_action = "wait_user_input" if run_done else "normal_run"
+            self._cancel_event.clear()
+            self.save_current_data(save_tasks=False)
+            return self._next_action
+        compacted_messages = self._task_manager.format_compacted_messages()
+        with self._db.create_session() as session:
+            message_ids = self._db.list_runner_message_ids(self._session_id, session=session)
+        if message_ids:
+            self._next_message_id = max(self._next_message_id, max(message_ids) + 1)
+        compacted_message_ids = [self._allocate_message_id() for _ in compacted_messages]
+        replacement_messages, replacement_message_ids = self._replace_message_range(
+            messages=list(self._messages),
+            message_ids=message_ids,
+            start_message_id=message_scope.start_message_id,
+            end_message_id=message_scope.end_message_id,
+            replacement_messages=compacted_messages,
+            replacement_ids=compacted_message_ids,
+        )
+        self._messages = replacement_messages
+
         with self._db.create_session() as session:
             self._next_action = "wait_user_input" if run_done else "normal_run"
+            self.sync_tool_calls(session=session)
+            self.sync_replaced_messages(
+                messages=replacement_messages,
+                message_ids=replacement_message_ids,
+                session=session,
+            )
+            self._task_manager.replace_compact_scope(run_done=run_done, session=session)
             self.sync_metadata(session=session)
             session.commit()
 
+        self._uncommitted_messages.clear()
+        self._uncommitted_tool_calls.clear()
         self._cancel_event.clear()
         return self._next_action
 
@@ -407,6 +453,66 @@ class SessionRunner:
         message_id = self._next_message_id
         self._next_message_id += 1
         return message_id
+
+    def _replace_message_range(
+        self,
+        *,
+        messages: list[AgentMessage],
+        message_ids: list[int],
+        start_message_id: int,
+        end_message_id: int,
+        replacement_messages: list[AgentMessage],
+        replacement_ids: list[int],
+    ) -> tuple[list[AgentMessage], list[int]]:
+        if len(messages) != len(message_ids):
+            raise RuntimeError("Runner message ids are out of sync with messages")
+        if len(replacement_messages) != len(replacement_ids):
+            raise ValueError("Replacement message ids must match replacement messages length")
+        start_index, end_index = self._message_range_indices(
+            messages=messages,
+            message_ids=message_ids,
+            start_message_id=start_message_id,
+            end_message_id=end_message_id,
+        )
+        return (
+            messages[:start_index] + replacement_messages + messages[end_index + 1:],
+            message_ids[:start_index] + replacement_ids + message_ids[end_index + 1:],
+        )
+
+    def _message_range_indices(
+        self,
+        *,
+        messages: list[AgentMessage],
+        message_ids: list[int],
+        start_message_id: int,
+        end_message_id: int,
+    ) -> tuple[int, int]:
+        try:
+            start_index = message_ids.index(start_message_id)
+        except ValueError as exc:
+            raise RuntimeError(f"Could not find compact start message id {start_message_id}") from exc
+        try:
+            end_index = message_ids.index(end_message_id)
+        except ValueError as exc:
+            raise RuntimeError(f"Could not find compact end message id {end_message_id}") from exc
+        if end_index < start_index:
+            raise RuntimeError("Compact end message is before compact start message")
+
+        end_message = messages[end_index]
+        if isinstance(end_message, AssistantMessage):
+            tool_call_ids = {
+                content.id
+                for content in end_message.content
+                if isinstance(content, ToolCall)
+            }
+            while (
+                tool_call_ids
+                and end_index + 1 < len(messages)
+                and isinstance(messages[end_index + 1], ToolResultMessage)
+                and messages[end_index + 1].tool_call_id in tool_call_ids
+            ):
+                end_index += 1
+        return start_index, end_index
 
     def _user_task_is_done(self) -> bool:
         user_task = self._task_manager.active_user_task

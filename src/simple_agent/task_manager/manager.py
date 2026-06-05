@@ -7,12 +7,13 @@ from dataclasses import dataclass
 from typing import Any, TYPE_CHECKING, Literal, Mapping
 
 from pi.agent import AgentTool, AgentToolResult
-from pi.ai.types import TextContent
+from pi.ai.types import AssistantMessage, TextContent
 
 from simple_agent.task_manager.models import ManagedTask
 
 if TYPE_CHECKING:
     from simple_agent.db.db import Database
+    from pi.agent.types import AgentMessage
     from sqlmodel import Session
 
 
@@ -27,6 +28,12 @@ class CompactScope:
 @dataclass
 class CompactBuffer:
     todo: ManagedTask | None = None
+
+
+@dataclass(frozen=True)
+class CompactMessageScope:
+    start_message_id: int
+    end_message_id: int
 
 
 TaskTreeReviewFormat = Literal["tree", "flat"]
@@ -97,10 +104,10 @@ class TaskManager:
     # Normal running phase
     # ------------------------------------------------------------------
 
-    def create_user_task(self, input: str) -> ManagedTask:
+    def create_user_task(self, input: str, start_message_id: int | None = None) -> ManagedTask:
         if self.active_user_task_id is not None:
             raise TaskManagerError("Cannot create a second active user task")
-        task = ManagedTask(kind="user_task", title=input)
+        task = ManagedTask(kind="user_task", title=input, start_message_id=start_message_id)
         task.id = self._allocate_task_id()
         self._user_task = task
         self.active_user_task_id = task.id
@@ -244,12 +251,13 @@ class TaskManager:
         target.touch()
         return tool_call_task
 
-    def finish_user_task(self, result: str | None = None) -> ManagedTask:
+    def finish_user_task(self, result: str | None = None, end_message_id: int | None = None) -> ManagedTask:
         user_task = self._require_active_user_task()
         if self._active_todo is not None:
             raise TaskManagerError("Cannot finish user task while a todo is active")
         user_task.status = "done"
         user_task.result = result
+        user_task.end_message_id = end_message_id
         user_task.touch()
         self.active_user_task_id = None
         return user_task
@@ -377,6 +385,23 @@ class TaskManager:
             f"{task_view.text}"
         )
 
+    def compact_message_scope(self, *, run_done: bool) -> CompactMessageScope | None:
+        scope = self.compact_scope(run_done=run_done)
+        if scope is None:
+            return None
+
+        user_task = self._require_loaded_user_task() if run_done else self._require_active_user_task()
+        if run_done:
+            start_message_id = user_task.start_message_id
+            end_message_id = user_task.end_message_id
+        else:
+            start_message_id = scope.compact_todos[0].start_message_id
+            end_message_id = scope.compact_todos[-1].end_message_id
+
+        if start_message_id is None or end_message_id is None:
+            raise TaskManagerError("Compact scope is missing message boundaries")
+        return CompactMessageScope(start_message_id=start_message_id, end_message_id=end_message_id)
+
     def begin_compact_buffer(self) -> None:
         self._compact_buffer = CompactBuffer()
 
@@ -418,6 +443,23 @@ class TaskManager:
             raise TaskManagerError("Compacted todo is not finished")
         self._compact_buffer = None
         return todo
+
+    def format_compacted_messages(self) -> list["AgentMessage"]:
+        if self._compact_buffer is None or self._compact_buffer.todo is None:
+            raise TaskManagerError("No compacted todo")
+        compacted_todo = self._compact_buffer.todo
+        if compacted_todo.status != "done":
+            raise TaskManagerError("Compacted todo is not finished")
+        tool_refs = [
+            child.tool_call_log_id
+            for child in compacted_todo.children
+            if child.kind == "tool_call" and child.tool_call_log_id is not None
+        ]
+        text = (
+            f"Compacted todo: {compacted_todo.result or compacted_todo.title}\n"
+            f"Useful tool calls: {tool_refs}"
+        )
+        return [AssistantMessage(role="assistant", content=[TextContent(text=text)])]
 
     def create_compact_tools(self) -> list[AgentTool]:
         create_tool = AgentTool(
@@ -597,7 +639,6 @@ class TaskManager:
             if child.id in task_ids:
                 return index
         return len(user_task.children)
-
 
 class _TaskTreeReviewRenderer:
     def __init__(

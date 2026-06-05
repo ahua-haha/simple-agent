@@ -515,6 +515,53 @@ def test_compact_tools_create_one_finished_compacted_todo():
     assert [child.tool_call_log_id for child in result.children] == [5]
 
 
+def test_compact_message_scope_uses_finished_todo_boundaries_when_running():
+    db = _make_db()
+    manager = TaskManager(db)
+    _load(manager, None)
+    manager.create_user_task("Build feature", start_message_id=1)
+    first = manager.create_todo("One", start_message_id=2)
+    manager.finish_task("done", end_message_id=4)
+    manager.create_todo("Two", start_message_id=6)
+
+    scope = manager.compact_message_scope(run_done=False)
+
+    assert first.start_message_id == 2
+    assert scope.start_message_id == 2
+    assert scope.end_message_id == 4
+
+
+def test_compact_message_scope_uses_user_task_boundaries_when_done():
+    db = _make_db()
+    manager = TaskManager(db)
+    _load(manager, None)
+    manager.create_user_task("Build feature", start_message_id=1)
+    manager.record_tool_call(10)
+    manager.finish_user_task(end_message_id=8)
+
+    scope = manager.compact_message_scope(run_done=True)
+
+    assert scope.start_message_id == 1
+    assert scope.end_message_id == 8
+
+
+def test_format_compacted_messages_returns_summary_message():
+    db = _make_db()
+    manager = TaskManager(db)
+    _load(manager, None)
+    manager.create_user_task("Build feature")
+    manager.begin_compact_buffer()
+    manager.create_compacted_todo("Summary")
+    manager.record_compacted_tool_call(5)
+    manager.finish_compacted_todo()
+
+    messages = manager.format_compacted_messages()
+
+    assert len(messages) == 1
+    assert messages[0].role == "assistant"
+    assert messages[0].content[0].text == "Compacted todo: Summary\nUseful tool calls: [5]"
+
+
 def test_replace_compact_scope_persists_rebuilt_task_tree():
     db = _make_db()
     manager = TaskManager(db)
