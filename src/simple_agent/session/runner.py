@@ -352,16 +352,13 @@ class SessionRunner:
         self._cancel_event.set()
 
     async def handle_compact(self, user_input: str | None, *, run_done: bool = False) -> RunnerAction:
-        scope = self._task_manager.compact_scope(run_done=run_done)
-        if scope is None:
+        if not self._task_manager.begin_compact(run_done=run_done):
             return self.exit(
                 next_action="wait_user_input" if run_done else "normal_run",
                 clear_cancel=True,
             )
 
-        self._task_manager.begin_compact_buffer()
         compact_instruction = self._task_manager.compact_instruction_text(
-            scope,
             session_id=self._session_id,
         )
         compact_messages = [
@@ -391,17 +388,11 @@ class SessionRunner:
             )
             compact_messages.extend(tool_results)
 
-        message_scope = self._task_manager.compact_message_scope(run_done=run_done)
-        if message_scope is None:
-            return self.exit(
-                next_action="wait_user_input" if run_done else "normal_run",
-                clear_cancel=True,
-            )
-        compacted_messages = self._task_manager.format_compacted_messages()
+        start_message_id, end_message_id, compacted_messages = self._task_manager.compacted_messages()
         replacement_messages = self._replace_message_range(
             messages=list(self._messages),
-            start_message_id=message_scope.start_message_id,
-            end_message_id=message_scope.end_message_id,
+            start_message_id=start_message_id,
+            end_message_id=end_message_id,
             replacement_messages=[
                 MessageEntry(id=self._allocate_message_id(), message=message)
                 for message in compacted_messages
@@ -415,7 +406,7 @@ class SessionRunner:
                 messages=replacement_messages,
                 session=session,
             )
-            self._task_manager.replace_compact_scope(run_done=run_done, session=session)
+            self._task_manager.sync_compaction(session=session)
             self.sync_metadata(session=session)
             session.commit()
 

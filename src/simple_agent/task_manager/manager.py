@@ -17,23 +17,120 @@ if TYPE_CHECKING:
     from sqlmodel import Session
 
 
-@dataclass(frozen=True)
-class CompactScope:
-    compact_todos: list[ManagedTask]
-    preserved_todos: list[ManagedTask]
-    compact_tasks: list[ManagedTask]
-    preserved_tasks: list[ManagedTask]
+class BaseCompaction:
+    def __init__(self, *, user_task: ManagedTask):
+        self.user_task = user_task
+        self.to_compact_tasks = self._select_to_compact_tasks()
+        self.result: ManagedTask | None = None
+
+    def has_tasks(self) -> bool:
+        return bool(self.to_compact_tasks)
+
+    def create_result(self, *, task_id: int, description: str) -> ManagedTask:
+        if self.result is not None:
+            raise TaskManagerError("Compacted todo already exists")
+        self.result = ManagedTask(kind="todo", title="Compacted work", status="active", result=description, id=task_id)
+        return self.result
+
+    def record_tool_call(self, *, task_id: int, tool_call_log_id: int) -> None:
+        result = self._require_result()
+        tool_call_task = ManagedTask(
+            kind="tool_call",
+            title=f"Tool call {tool_call_log_id}",
+            status="done",
+            parent_id=result.id,
+            tool_call_log_id=tool_call_log_id,
+            id=task_id,
+        )
+        result.children.append(tool_call_task)
+        result.touch()
+
+    def finish_result(self) -> ManagedTask:
+        result = self._require_result()
+        result.status = "done"
+        return result
+
+    def message_scope(self) -> tuple[int, int]:
+        start_message_id, end_message_id = self._message_boundary()
+        if start_message_id is None or end_message_id is None:
+            raise TaskManagerError("Compact scope is missing message boundaries")
+        return start_message_id, end_message_id
+
+    def format_messages(self) -> list["AgentMessage"]:
+        result = self._require_result()
+        if result.status != "done":
+            raise TaskManagerError("Compacted todo is not finished")
+        tool_refs = [
+            child.tool_call_log_id
+            for child in result.children
+            if child.kind == "tool_call" and child.tool_call_log_id is not None
+        ]
+        text = (
+            f"Compacted todo: {result.result or result.title}\n"
+            f"Useful tool calls: {tool_refs}"
+        )
+        return [AssistantMessage(role="assistant", content=[TextContent(text=text)])]
+
+    def replace_in_user_task(self) -> ManagedTask:
+        result = self._require_result()
+        if result.status != "done":
+            raise TaskManagerError("Compacted todo is not finished")
+        original_result_id = result.id
+        result.id = self.to_compact_tasks[0].id
+        result.parent_id = self.user_task.id
+        for child in result.children:
+            if child.parent_id == original_result_id:
+                child.parent_id = result.id
+
+        compacted_ids = {task.id for task in self.to_compact_tasks}
+        insert_index = self._first_child_index()
+        self.user_task.children = [
+            child for child in self.user_task.children
+            if child.id not in compacted_ids
+        ]
+        self.user_task.children.insert(insert_index, result)
+        self.user_task.touch()
+        return result
+
+    def _message_boundary(self) -> tuple[int | None, int | None]:
+        raise NotImplementedError
+
+    def _select_to_compact_tasks(self) -> list[ManagedTask]:
+        raise NotImplementedError
+
+    def _require_result(self) -> ManagedTask:
+        if self.result is None:
+            raise TaskManagerError("No compacted todo")
+        return self.result
+
+    def _first_child_index(self) -> int:
+        task_ids = {task.id for task in self.to_compact_tasks}
+        for index, child in enumerate(self.user_task.children):
+            if child.id in task_ids:
+                return index
+        return len(self.user_task.children)
 
 
-@dataclass
-class CompactBuffer:
-    todo: ManagedTask | None = None
+class UserTaskCompaction(BaseCompaction):
+    def _select_to_compact_tasks(self) -> list[ManagedTask]:
+        return list(self.user_task.children)
+
+    def _message_boundary(self) -> tuple[int | None, int | None]:
+        return self.user_task.start_message_id, self.user_task.end_message_id
 
 
-@dataclass(frozen=True)
-class CompactMessageScope:
-    start_message_id: int
-    end_message_id: int
+class TodoTaskCompaction(BaseCompaction):
+    def _select_to_compact_tasks(self) -> list[ManagedTask]:
+        todos = [task for task in self.user_task.children if task.kind == "todo"]
+        finished = [todo for todo in todos if todo.status == "done"]
+        if not finished:
+            return []
+        latest_finished = finished[-1]
+        end_index = todos.index(latest_finished)
+        return todos[: end_index + 1]
+
+    def _message_boundary(self) -> tuple[int | None, int | None]:
+        return self.to_compact_tasks[0].start_message_id, self.to_compact_tasks[-1].end_message_id
 
 
 TaskTreeReviewFormat = Literal["tree", "flat"]
@@ -64,7 +161,7 @@ class TaskManager:
     _user_task: ManagedTask | None
     _active_todo: ManagedTask | None
     _next_task_id: int | None
-    _compact_buffer: CompactBuffer | None
+    _compaction: BaseCompaction | None
     current_assistant_message_id: int | None
 
     def __init__(self, db: Database):
@@ -74,7 +171,7 @@ class TaskManager:
         self._user_task: ManagedTask | None = None
         self._active_todo: ManagedTask | None = None
         self._next_task_id: int | None = None
-        self._compact_buffer: CompactBuffer | None = None
+        self._compaction: BaseCompaction | None = None
         self.current_assistant_message_id: int | None = None
 
     def load(self, active_user_task_id: int | None, *, session: Session) -> None:
@@ -83,7 +180,7 @@ class TaskManager:
         self.active_user_task_id = active_user_task_id
         self.active_todo_id = None
         self._next_task_id = self._db.next_managed_task_id(session=session)
-        self._compact_buffer = None
+        self._compaction = None
         self.current_assistant_message_id = None
         if active_user_task_id is None:
             return
@@ -321,43 +418,25 @@ class TaskManager:
     # Compact phase
     # ------------------------------------------------------------------
 
-    def compact_scope(self, *, run_done: bool) -> CompactScope | None:
+    def begin_compact(self, *, run_done: bool) -> bool:
         user_task = self._require_loaded_user_task() if run_done else self._require_active_user_task()
-
         if run_done:
-            compact_tasks = list(user_task.children)
-            if not compact_tasks:
-                return None
-            compact_todos = [task for task in compact_tasks if task.kind == "todo"]
-            return CompactScope(
-                compact_todos=compact_todos,
-                preserved_todos=[],
-                compact_tasks=compact_tasks,
-                preserved_tasks=[],
-            )
+            compaction = UserTaskCompaction(user_task=user_task)
+        else:
+            compaction = TodoTaskCompaction(user_task=user_task)
+        if not compaction.has_tasks():
+            self._compaction = None
+            return False
 
-        todos = [task for task in user_task.children if task.kind == "todo"]
-        finished = [todo for todo in todos if todo.status == "done"]
-        if not finished:
-            return None
-
-        latest_finished = finished[-1]
-        end_index = todos.index(latest_finished)
-        compact_todos = todos[: end_index + 1]
-        preserved_todos = todos[end_index + 1:]
-        return CompactScope(
-            compact_todos=compact_todos,
-            preserved_todos=preserved_todos,
-            compact_tasks=compact_todos,
-            preserved_tasks=preserved_todos,
-        )
+        self._compaction = compaction
+        return True
 
     def compact_instruction_text(
         self,
-        scope: CompactScope,
         *,
         session_id: str,
     ) -> str:
+        compaction = self._require_compaction()
         user_task = self._require_loaded_user_task()
         compact_root = ManagedTask(
             id=user_task.id,
@@ -366,7 +445,7 @@ class TaskManager:
             status=user_task.status,
             result=user_task.result,
             error=user_task.error,
-            children=list(scope.compact_tasks),
+            children=list(compaction.to_compact_tasks),
             created_at=user_task.created_at,
             updated_at=user_task.updated_at,
         )
@@ -385,81 +464,10 @@ class TaskManager:
             f"{task_view.text}"
         )
 
-    def compact_message_scope(self, *, run_done: bool) -> CompactMessageScope | None:
-        scope = self.compact_scope(run_done=run_done)
-        if scope is None:
-            return None
-
-        user_task = self._require_loaded_user_task() if run_done else self._require_active_user_task()
-        if run_done:
-            start_message_id = user_task.start_message_id
-            end_message_id = user_task.end_message_id
-        else:
-            start_message_id = scope.compact_todos[0].start_message_id
-            end_message_id = scope.compact_todos[-1].end_message_id
-
-        if start_message_id is None or end_message_id is None:
-            raise TaskManagerError("Compact scope is missing message boundaries")
-        return CompactMessageScope(start_message_id=start_message_id, end_message_id=end_message_id)
-
-    def begin_compact_buffer(self) -> None:
-        self._compact_buffer = CompactBuffer()
-
-    def create_compacted_todo(self, description: str) -> ManagedTask:
-        if self._compact_buffer is None:
-            raise TaskManagerError("Compact buffer is not active")
-        if self._compact_buffer.todo is not None:
-            raise TaskManagerError("Compacted todo already exists")
-        todo = ManagedTask(kind="todo", title="Compacted work", status="active", result=description)
-        todo.id = self._allocate_task_id()
-        self._compact_buffer.todo = todo
-        return todo
-
-    def record_compacted_tool_call(self, tool_call_log_id: int) -> None:
-        if self._compact_buffer is None or self._compact_buffer.todo is None:
-            raise TaskManagerError("No compacted todo")
-        tool_call_task = ManagedTask(
-            kind="tool_call",
-            title=f"Tool call {tool_call_log_id}",
-            status="done",
-            parent_id=self._compact_buffer.todo.id,
-            tool_call_log_id=tool_call_log_id,
-        )
-        tool_call_task.id = self._allocate_task_id()
-        self._compact_buffer.todo.children.append(tool_call_task)
-        self._compact_buffer.todo.touch()
-
-    def finish_compacted_todo(self) -> ManagedTask:
-        if self._compact_buffer is None or self._compact_buffer.todo is None:
-            raise TaskManagerError("No compacted todo")
-        self._compact_buffer.todo.status = "done"
-        return self._compact_buffer.todo
-
-    def consume_compact_buffer(self) -> ManagedTask:
-        if self._compact_buffer is None or self._compact_buffer.todo is None:
-            raise TaskManagerError("No compacted todo")
-        todo = self._compact_buffer.todo
-        if todo.status != "done":
-            raise TaskManagerError("Compacted todo is not finished")
-        self._compact_buffer = None
-        return todo
-
-    def format_compacted_messages(self) -> list["AgentMessage"]:
-        if self._compact_buffer is None or self._compact_buffer.todo is None:
-            raise TaskManagerError("No compacted todo")
-        compacted_todo = self._compact_buffer.todo
-        if compacted_todo.status != "done":
-            raise TaskManagerError("Compacted todo is not finished")
-        tool_refs = [
-            child.tool_call_log_id
-            for child in compacted_todo.children
-            if child.kind == "tool_call" and child.tool_call_log_id is not None
-        ]
-        text = (
-            f"Compacted todo: {compacted_todo.result or compacted_todo.title}\n"
-            f"Useful tool calls: {tool_refs}"
-        )
-        return [AssistantMessage(role="assistant", content=[TextContent(text=text)])]
+    def compacted_messages(self) -> tuple[int, int, list["AgentMessage"]]:
+        compaction = self._require_compaction()
+        start_message_id, end_message_id = compaction.message_scope()
+        return start_message_id, end_message_id, compaction.format_messages()
 
     def create_compact_tools(self) -> list[AgentTool]:
         create_tool = AgentTool(
@@ -475,7 +483,10 @@ class TaskManager:
         )
 
         async def create_execute(tool_call_id, params, cancel_event=None, on_update=None):
-            todo = self.create_compacted_todo(params["description"])
+            todo = self._require_compaction().create_result(
+                task_id=self._allocate_task_id(),
+                description=params["description"],
+            )
             return AgentToolResult(content=[TextContent(text=f"created compacted todo {todo.id}")])
 
         create_tool.execute = create_execute
@@ -493,7 +504,10 @@ class TaskManager:
         )
 
         async def record_execute(tool_call_id, params, cancel_event=None, on_update=None):
-            self.record_compacted_tool_call(params["tool_call_log_id"])
+            self._require_compaction().record_tool_call(
+                task_id=self._allocate_task_id(),
+                tool_call_log_id=params["tool_call_log_id"],
+            )
             return AgentToolResult(content=[TextContent(text="recorded compacted tool call")])
 
         record_tool.execute = record_execute
@@ -505,36 +519,17 @@ class TaskManager:
         )
 
         async def finish_execute(tool_call_id, params, cancel_event=None, on_update=None):
-            todo = self.finish_compacted_todo()
+            todo = self._require_compaction().finish_result()
             return AgentToolResult(content=[TextContent(text=f"finished compacted todo {todo.id}")])
 
         finish_tool.execute = finish_execute
         return [create_tool, record_tool, finish_tool]
 
-    def replace_compact_scope(self, *, run_done: bool, session: Session) -> ManagedTask:
-        user_task = self._require_loaded_user_task() if run_done else self._require_active_user_task()
-
-        scope = self.compact_scope(run_done=run_done)
-        if scope is None:
-            raise TaskManagerError("No compact scope")
-        compacted_todo = self.consume_compact_buffer()
-        compacted_original_id = compacted_todo.id
-        compacted_todo.id = scope.compact_tasks[0].id
-        compacted_todo.parent_id = user_task.id
-        for child in compacted_todo.children:
-            if child.parent_id == compacted_original_id:
-                child.parent_id = compacted_todo.id
-
-        compacted_scope_id_set = {task.id for task in scope.compact_tasks}
-        insert_index = self._first_child_index(user_task, scope.compact_tasks)
-        user_task.children = [
-            child for child in user_task.children
-            if child.id not in compacted_scope_id_set
-        ]
-        user_task.children.insert(insert_index, compacted_todo)
-        user_task.touch()
-
-        self._db.replace_managed_task_tree(user_task, session=session)
+    def sync_compaction(self, *, session: Session) -> ManagedTask:
+        compaction = self._require_compaction()
+        compacted_todo = compaction.replace_in_user_task()
+        self._db.replace_managed_task_tree(compaction.user_task, session=session)
+        self._compaction = None
         return compacted_todo
 
     # ------------------------------------------------------------------
@@ -589,6 +584,11 @@ class TaskManager:
             raise TaskManagerError("No active todo")
         return self._active_todo
 
+    def _require_compaction(self) -> BaseCompaction:
+        if self._compaction is None:
+            raise TaskManagerError("Compaction is not active")
+        return self._compaction
+
     def _walk_tasks(self) -> list[ManagedTask]:
         if self._user_task is None:
             return []
@@ -632,13 +632,6 @@ class TaskManager:
         if not isinstance(payload, dict):
             return None
         return payload.get("arguments")
-
-    def _first_child_index(self, user_task: ManagedTask, tasks: list[ManagedTask]) -> int:
-        task_ids = {task.id for task in tasks}
-        for index, child in enumerate(user_task.children):
-            if child.id in task_ids:
-                return index
-        return len(user_task.children)
 
 class _TaskTreeReviewRenderer:
     def __init__(
