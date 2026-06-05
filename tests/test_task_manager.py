@@ -7,7 +7,7 @@ import tempfile
 import pytest
 
 from simple_agent.db.db import Database
-from simple_agent.task_manager import TaskManager, TaskManagerError
+from simple_agent.task_manager import TaskManager, TaskManagerError, ToolCallReview
 from simple_agent.task_manager.models import ManagedTask
 
 
@@ -276,6 +276,99 @@ def test_user_instruction_with_active_todo_after_many_tools_asks_to_finish_if_do
     assert "More than 10 tool calls have run for the active todo" in instruction
     assert "determine whether the active todo is finished" in instruction.lower()
     assert "call finish_todo now" in instruction
+
+
+def test_review_task_tree_renders_tasks_and_tool_calls_with_temp_sequence():
+    db = _make_db()
+    manager = TaskManager(db)
+    _load(manager, None)
+    manager.create_user_task("Build feature")
+    manager.record_tool_call(10)
+    todo = manager.create_todo("Inspect files")
+    manager.record_tool_call(11)
+    manager.finish_task("Found manager.py")
+    manager.record_tool_call(12)
+
+    review = manager.review_task_tree(
+        tool_calls={
+            10: ToolCallReview(name="ls", arguments={"path": "."}),
+            11: ToolCallReview(name="sed", arguments={"file": "manager.py"}),
+            12: ToolCallReview(name="rg", arguments={"pattern": "TaskManager"}),
+        }
+    )
+
+    assert review.text == "\n".join(
+        [
+            "Task tree:",
+            "- user_task [active] Build feature",
+            '  - tool_call 1. ls args: {"path":"."}',
+            "  - todo [done] Inspect files",
+            "    result: Found manager.py",
+            '    - tool_call 2. sed args: {"file":"manager.py"}',
+            '  - tool_call 3. rg args: {"pattern":"TaskManager"}',
+        ]
+    )
+    assert review.tool_call_log_ids == {1: 10, 2: 11, 3: 12}
+    assert "log_id" not in review.text
+    assert "parent:" not in review.text
+
+
+def test_review_task_tree_depth_limits_tree_and_keeps_direct_tool_calls():
+    db = _make_db()
+    manager = TaskManager(db)
+    _load(manager, None)
+    manager.create_user_task("Build feature")
+    manager.record_tool_call(10)
+    manager.create_todo("Inspect files")
+    manager.record_tool_call(11)
+
+    review = manager.review_task_tree(
+        depth=1,
+        tool_calls={
+            10: ToolCallReview(name="ls", arguments={"path": "."}),
+            11: ToolCallReview(name="sed", arguments={"file": "manager.py"}),
+        },
+    )
+
+    assert review.text == "\n".join(
+        [
+            "Task tree:",
+            "- user_task [active] Build feature",
+            '  - tool_call 1. ls args: {"path":"."}',
+            "  - todo [active] Inspect files",
+        ]
+    )
+    assert review.tool_call_log_ids == {1: 10}
+    assert "sed" not in review.text
+
+
+def test_review_task_tree_flat_format_flattens_tool_calls_under_user_task():
+    db = _make_db()
+    manager = TaskManager(db)
+    _load(manager, None)
+    manager.create_user_task("Build feature")
+    manager.record_tool_call(10)
+    manager.create_todo("Inspect files")
+    manager.record_tool_call(11)
+
+    review = manager.review_task_tree(
+        format="flat",
+        tool_calls={
+            10: ToolCallReview(name="ls", arguments={"path": "."}),
+            11: ToolCallReview(name="sed", arguments={"file": "manager.py"}),
+        },
+    )
+
+    assert review.text == "\n".join(
+        [
+            "Task tree:",
+            "- user_task [active] Build feature",
+            '  - tool_call 1. ls args: {"path":"."}',
+            '  - tool_call 2. sed args: {"file":"manager.py"}',
+        ]
+    )
+    assert review.tool_call_log_ids == {1: 10, 2: 11}
+    assert "todo" not in review.text
 
 
 def test_mixed_user_task_order_is_preserved():
