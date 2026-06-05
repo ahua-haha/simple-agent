@@ -9,7 +9,6 @@ from typing import Any, TYPE_CHECKING, Literal, Mapping
 from pi.agent import AgentTool, AgentToolResult
 from pi.ai.types import TextContent
 
-from simple_agent.json_utils import json_safe
 from simple_agent.task_manager.models import ManagedTask
 
 if TYPE_CHECKING:
@@ -676,7 +675,9 @@ class _TaskTreeReviewRenderer:
     def _format_arguments(self, arguments: Any) -> str:
         if isinstance(arguments, str):
             return arguments
-        return json.dumps(json_safe(arguments), sort_keys=True, separators=(",", ":"))
+        if hasattr(arguments, "model_dump_json"):
+            return arguments.model_dump_json()
+        return json.dumps(arguments, separators=(",", ":"))
 
     def _indent(self, depth: int) -> str:
         return "  " * depth

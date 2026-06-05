@@ -4,13 +4,11 @@ from __future__ import annotations
 
 import asyncio
 import logging
-import json
 import time
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Callable, Literal
 
 from pi.ai.types import AssistantMessage, TextContent, ToolCall, ToolResultMessage, UserMessage
-from simple_agent.json_utils import json_safe
 from simple_agent.token_estimation import estimate_messages_tokens
 from simple_agent.tool.common_tools import create_all_coding_tools
 
@@ -167,8 +165,8 @@ class SessionRunner:
                 session_id=self._session_id,
                 tool_call_id=pending.tool_result.tool_call_id,
                 tool_name=pending.tool_result.tool_name,
-                tool_call_json=self._tool_call_json(pending.tool_call),
-                tool_result_json=self._tool_result_json(pending.tool_result),
+                tool_call_json=pending.tool_call.model_dump_json() if pending.tool_call is not None else "null",
+                tool_result_json=pending.tool_result.model_dump_json(),
                 session=session,
             )
 
@@ -409,12 +407,6 @@ class SessionRunner:
         message_id = self._next_message_id
         self._next_message_id += 1
         return message_id
-
-    def _tool_call_json(self, tool_call: ToolCall | None) -> str:
-        return json.dumps(json_safe(tool_call), sort_keys=True, separators=(",", ":"))
-
-    def _tool_result_json(self, tool_result: ToolResultMessage) -> str:
-        return json.dumps(json_safe(tool_result), sort_keys=True, separators=(",", ":"))
 
     def _user_task_is_done(self) -> bool:
         user_task = self._task_manager.active_user_task
