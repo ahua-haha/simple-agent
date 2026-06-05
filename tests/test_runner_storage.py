@@ -37,12 +37,48 @@ def test_runner_messages_insert_and_load_in_append_order(tmp_path):
     msg1 = AssistantMessage(role="assistant", content=[TextContent(text="one")])
     msg2 = AssistantMessage(role="assistant", content=[TextContent(text="two")])
 
-    db.insert_runner_message("session_a", msg1)
-    db.insert_runner_message("session_a", msg2)
+    id1 = db.insert_runner_message("session_a", msg1)
+    id2 = db.insert_runner_message("session_a", msg2)
 
     messages = db.list_runner_messages("session_a")
 
+    assert id1 != id2
     assert [m.content[0].text for m in messages] == ["one", "two"]
+
+
+def test_runner_message_record_uses_seq_for_order_and_id_for_identity(tmp_path):
+    db_path = tmp_path / "session.db"
+    db = Database(str(db_path))
+    msg1 = AssistantMessage(role="assistant", content=[TextContent(text="one")])
+    msg2 = AssistantMessage(role="assistant", content=[TextContent(text="two")])
+
+    stable_id = db.insert_runner_message("session_a", msg1)
+    db.insert_runner_message("session_a", msg2)
+
+    with sqlite3.connect(db_path) as conn:
+        columns = conn.execute("PRAGMA table_info(runnermessagerecord)").fetchall()
+        column_by_name = {column[1]: column for column in columns}
+        assert column_by_name["seq"][5] == 1
+        assert column_by_name["id"][5] == 0
+        conn.execute(
+            "UPDATE runnermessagerecord SET seq = 99 WHERE id = ?",
+            (stable_id,),
+        )
+
+    with sqlite3.connect(db_path) as conn:
+        records = conn.execute(
+            """
+            SELECT id
+            FROM runnermessagerecord
+            WHERE session_id = ?
+            ORDER BY seq
+            """,
+            ("session_a",),
+        ).fetchall()
+    messages = db.list_runner_messages("session_a")
+
+    assert [record[0] for record in records] == [stable_id + 1, stable_id]
+    assert [message.content[0].text for message in messages] == ["two", "one"]
 
 
 def test_replace_runner_messages_rewrites_whole_message_table(tmp_path):

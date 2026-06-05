@@ -185,16 +185,17 @@ class Database:
         session_id: str,
         message: AgentMessage,
         *,
+        id: int | None = None,
         session: Session | None = None,
-    ) -> None:
-        session.add(
-            RunnerMessageRecord(
-                session_id=session_id,
-                role=message.role,
-                content_json=agent_message_to_json(message),
-                timestamp_ms=getattr(message, "timestamp", None),
-            )
+    ) -> int:
+        record = RunnerMessageRecord(
+            id=id,
+            session_id=session_id,
+            role=message.role,
+            content_json=agent_message_to_json(message),
+            timestamp_ms=getattr(message, "timestamp", None),
         )
+        session.add(record)
 
     @standalone_or_compose
     def replace_runner_messages(
@@ -222,7 +223,7 @@ class Database:
             session.exec(
                 select(RunnerMessageRecord)
                 .where(RunnerMessageRecord.session_id == session_id)
-                .order_by(RunnerMessageRecord.id)
+                .order_by(RunnerMessageRecord.seq)
             ).all()
         )
         return [agent_message_from_json(record.content_json) for record in records]

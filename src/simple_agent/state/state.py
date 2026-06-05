@@ -56,7 +56,8 @@ class RunnerStateMetadataRecord(SQLModel, table=True):
 class RunnerMessageRecord(SQLModel, table=True):
     """SQLite model for ordered session-runner messages."""
 
-    id: int | None = Field(default=None, primary_key=True)
+    seq: int | None = Field(default=None, primary_key=True)
+    id: int | None = Field(default=None, index=True, unique=True)
     session_id: str = Field(index=True)
     role: str = Field(index=True)
     content_json: str
