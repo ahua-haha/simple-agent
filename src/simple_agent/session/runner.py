@@ -6,7 +6,7 @@ import asyncio
 import logging
 import time
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Callable, Literal
+from typing import TYPE_CHECKING, Callable, Literal, TypeAlias
 
 from pi.ai.types import AssistantMessage, TextContent, ToolCall, ToolResultMessage, UserMessage
 from simple_agent.token_estimation import estimate_messages_tokens
@@ -38,16 +38,12 @@ tool-call log IDs, then finish the compacted todo."""
 
 
 @dataclass(frozen=True)
-class PendingToolCallRecord:
-    log_id: int
-    tool_call: ToolCall | None
-    tool_result: ToolResultMessage
-
-
-@dataclass(frozen=True)
 class MessageEntry:
     id: int
     message: AgentMessage
+
+
+ToolCallLogRecord: TypeAlias = tuple[int, ToolCall | None, ToolResultMessage]
 
 
 class SessionRunner:
@@ -158,47 +154,40 @@ class SessionRunner:
             session=session,
         )
 
-    def sync_tool_calls(self, tool_calls: list[PendingToolCallRecord], *, session: Session) -> None:
-        for pending in tool_calls:
+    def sync_tool_calls(self, tool_calls: list[ToolCallLogRecord], *, session: Session) -> None:
+        for log_id, tool_call, tool_result in tool_calls:
             self._db.insert_runner_tool_call(
-                id=pending.log_id,
+                id=log_id,
                 session_id=self._session_id,
-                tool_call_id=pending.tool_result.tool_call_id,
-                tool_name=pending.tool_result.tool_name,
-                tool_call_json=pending.tool_call.model_dump_json() if pending.tool_call is not None else "null",
-                tool_result_json=pending.tool_result.model_dump_json(),
+                tool_call_id=tool_result.tool_call_id,
+                tool_name=tool_result.tool_name,
+                tool_call_json=tool_call.model_dump_json() if tool_call is not None else "null",
+                tool_result_json=tool_result.model_dump_json(),
                 session=session,
             )
 
-    def record_tool_calls(
+    def tool_call_log_records(
         self,
         assistant_message: AssistantMessage,
         tool_results: list[ToolResultMessage],
-    ) -> list[PendingToolCallRecord]:
+    ) -> list[ToolCallLogRecord]:
         tool_calls = {
             content.id: content
             for content in assistant_message.content
             if isinstance(content, ToolCall)
         }
-        records: list[PendingToolCallRecord] = []
+        records: list[ToolCallLogRecord] = []
         for tool_result in tool_results:
             log_id = self._next_tool_call_log_id
             self._next_tool_call_log_id = log_id + 1
-            self._task_manager.record_tool_call(log_id)
-            records.append(
-                PendingToolCallRecord(
-                    log_id=log_id,
-                    tool_call=tool_calls.get(tool_result.tool_call_id),
-                    tool_result=tool_result,
-                )
-            )
+            records.append((log_id, tool_calls.get(tool_result.tool_call_id), tool_result))
         return records
 
     def sync_current_data(
         self,
         *,
         messages: list[MessageEntry] | None = None,
-        tool_calls: list[PendingToolCallRecord] | None = None,
+        tool_calls: list[ToolCallLogRecord] | None = None,
         session: Session,
     ) -> None:
         messages = messages or []
@@ -309,12 +298,10 @@ class SessionRunner:
             cancel_event=self._cancel_event,
         )
         if self._assistant_is_error(assistant_message):
-            self._last_error = self._error_message(assistant_message)
-            self._next_action = "handle_error"
-            return self._next_action
+            return self.exit(next_action="handle_error", error=assistant_message)
 
         tool_results: list[ToolResultMessage] = []
-        pending_tool_calls: list[PendingToolCallRecord] = []
+        tool_call_records: list[ToolCallLogRecord] = []
         has_tool_calls = self._assistant_has_tool_calls(assistant_message)
         assistant_message_id = self._allocate_message_id()
         if has_tool_calls:
@@ -327,7 +314,9 @@ class SessionRunner:
                 )
             finally:
                 self._task_manager.current_assistant_message_id = None
-            pending_tool_calls = self.record_tool_calls(assistant_message, tool_results)
+            tool_call_records = self.tool_call_log_records(assistant_message, tool_results)
+            for log_id, _tool_call, _tool_result in tool_call_records:
+                self._task_manager.record_tool_call(log_id)
 
         pending_messages = [
             MessageEntry(id=assistant_message_id, message=assistant_message),
@@ -342,23 +331,23 @@ class SessionRunner:
             self._task_manager.finish_user_task(end_message_id=assistant_message_id)
             self._next_action = "compact"
         else:
-            self.pause_for_compaction_if_needed(pending_tool_calls=pending_tool_calls)
+            self.pause_for_compaction_if_needed(tool_call_records=tool_call_records)
 
         with self._db.create_session() as session:
             self.sync_current_data(
                 messages=pending_messages,
-                tool_calls=pending_tool_calls,
+                tool_calls=tool_call_records,
                 session=session,
             )
             session.commit()
         return self._next_action
 
-    def pause_for_compaction_if_needed(self, *, pending_tool_calls: list[PendingToolCallRecord] | None = None) -> None:
-        pending_tool_calls = pending_tool_calls or []
+    def pause_for_compaction_if_needed(self, *, tool_call_records: list[ToolCallLogRecord] | None = None) -> None:
+        tool_call_records = tool_call_records or []
         context_tokens = estimate_messages_tokens(self._message_values())
         with self._db.create_session() as session:
             tool_calls = len(self._db.list_runner_tool_calls(self._session_id, session=session))
-        tool_calls += len(pending_tool_calls)
+        tool_calls += len(tool_call_records)
         if (
             context_tokens <= self._context_token_threshold
             and tool_calls <= self._tool_call_threshold
@@ -371,12 +360,10 @@ class SessionRunner:
     async def handle_compact(self, user_input: str | None, *, run_done: bool = False) -> RunnerAction:
         scope = self._task_manager.compact_scope(run_done=run_done)
         if scope is None:
-            self._next_action = "wait_user_input" if run_done else "normal_run"
-            self._cancel_event.clear()
-            with self._db.create_session() as session:
-                self.sync_metadata(session=session)
-                session.commit()
-            return self._next_action
+            return self.exit(
+                next_action="wait_user_input" if run_done else "normal_run",
+                clear_cancel=True,
+            )
 
         self._task_manager.begin_compact_buffer()
         compact_instruction = self._task_manager.compact_instruction_text(
@@ -400,9 +387,7 @@ class SessionRunner:
             )
             compact_messages.append(assistant_message)
             if self._assistant_is_error(assistant_message):
-                self._last_error = self._error_message(assistant_message)
-                self._next_action = "handle_error"
-                return self._next_action
+                return self.exit(next_action="handle_error", error=assistant_message)
             if not self._assistant_has_tool_calls(assistant_message):
                 break
             tool_results = await self._agent_process.run_tool_calls_step(
@@ -414,12 +399,10 @@ class SessionRunner:
 
         message_scope = self._task_manager.compact_message_scope(run_done=run_done)
         if message_scope is None:
-            self._next_action = "wait_user_input" if run_done else "normal_run"
-            self._cancel_event.clear()
-            with self._db.create_session() as session:
-                self.sync_metadata(session=session)
-                session.commit()
-            return self._next_action
+            return self.exit(
+                next_action="wait_user_input" if run_done else "normal_run",
+                clear_cancel=True,
+            )
         compacted_messages = self._task_manager.format_compacted_messages()
         replacement_messages = self._replace_message_range(
             messages=list(self._messages),
@@ -512,6 +495,23 @@ class SessionRunner:
     def _user_task_is_done(self) -> bool:
         user_task = self._task_manager.active_user_task
         return user_task is not None and user_task.status == "done"
+
+    def exit(
+        self,
+        *,
+        next_action: RunnerAction,
+        error: Exception | AssistantMessage | str | None = None,
+        clear_cancel: bool = False,
+    ) -> RunnerAction:
+        if error is not None:
+            self._last_error = self._error_message(error)
+        self._next_action = next_action
+        if clear_cancel:
+            self._cancel_event.clear()
+        with self._db.create_session() as session:
+            self.sync_metadata(session=session)
+            session.commit()
+        return self._next_action
 
     def handle_error(self, error: Exception | AssistantMessage | str | None = None) -> RunnerAction:
         if error is not None:

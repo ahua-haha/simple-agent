@@ -654,7 +654,7 @@ def test_handle_input_appends_user_message(tmp_path):
     assert messages[0].content[0].text == "Build feature"
 
 
-def test_record_tool_calls_returns_results_until_sync(tmp_path):
+def test_tool_call_log_records_pair_results_assign_ids_then_sync(tmp_path):
     db = Database(str(tmp_path / "session.db"))
     task_manager = TaskManager(db)
     _load_task_manager(task_manager, None)
@@ -679,12 +679,14 @@ def test_record_tool_calls_returns_results_until_sync(tmp_path):
         content=[TextContent(text="done")],
     )
 
-    records = runner.record_tool_calls(assistant_message, [tool_result])
+    records = runner.tool_call_log_records(assistant_message, [tool_result])
 
-    assert len(records) == 1
-    assert records[0].tool_call is tool_call
-    assert records[0].tool_result is tool_result
+    assert records == [(0, tool_call, tool_result)]
+    assert todo.children == []
     assert db.list_runner_tool_calls("session_a") == []
+
+    for log_id, _tool_call, _tool_result in records:
+        task_manager.record_tool_call(log_id)
 
     with db.create_session() as session:
         runner.sync_tool_calls(records, session=session)
@@ -931,7 +933,9 @@ async def test_handle_running_error_message_sets_handle_error_action_without_han
     assert next_action == "handle_error"
     assert runner._next_action == "handle_error"
     assert runner._last_error == "HTTP 400 Bad Request"
-    assert db.get_runner_state_metadata("session_a") is None
+    metadata = db.get_runner_state_metadata("session_a")
+    assert metadata.next_action == "handle_error"
+    assert metadata.last_error == "HTTP 400 Bad Request"
 
 
 @pytest.mark.asyncio
