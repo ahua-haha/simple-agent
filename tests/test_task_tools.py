@@ -26,6 +26,12 @@ def _save(manager: TaskManager) -> None:
         session.commit()
 
 
+def _create_todo(manager: TaskManager, title: str):
+    todo = manager.active_lifecycle_for_tools().create_todo_task(title=title)
+    manager.refresh_active_task_state()
+    return todo
+
+
 def test_create_todo_tool_creates_active_todo():
     db = _make_db()
     manager = TaskManager(db)
@@ -51,7 +57,7 @@ def test_finish_todo_tool_finishes_active_todo():
     manager = TaskManager(db)
     _load(manager, None)
     user_task = manager.create_user_task("Build feature")
-    todo = manager.create_todo("Inspect files")
+    todo = _create_todo(manager, "Inspect files")
     lifecycle = TodoTaskLifecycle(todo, user_task=user_task)
     tool = lifecycle.create_finish_todo_tool()
 
@@ -76,7 +82,7 @@ def test_error_todo_tool_returns_latest_todo_status():
     manager = TaskManager(db)
     _load(manager, None)
     user_task = manager.create_user_task("Build feature")
-    todo = manager.create_todo("Inspect files")
+    todo = _create_todo(manager, "Inspect files")
     lifecycle = TodoTaskLifecycle(todo, user_task=user_task)
     tool = lifecycle.create_error_todo_tool()
 
@@ -128,7 +134,7 @@ def test_active_todo_tools_include_todo_lifecycle_tools():
     manager = TaskManager(db)
     _load(manager, None)
     user_task = manager.create_user_task("Build feature")
-    todo = manager.create_todo("Inspect files")
+    todo = _create_todo(manager, "Inspect files")
     lifecycle = TodoTaskLifecycle(todo, user_task=user_task)
 
     tools = [tool.name for tool in lifecycle.create_tools()]
@@ -152,7 +158,7 @@ def test_task_manager_create_tools_delegates_to_active_todo():
     manager = TaskManager(db)
     _load(manager, None)
     manager.create_user_task("Build feature")
-    manager.create_todo("Inspect files")
+    _create_todo(manager, "Inspect files")
 
     tools = [tool.name for tool in manager.create_tools()]
 

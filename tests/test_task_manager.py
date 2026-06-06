@@ -8,7 +8,7 @@ import pytest
 from pi.ai.types import AssistantMessage, TextContent, ToolCall, ToolResultMessage
 
 from simple_agent.db.db import Database
-from simple_agent.task_manager import TaskManager, TaskManagerError, ToolCallReview
+from simple_agent.task_manager import TaskManager, ToolCallReview
 from simple_agent.task_manager.lifecycle import TodoTaskLifecycle, UserTaskLifecycle
 from simple_agent.task_manager.models import TaskRuntimeContext, TodoTask, UserTask
 
@@ -46,6 +46,52 @@ def _runtime_context(manager: TaskManager) -> TaskRuntimeContext:
         total_tool_calls=0,
         active_task_tool_calls=manager.active_task_tool_call_count(),
     )
+
+
+def _create_todo(
+    manager: TaskManager,
+    title: str,
+    *,
+    start_message_id: int | None = None,
+) -> TodoTask:
+    todo = manager.active_lifecycle_for_tools().create_todo_task(
+        title=title,
+        start_message_id=start_message_id,
+    )
+    manager.refresh_active_task_state()
+    return todo
+
+
+def _finish_todo(
+    manager: TaskManager,
+    result: str | None = None,
+    *,
+    end_message_id: int | None = None,
+) -> TodoTask:
+    todo = manager.active_lifecycle_for_tools().finish_task(
+        result=result,
+        end_message_id=end_message_id,
+    )
+    manager.refresh_active_task_state()
+    return todo
+
+
+def _error_todo(
+    manager: TaskManager,
+    error: str,
+    *,
+    end_message_id: int | None = None,
+) -> TodoTask:
+    todo = manager.active_lifecycle_for_tools().error_task(
+        error=error,
+        end_message_id=end_message_id,
+    )
+    manager.refresh_active_task_state()
+    return todo
+
+
+def _record_tool_call(manager: TaskManager, tool_call_log_id: int):
+    return manager.active_lifecycle_for_tools().record_tool_call(tool_call_log_id)
 
 
 async def _run_compact_tools(
@@ -167,8 +213,8 @@ def test_task_manager_save_syncs_each_task_in_tree():
     manager = TaskManager(db)
     _load(manager, None)
     user_task = manager.create_user_task("Build feature")
-    todo = manager.create_todo("Inspect files")
-    tool_call = manager.record_tool_call(7)
+    todo = _create_todo(manager, "Inspect files")
+    tool_call = _record_tool_call(manager, 7)
 
     _save(manager)
 
@@ -201,7 +247,7 @@ def test_create_todo_appends_child_task_to_user_task():
     _load(manager, None)
     user_task = manager.create_user_task("Build feature")
 
-    todo = manager.create_todo("Inspect files")
+    todo = _create_todo(manager, "Inspect files")
 
     assert todo.parent_id == user_task.id
     assert manager.active_todo_id == todo.id
@@ -216,15 +262,17 @@ def test_create_todo_appends_child_task_to_user_task():
     assert [task.id for task in loaded_user_task.children] == [todo.id]
 
 
-def test_create_todo_rejects_existing_active_todo():
+def test_task_manager_does_not_expose_lifecycle_mutation_wrappers():
     db = _make_db()
     manager = TaskManager(db)
     _load(manager, None)
     manager.create_user_task("Build feature")
-    manager.create_todo("Inspect files")
+    _create_todo(manager, "Inspect files")
 
-    with pytest.raises(TaskManagerError, match="active todo"):
-        manager.create_todo("Edit files")
+    assert not hasattr(manager, "create_todo")
+    assert not hasattr(manager, "finish_task")
+    assert not hasattr(manager, "error_task")
+    assert not hasattr(manager, "record_tool_call")
 
 
 def test_finish_todo_marks_done_and_clears_active_todo():
@@ -232,9 +280,9 @@ def test_finish_todo_marks_done_and_clears_active_todo():
     manager = TaskManager(db)
     _load(manager, None)
     manager.create_user_task("Build feature")
-    todo = manager.create_todo("Inspect files")
+    todo = _create_todo(manager, "Inspect files")
 
-    finished = manager.finish_task("Found app.py", end_message_id=21)
+    finished = _finish_todo(manager, "Found app.py", end_message_id=21)
 
     assert finished.id == todo.id
     assert finished.status == "done"
@@ -243,14 +291,13 @@ def test_finish_todo_marks_done_and_clears_active_todo():
     assert manager.active_todo_id is None
 
 
-def test_finish_todo_rejects_missing_active_todo():
+def test_active_lifecycle_routes_to_user_task_without_active_todo():
     db = _make_db()
     manager = TaskManager(db)
     _load(manager, None)
-    manager.create_user_task("Build feature")
+    user_task = manager.create_user_task("Build feature")
 
-    with pytest.raises(TaskManagerError, match="No active todo"):
-        manager.finish_task()
+    assert manager.active_lifecycle_for_tools().task is user_task
 
 
 def test_create_todo_stores_start_message_id():
@@ -259,7 +306,7 @@ def test_create_todo_stores_start_message_id():
     _load(manager, None)
     manager.create_user_task("Build feature")
 
-    todo = manager.create_todo("Inspect files", start_message_id=12)
+    todo = _create_todo(manager, "Inspect files", start_message_id=12)
 
     assert todo.start_message_id == 12
 
@@ -269,9 +316,9 @@ def test_error_todo_stores_end_message_id():
     manager = TaskManager(db)
     _load(manager, None)
     manager.create_user_task("Build feature")
-    todo = manager.create_todo("Inspect files")
+    todo = _create_todo(manager, "Inspect files")
 
-    errored = manager.error_task("failed", end_message_id=13)
+    errored = _error_todo(manager, "failed", end_message_id=13)
 
     assert errored.id == todo.id
     assert errored.status == "error"
@@ -285,8 +332,9 @@ def test_task_tools_use_current_assistant_message_id_for_boundaries():
     manager.create_user_task("Build feature")
     manager.set_current_assistant_message_id(22)
 
-    todo = manager.create_todo("Inspect files")
-    finished = manager.finish_task("Done")
+    todo = _create_todo(manager, "Inspect files")
+    manager.set_current_assistant_message_id(22)
+    finished = _finish_todo(manager, "Done")
 
     assert todo.start_message_id == 22
     assert finished.end_message_id == 22
@@ -318,7 +366,7 @@ def test_record_tool_call_without_active_todo_attaches_to_user_task():
     _load(manager, None)
     user_task = manager.create_user_task("Build feature")
 
-    tool_call_task = manager.record_tool_call(7)
+    tool_call_task = _record_tool_call(manager, 7)
     _save(manager)
     loaded_tool_call = db.get_managed_task(tool_call_task.id)
 
@@ -332,9 +380,9 @@ def test_record_tool_call_with_active_todo_attaches_to_todo():
     manager = TaskManager(db)
     _load(manager, None)
     manager.create_user_task("Build feature")
-    todo = manager.create_todo("Inspect files")
+    todo = _create_todo(manager, "Inspect files")
 
-    tool_call_task = manager.record_tool_call(8)
+    tool_call_task = _record_tool_call(manager, 8)
     _save(manager)
     loaded_tool_call = db.get_managed_task(tool_call_task.id)
 
@@ -348,7 +396,7 @@ def test_record_turn_tool_calls_appends_task_under_active_task():
     manager = TaskManager(db)
     _load(manager, None)
     manager.create_user_task("Build feature")
-    todo = manager.create_todo("Inspect files")
+    todo = _create_todo(manager, "Inspect files")
     assistant_message = AssistantMessage(
         role="assistant",
         content=[ToolCall(id="call_1", name="ls", arguments={"path": "."})],
@@ -388,10 +436,10 @@ def test_user_instruction_without_active_todo_after_many_tools_requires_todo():
     manager = TaskManager(db)
     _load(manager, None)
     manager.create_user_task("Build feature")
-    todo = manager.create_todo("Inspect files")
-    manager.finish_task("Done")
+    todo = _create_todo(manager, "Inspect files")
+    _finish_todo(manager, "Done")
     for tool_call_id in range(6):
-        manager.record_tool_call(tool_call_id)
+        _record_tool_call(manager, tool_call_id)
 
     instruction = manager.user_instruction_text(_runtime_context(manager))
 
@@ -405,7 +453,7 @@ def test_user_instruction_with_active_todo_focuses_on_current_todo():
     manager = TaskManager(db)
     _load(manager, None)
     manager.create_user_task("Build feature")
-    manager.create_todo("Inspect files")
+    _create_todo(manager, "Inspect files")
 
     instruction = manager.user_instruction_text(_runtime_context(manager))
 
@@ -418,9 +466,9 @@ def test_user_instruction_with_active_todo_after_many_tools_asks_to_finish_if_do
     manager = TaskManager(db)
     _load(manager, None)
     manager.create_user_task("Build feature")
-    manager.create_todo("Inspect files")
+    _create_todo(manager, "Inspect files")
     for tool_call_id in range(11):
-        manager.record_tool_call(tool_call_id)
+        _record_tool_call(manager, tool_call_id)
 
     instruction = manager.user_instruction_text(_runtime_context(manager))
 
@@ -434,7 +482,7 @@ def test_user_instruction_routes_to_active_todo_before_user_task():
     manager = TaskManager(db)
     _load(manager, None)
     manager.create_user_task("Build feature")
-    manager.create_todo("Inspect files")
+    _create_todo(manager, "Inspect files")
 
     instruction = manager.user_instruction_text(_runtime_context(manager))
 
@@ -447,11 +495,11 @@ def test_review_task_tree_renders_tasks_and_tool_calls_with_temp_sequence():
     manager = TaskManager(db)
     _load(manager, None)
     manager.create_user_task("Build feature")
-    manager.record_tool_call(10)
-    todo = manager.create_todo("Inspect files")
-    manager.record_tool_call(11)
-    manager.finish_task("Found manager.py")
-    manager.record_tool_call(12)
+    _record_tool_call(manager, 10)
+    todo = _create_todo(manager, "Inspect files")
+    _record_tool_call(manager, 11)
+    _finish_todo(manager, "Found manager.py")
+    _record_tool_call(manager, 12)
 
     review = manager.review_task_tree(
         tool_calls={
@@ -482,9 +530,9 @@ def test_review_task_tree_depth_limits_tree_and_keeps_direct_tool_calls():
     manager = TaskManager(db)
     _load(manager, None)
     manager.create_user_task("Build feature")
-    manager.record_tool_call(10)
-    manager.create_todo("Inspect files")
-    manager.record_tool_call(11)
+    _record_tool_call(manager, 10)
+    _create_todo(manager, "Inspect files")
+    _record_tool_call(manager, 11)
 
     review = manager.review_task_tree(
         depth=1,
@@ -511,9 +559,9 @@ def test_review_task_tree_flat_format_flattens_tool_calls_under_user_task():
     manager = TaskManager(db)
     _load(manager, None)
     manager.create_user_task("Build feature")
-    manager.record_tool_call(10)
-    manager.create_todo("Inspect files")
-    manager.record_tool_call(11)
+    _record_tool_call(manager, 10)
+    _create_todo(manager, "Inspect files")
+    _record_tool_call(manager, 11)
 
     review = manager.review_task_tree(
         format="flat",
@@ -541,10 +589,10 @@ def test_mixed_user_task_order_is_preserved():
     _load(manager, None)
     user_task = manager.create_user_task("Build feature")
 
-    manager.record_tool_call(1)
-    todo = manager.create_todo("Inspect files")
-    manager.finish_task()
-    manager.record_tool_call(2)
+    _record_tool_call(manager, 1)
+    todo = _create_todo(manager, "Inspect files")
+    _finish_todo(manager)
+    _record_tool_call(manager, 2)
 
     _save(manager)
     loaded_manager = TaskManager(db)
@@ -562,11 +610,11 @@ def test_begin_compact_selects_first_todo_through_latest_finished_todo_when_runn
     manager = TaskManager(db)
     _load(manager, None)
     manager.create_user_task("Build feature")
-    first = manager.create_todo("One")
-    manager.finish_task("done")
-    second = manager.create_todo("Two")
-    manager.finish_task("done")
-    manager.create_todo("Three")
+    first = _create_todo(manager, "One")
+    _finish_todo(manager, "done")
+    second = _create_todo(manager, "Two")
+    _finish_todo(manager, "done")
+    _create_todo(manager, "Three")
 
     assert manager.begin_compact(run_done=False) is True
     compaction = manager._require_compaction()
@@ -579,7 +627,7 @@ def test_begin_compact_returns_false_without_finished_todo_when_running():
     manager = TaskManager(db)
     _load(manager, None)
     manager.create_user_task("Build feature")
-    manager.create_todo("Still active")
+    _create_todo(manager, "Still active")
 
     assert manager.begin_compact(run_done=False) is False
 
@@ -589,10 +637,10 @@ def test_begin_compact_selects_whole_user_task_when_done():
     manager = TaskManager(db)
     _load(manager, None)
     manager.create_user_task("Build feature")
-    first_tool = manager.record_tool_call(10)
-    first = manager.create_todo("One")
-    manager.finish_task("done")
-    second_tool = manager.record_tool_call(11)
+    first_tool = _record_tool_call(manager, 10)
+    first = _create_todo(manager, "One")
+    _finish_todo(manager, "done")
+    second_tool = _record_tool_call(manager, 11)
 
     assert manager.begin_compact(run_done=True) is True
     compaction = manager._require_compaction()
@@ -605,10 +653,10 @@ def test_compact_instruction_text_includes_task_view_and_tool_call_directives():
     manager = TaskManager(db)
     _load(manager, None)
     manager.create_user_task("Build feature")
-    manager.record_tool_call(10)
-    todo = manager.create_todo("Inspect files")
-    manager.record_tool_call(11)
-    manager.finish_task("Found manager.py")
+    _record_tool_call(manager, 10)
+    todo = _create_todo(manager, "Inspect files")
+    _record_tool_call(manager, 11)
+    _finish_todo(manager, "Found manager.py")
     assert manager.begin_compact(run_done=False) is True
     db.insert_runner_tool_call(
         id=10,
@@ -647,8 +695,8 @@ async def test_compact_tools_create_one_finished_compacted_todo():
     manager = TaskManager(db)
     _load(manager, None)
     manager.create_user_task("Build feature", start_message_id=1)
-    manager.create_todo("Inspect files", start_message_id=2)
-    manager.finish_task("Done", end_message_id=4)
+    _create_todo(manager, "Inspect files", start_message_id=2)
+    _finish_todo(manager, "Done", end_message_id=4)
     assert manager.begin_compact(run_done=False) is True
 
     compacted_id = await _run_compact_tools(
@@ -670,9 +718,9 @@ async def test_compacted_messages_uses_finished_todo_boundaries_when_running():
     manager = TaskManager(db)
     _load(manager, None)
     manager.create_user_task("Build feature", start_message_id=1)
-    first = manager.create_todo("One", start_message_id=2)
-    manager.finish_task("done", end_message_id=4)
-    manager.create_todo("Two", start_message_id=6)
+    first = _create_todo(manager, "One", start_message_id=2)
+    _finish_todo(manager, "done", end_message_id=4)
+    _create_todo(manager, "Two", start_message_id=6)
     assert manager.begin_compact(run_done=False) is True
     await _run_compact_tools(manager, description="Summary")
 
@@ -689,7 +737,7 @@ async def test_compacted_messages_uses_user_task_boundaries_when_done():
     manager = TaskManager(db)
     _load(manager, None)
     manager.create_user_task("Build feature", start_message_id=1)
-    manager.record_tool_call(10)
+    _record_tool_call(manager, 10)
     manager.finish_user_task(end_message_id=8)
     assert manager.begin_compact(run_done=True) is True
     await _run_compact_tools(manager, description="Summary")
@@ -706,8 +754,8 @@ async def test_compacted_messages_returns_summary_message():
     manager = TaskManager(db)
     _load(manager, None)
     manager.create_user_task("Build feature", start_message_id=1)
-    manager.create_todo("Inspect files", start_message_id=2)
-    manager.finish_task("Done", end_message_id=4)
+    _create_todo(manager, "Inspect files", start_message_id=2)
+    _finish_todo(manager, "Done", end_message_id=4)
     assert manager.begin_compact(run_done=False) is True
     await _run_compact_tools(
         manager,
@@ -728,11 +776,11 @@ async def test_sync_compaction_persists_rebuilt_task_tree():
     manager = TaskManager(db)
     _load(manager, None)
     user_task = manager.create_user_task("Build feature")
-    first = manager.create_todo("One")
-    manager.finish_task("done", end_message_id=1)
-    second = manager.create_todo("Two")
-    manager.finish_task("done", end_message_id=2)
-    active = manager.create_todo("Three")
+    first = _create_todo(manager, "One")
+    _finish_todo(manager, "done", end_message_id=1)
+    second = _create_todo(manager, "Two")
+    _finish_todo(manager, "done", end_message_id=2)
+    active = _create_todo(manager, "Three")
     _save(manager)
     assert manager.begin_compact(run_done=False) is True
     compacted_buffer_id = await _run_compact_tools(
@@ -763,10 +811,10 @@ async def test_sync_compaction_replaces_whole_user_task_when_done():
     manager = TaskManager(db)
     _load(manager, None)
     user_task = manager.create_user_task("Build feature")
-    first_tool = manager.record_tool_call(10)
-    todo = manager.create_todo("One")
-    manager.finish_task("done", end_message_id=1)
-    second_tool = manager.record_tool_call(11)
+    first_tool = _record_tool_call(manager, 10)
+    todo = _create_todo(manager, "One")
+    _finish_todo(manager, "done", end_message_id=1)
+    second_tool = _record_tool_call(manager, 11)
     _save(manager)
     assert manager.begin_compact(run_done=True) is True
     compacted_buffer_id = await _run_compact_tools(
@@ -794,8 +842,8 @@ def test_load_loads_children_and_active_todo():
     manager = TaskManager(db)
     _load(manager, None)
     user_task = manager.create_user_task("Build feature")
-    todo = manager.create_todo("Inspect files")
-    manager.record_tool_call(9)
+    todo = _create_todo(manager, "Inspect files")
+    _record_tool_call(manager, 9)
     _save(manager)
 
     loaded_manager = TaskManager(db)
@@ -808,7 +856,7 @@ def test_load_loads_children_and_active_todo():
     assert loaded_user_task.children[0].id == todo.id
     assert loaded_todo.children[0].tool_call_log_id == 9
 
-    loaded_manager.finish_task("Done")
+    _finish_todo(loaded_manager, "Done")
     _save(loaded_manager)
 
     persisted_todo = db.get_managed_task(todo.id)

@@ -227,6 +227,38 @@ def _save_task_manager(manager: TaskManager) -> None:
         session.commit()
 
 
+def _create_todo(
+    manager: TaskManager,
+    title: str,
+    *,
+    start_message_id: int | None = None,
+):
+    todo = manager.active_lifecycle_for_tools().create_todo_task(
+        title=title,
+        start_message_id=start_message_id,
+    )
+    manager.refresh_active_task_state()
+    return todo
+
+
+def _finish_todo(
+    manager: TaskManager,
+    result: str | None = None,
+    *,
+    end_message_id: int | None = None,
+):
+    todo = manager.active_lifecycle_for_tools().finish_task(
+        result=result,
+        end_message_id=end_message_id,
+    )
+    manager.refresh_active_task_state()
+    return todo
+
+
+def _record_tool_call(manager: TaskManager, tool_call_log_id: int):
+    return manager.active_lifecycle_for_tools().record_tool_call(tool_call_log_id)
+
+
 def _run_log_dir(tmp_path):
     return tmp_path / "logs"
 
@@ -439,7 +471,7 @@ async def test_session_runner_stops_after_step_pause(tmp_path):
     task_manager = TaskManager(db)
     _load_task_manager(task_manager, None)
     user_task = task_manager.create_user_task("Paused request")
-    task_manager.create_todo("Active todo")
+    _create_todo(task_manager, "Active todo")
     _save_task_manager(task_manager)
     db.upsert_runner_state_metadata(
         "session_a",
@@ -734,7 +766,7 @@ def test_tool_call_log_records_pair_results_assign_ids_then_sync(tmp_path):
     task_manager = TaskManager(db)
     _load_task_manager(task_manager, None)
     user_task = task_manager.create_user_task("Build feature")
-    todo = task_manager.create_todo("Inspect files")
+    todo = _create_todo(task_manager, "Inspect files")
     _save_task_manager(task_manager)
     runner = SessionRunner(
         session_id="session_a",
@@ -761,7 +793,7 @@ def test_tool_call_log_records_pair_results_assign_ids_then_sync(tmp_path):
     assert db.list_runner_tool_calls("session_a") == []
 
     for log_id, _tool_call, _tool_result in records:
-        task_manager.record_tool_call(log_id)
+        _record_tool_call(task_manager, log_id)
 
     with db.create_session() as session:
         runner.sync_tool_calls(records, session=session)
@@ -862,7 +894,7 @@ async def test_handle_running_with_tool_calls_returns_normal_run_without_compact
     )
     _load_task_manager(task_manager, None)
     user_task = task_manager.create_user_task("Build feature")
-    task_manager.create_todo("Inspect files")
+    _create_todo(task_manager, "Inspect files")
     runner._active_user_task_id = user_task.id
     runner._next_action = "normal_run"
 
@@ -1061,7 +1093,7 @@ async def test_handle_compact_without_finished_todo_returns_running(tmp_path):
     )
     _load_task_manager(runner._task_manager, None)
     user_task = runner._task_manager.create_user_task("Build feature")
-    runner._task_manager.create_todo("Still active", start_message_id=1)
+    _create_todo(runner._task_manager, "Still active", start_message_id=1)
     runner._active_user_task_id = user_task.id
     runner._next_action = "compact"
     cancel_event.set()
@@ -1090,9 +1122,9 @@ async def test_handle_compact_runs_loop_then_replaces_scoped_messages_and_tasks(
     )
     _load_task_manager(task_manager, None)
     user_task = task_manager.create_user_task("Build feature")
-    todo = task_manager.create_todo("Inspect files", start_message_id=2)
-    task_manager.finish_task("Done", end_message_id=4)
-    active = task_manager.create_todo("Continue work")
+    todo = _create_todo(task_manager, "Inspect files", start_message_id=2)
+    _finish_todo(task_manager, "Done", end_message_id=4)
+    active = _create_todo(task_manager, "Continue work")
     _save_task_manager(task_manager)
     runner._active_user_task_id = user_task.id
     runner._next_action = "compact"
@@ -1201,7 +1233,7 @@ async def test_handle_compact_done_user_task_waits_for_user_input(tmp_path):
     )
     _load_task_manager(task_manager, None)
     user_task = task_manager.create_user_task("Build feature", start_message_id=1)
-    task_manager.record_tool_call(1)
+    _record_tool_call(task_manager, 1)
     task_manager.finish_user_task(end_message_id=1)
     _save_task_manager(task_manager)
     runner._active_user_task_id = user_task.id
@@ -1237,7 +1269,7 @@ async def test_handle_compact_routes_error_assistant_message_to_handle_error(tmp
     )
     _load_task_manager(task_manager, None)
     user_task = task_manager.create_user_task("Build feature")
-    task_manager.record_tool_call(1)
+    _record_tool_call(task_manager, 1)
     task_manager.finish_user_task()
     _save_task_manager(task_manager)
     runner._active_user_task_id = user_task.id

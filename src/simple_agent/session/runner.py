@@ -271,7 +271,8 @@ class SessionRunner:
 
         if previous_user_task.status != "done":
             if self._task_manager.active_todo_id is not None:
-                self._task_manager.error_task("Interrupted by new user input")
+                self._task_manager.active_lifecycle_for_tools().error_task(error="Interrupted by new user input")
+                self._task_manager.refresh_active_task_state()
             self._task_manager.finish_user_task()
             self._next_action = "wait_user_input"
             self.sync_current_data()

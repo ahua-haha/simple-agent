@@ -33,7 +33,7 @@ class BaseCompaction:
         self.result = TodoTask(title="Compacted work", status="active", result=description, id=task_id)
         return self.result
 
-    def record_tool_call(self, *, task_id: int, tool_call_log_id: int) -> None:
+    def record_compacted_tool_call(self, *, task_id: int, tool_call_log_id: int) -> None:
         result = self._require_result()
         tool_call_task = ToolCallTask(
             title=f"Tool call {tool_call_log_id}",
@@ -251,60 +251,6 @@ class TaskManager:
         if self._active_todo_lifecycle is not None:
             self._active_todo_lifecycle.set_current_assistant_message_id(message_id)
 
-    def create_todo(self, title: str, start_message_id: int | None = None) -> ManagedTask:
-        if self._active_todo is not None:
-            raise TaskManagerError("Cannot create todo while another active todo exists")
-
-        todo = self._require_user_task_lifecycle().create_todo_task(
-            title=title,
-            start_message_id=start_message_id,
-        )
-        self._active_todo = todo
-        self._active_todo_lifecycle = self._create_todo_task_lifecycle(todo)
-        self._active_todo_lifecycle.set_current_assistant_message_id(
-            self._require_user_task_lifecycle().current_assistant_message_id
-        )
-        self.active_todo_id = todo.id
-        return todo
-
-    def finish_task(self, result: str | None = None, end_message_id: int | None = None) -> ManagedTask:
-        todo = self._require_active_todo()
-        self._require_active_todo_lifecycle().finish_task(
-            result=result,
-            end_message_id=end_message_id,
-        )
-        self._active_todo = None
-        self._active_todo_lifecycle = None
-        self.active_todo_id = None
-        return todo
-
-    def error_task(self, error: str, end_message_id: int | None = None) -> ManagedTask:
-        todo = self._require_active_todo()
-        self._require_active_todo_lifecycle().error_task(
-            error=error,
-            end_message_id=end_message_id,
-        )
-        self._active_todo = None
-        self._active_todo_lifecycle = None
-        self.active_todo_id = None
-        return todo
-
-    def record_tool_call(
-        self,
-        tool_call_id: int,
-        *,
-        target_task: ManagedTask | None = None,
-        assistant_message: AssistantMessage | None = None,
-        tool_result_message: ToolResultMessage | None = None,
-    ) -> ManagedTask:
-        target = target_task or self.active_task_for_tools()
-        lifecycle = self._lifecycle_for_task(target)
-        return lifecycle.append_tool_call_task(
-            tool_call_log_id=tool_call_id,
-            assistant_message=assistant_message,
-            tool_result_message=tool_result_message,
-        )
-
     def record_turn_tool_calls(
         self,
         *,
@@ -453,7 +399,7 @@ class TaskManager:
         )
 
         async def record_execute(tool_call_id, params, cancel_event=None, on_update=None):
-            self._require_compaction().record_tool_call(
+            self._require_compaction().record_compacted_tool_call(
                 task_id=self._allocate_task_id(),
                 tool_call_log_id=params["tool_call_log_id"],
             )
