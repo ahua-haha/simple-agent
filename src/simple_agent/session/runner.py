@@ -282,7 +282,6 @@ class SessionRunner:
         if self._next_action != "normal_run":
             return self._next_action
 
-        tool_owner_task = self._task_manager.active_task_for_tools()
         tools = self._create_tools()
         user_instruction_message = UserMessage(
             content=[TextContent(text=self._task_manager.user_instruction_text())],
@@ -318,7 +317,6 @@ class SessionRunner:
                 self._task_manager.set_current_assistant_message_id(None)
             tool_call_records = self.tool_call_log_records(assistant_message, tool_results)
             self._task_manager.record_turn_tool_calls(
-                target_task=tool_owner_task,
                 assistant_message=assistant_message,
                 tool_call_records=tool_call_records,
             )
