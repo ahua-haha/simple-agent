@@ -179,9 +179,13 @@ class FakeCompactAgentProcess(FakeAgentProcess):
         return AssistantMessage(
             role="assistant",
             content=[
-                ToolCall(id="compact_create", name="create_compacted_todo", arguments={"description": "Compact summary"}),
+                ToolCall(
+                    id="compact_create",
+                    name="create_compacted_user_task",
+                    arguments={"description": "Compact summary"},
+                ),
                 ToolCall(id="compact_record", name="record_compacted_tool_call", arguments={"tool_call_log_id": 1}),
-                ToolCall(id="compact_finish", name="finish_compacted_todo", arguments={}),
+                ToolCall(id="compact_finish", name="finish_compacted_user_task", arguments={}),
             ],
         )
 
@@ -341,9 +345,9 @@ async def test_session_runner_routes_normal_run_until_waiting_for_input(tmp_path
     assert len(agent_process.calls) == 3
     assert len(agent_process.tool_step_calls) == 1
     assert agent_process.calls[2]["tools"] == [
-        "create_compacted_todo",
+        "create_compacted_user_task",
         "record_compacted_tool_call",
-        "finish_compacted_todo",
+        "finish_compacted_user_task",
     ]
     assert [message.content[0].text for message in persisted_messages] == [
         "Build feature",
@@ -1121,10 +1125,11 @@ async def test_handle_compact_runs_loop_then_replaces_scoped_messages_and_tasks(
         cancel_event=asyncio.Event(),
     )
     _load_task_manager(task_manager, None)
-    user_task = task_manager.create_user_task("Build feature")
+    user_task = task_manager.create_user_task("Build feature", start_message_id=1)
+    _record_tool_call(task_manager, 1)
     todo = _create_todo(task_manager, "Inspect files", start_message_id=2)
     _finish_todo(task_manager, "Done", end_message_id=4)
-    active = _create_todo(task_manager, "Continue work")
+    task_manager.finish_user_task(end_message_id=6)
     _save_task_manager(task_manager)
     runner._active_user_task_id = user_task.id
     runner._next_action = "compact"
@@ -1154,13 +1159,7 @@ async def test_handle_compact_runs_loop_then_replaces_scoped_messages_and_tasks(
             toolName="finish_todo",
             content=[TextContent(text="finished")],
         ),
-        AssistantMessage(
-            role="assistant",
-            content=[
-                TextContent(text="active todo"),
-                ToolCall(id="call_active", name="create_todo", arguments={"title": active.title}),
-            ],
-        ),
+        AssistantMessage(role="assistant", content=[TextContent(text="final answer")]),
     ]
     runner._messages = [
         MessageEntry(id=index, message=message)
@@ -1178,15 +1177,15 @@ async def test_handle_compact_runs_loop_then_replaces_scoped_messages_and_tasks(
         tool_result_json='{"content":[]}',
     )
 
-    next_action = await runner.handle_compact("Build feature")
+    next_action = await runner.handle_compact("Build feature", run_done=True)
 
     messages = db.list_runner_messages("session_a")
     loaded_task_manager = TaskManager(db)
     _load_task_manager(loaded_task_manager, user_task.id)
     assert compact_agent.calls[0]["tools"] == [
-        "create_compacted_todo",
+        "create_compacted_user_task",
         "record_compacted_tool_call",
-        "finish_compacted_todo",
+        "finish_compacted_user_task",
     ]
     assert len(compact_agent.calls[0]["messages"]) == len(original_messages) + 1
     assert compact_agent.calls[0]["messages"][:-1] == original_messages
@@ -1196,26 +1195,22 @@ async def test_handle_compact_runs_loop_then_replaces_scoped_messages_and_tasks(
     assert "- todo [done] Inspect files" in compact_instruction
     assert len(compact_agent.calls[1]["messages"]) == len(original_messages) + 5
     assert [entry.message.content[0].text for entry in runner._messages] == [
-        "original request",
-        "Compacted todo: Compact summary\nUseful tool calls: [1]",
-        "active todo",
+        "Compacted user task: Compact summary\nUseful tool calls: [1]",
     ]
     assert [message.content for message in messages] == [entry.message.content for entry in runner._messages]
-    assert [task.id for task in loaded_task_manager.user_task.children] == [todo.id, active.id]
-    assert loaded_task_manager.user_task.children[0].result == "Compact summary"
-    assert db.get_runner_state_metadata("session_a").next_action == "normal_run"
-    assert next_action == "normal_run"
+    assert [task.tool_call_log_id for task in loaded_task_manager.user_task.children] == [1]
+    assert loaded_task_manager.user_task.result == "Compact summary"
+    assert db.get_runner_state_metadata("session_a").next_action == "wait_user_input"
+    assert next_action == "wait_user_input"
     log_records = _read_jsonl(_run_log_path(tmp_path))
     compact_log = next(record for record in log_records if record["event"] == "handle_compact_result")
-    assert compact_log["message_scope"] == {"start_message_id": 2, "end_message_id": 4}
+    assert compact_log["message_scope"] == {"start_message_id": 1, "end_message_id": 6}
     assert compact_log["compact_messages"][0]["content"][0]["text"] == "original request"
     assert compact_log["compacted_messages"][0]["content"][0]["text"] == (
-        "Compacted todo: Compact summary\nUseful tool calls: [1]"
+        "Compacted user task: Compact summary\nUseful tool calls: [1]"
     )
     assert [entry["message"]["content"][0]["text"] for entry in compact_log["replacement_messages"]] == [
-        "original request",
-        "Compacted todo: Compact summary\nUseful tool calls: [1]",
-        "active todo",
+        "Compacted user task: Compact summary\nUseful tool calls: [1]",
     ]
 
 
@@ -1251,7 +1246,7 @@ async def test_handle_compact_done_user_task_waits_for_user_input(tmp_path):
     assert metadata.next_action == "wait_user_input"
     assert len(compact_agent.calls) == 2
     assert [message.content[0].text for message in db.list_runner_messages("session_a")] == [
-        "Compacted todo: Compact summary\nUseful tool calls: [1]"
+        "Compacted user task: Compact summary\nUseful tool calls: [1]"
     ]
 
 

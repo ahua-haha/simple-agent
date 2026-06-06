@@ -101,17 +101,17 @@ async def _run_compact_tools(
     tool_call_log_ids: list[int] | None = None,
 ):
     tools = {tool.name: tool for tool in manager.create_compact_tools()}
-    create_result = await tools["create_compacted_todo"].execute(
+    create_result = await tools["create_compacted_user_task"].execute(
         "create",
         {"description": description},
     )
-    compacted_id = int(create_result.content[0].text.removeprefix("created compacted todo "))
+    compacted_id = int(create_result.content[0].text.removeprefix("created compacted user task "))
     for index, tool_call_log_id in enumerate(tool_call_log_ids or [], start=1):
         await tools["record_compacted_tool_call"].execute(
             f"record_{index}",
             {"tool_call_log_id": tool_call_log_id},
         )
-    await tools["finish_compacted_todo"].execute("finish", {})
+    await tools["finish_compacted_user_task"].execute("finish", {})
     return compacted_id
 
 
@@ -654,21 +654,18 @@ def test_mixed_user_task_order_is_preserved():
     ]
 
 
-def test_begin_compact_selects_first_todo_through_latest_finished_todo_when_running():
+def test_begin_compact_returns_false_when_running():
     db = _make_db()
     manager = TaskManager(db)
     _load(manager, None)
     manager.create_user_task("Build feature")
-    first = _create_todo(manager, "One")
+    _create_todo(manager, "One")
     _finish_todo(manager, "done")
-    second = _create_todo(manager, "Two")
+    _create_todo(manager, "Two")
     _finish_todo(manager, "done")
     _create_todo(manager, "Three")
 
-    assert manager.begin_compact(run_done=False) is True
-    compaction = manager._require_compaction()
-
-    assert [task.id for task in compaction.to_compact_tasks] == [first.id, second.id]
+    assert manager.begin_compact(run_done=False) is False
 
 
 def test_begin_compact_returns_false_without_finished_todo_when_running():
@@ -681,7 +678,7 @@ def test_begin_compact_returns_false_without_finished_todo_when_running():
     assert manager.begin_compact(run_done=False) is False
 
 
-def test_begin_compact_selects_whole_user_task_when_done():
+def test_begin_compact_targets_done_user_task():
     db = _make_db()
     manager = TaskManager(db)
     _load(manager, None)
@@ -690,11 +687,10 @@ def test_begin_compact_selects_whole_user_task_when_done():
     first = _create_todo(manager, "One")
     _finish_todo(manager, "done")
     second_tool = _record_tool_call(manager, 11)
+    manager.finish_user_task(end_message_id=8)
 
     assert manager.begin_compact(run_done=True) is True
-    compaction = manager._require_compaction()
-
-    assert [task.id for task in compaction.to_compact_tasks] == [first_tool.id, first.id, second_tool.id]
+    assert manager.active_task_id == manager.user_task.id
 
 
 def test_compact_instruction_text_includes_task_view_and_tool_call_directives():
@@ -706,7 +702,8 @@ def test_compact_instruction_text_includes_task_view_and_tool_call_directives():
     todo = _create_todo(manager, "Inspect files")
     _record_tool_call(manager, 11)
     _finish_todo(manager, "Found manager.py")
-    assert manager.begin_compact(run_done=False) is True
+    manager.finish_user_task(end_message_id=8)
+    assert manager.begin_compact(run_done=True) is True
     db.insert_runner_tool_call(
         id=10,
         session_id="session_a",
@@ -728,56 +725,36 @@ def test_compact_instruction_text_includes_task_view_and_tool_call_directives():
         session_id="session_a",
     )
 
-    assert "Complete the compacted task information first" in instruction
-    assert "define the compacted task and its result" in instruction
+    assert "Complete the compacted user task information first" in instruction
+    assert "define the task result" in instruction
     assert "Record every must-include tool call" in instruction
     assert "Task view to compact:" in instruction
-    assert "- user_task [active] Build feature" in instruction
+    assert "- user_task [done] Build feature" in instruction
     assert "- todo [done] Inspect files" in instruction
-    assert 'tool_call 1. sed args: {"file":"manager.py"}' in instruction
-    assert 'tool_call 1. ls args: {"path":"."}' not in instruction
+    assert 'tool_call 1. ls args: {"path":"."}' in instruction
+    assert 'tool_call 2. sed args: {"file":"manager.py"}' in instruction
 
 
 @pytest.mark.asyncio
-async def test_compact_tools_create_one_finished_compacted_todo():
+async def test_compact_tools_define_finished_compacted_user_task():
     db = _make_db()
     manager = TaskManager(db)
     _load(manager, None)
     manager.create_user_task("Build feature", start_message_id=1)
     _create_todo(manager, "Inspect files", start_message_id=2)
     _finish_todo(manager, "Done", end_message_id=4)
-    assert manager.begin_compact(run_done=False) is True
+    manager.finish_user_task(end_message_id=5)
+    assert manager.begin_compact(run_done=True) is True
 
     compacted_id = await _run_compact_tools(
         manager,
         description="Summary",
         tool_call_log_ids=[5],
     )
-    result = manager._require_compaction().result
 
-    assert result.id == compacted_id
-    assert result.status == "done"
-    assert result.result == "Summary"
-    assert [child.tool_call_log_id for child in result.children] == [5]
-
-
-@pytest.mark.asyncio
-async def test_compacted_messages_uses_finished_todo_boundaries_when_running():
-    db = _make_db()
-    manager = TaskManager(db)
-    _load(manager, None)
-    manager.create_user_task("Build feature", start_message_id=1)
-    first = _create_todo(manager, "One", start_message_id=2)
-    _finish_todo(manager, "done", end_message_id=4)
-    _create_todo(manager, "Two", start_message_id=6)
-    assert manager.begin_compact(run_done=False) is True
-    await _run_compact_tools(manager, description="Summary")
-
-    start_message_id, end_message_id, _messages = manager.compacted_messages()
-
-    assert first.start_message_id == 2
-    assert start_message_id == 2
-    assert end_message_id == 4
+    assert manager.user_task.id == compacted_id
+    assert manager.user_task.status == "done"
+    assert manager.user_task.result == "Summary"
 
 
 @pytest.mark.asyncio
@@ -805,7 +782,8 @@ async def test_compacted_messages_returns_summary_message():
     manager.create_user_task("Build feature", start_message_id=1)
     _create_todo(manager, "Inspect files", start_message_id=2)
     _finish_todo(manager, "Done", end_message_id=4)
-    assert manager.begin_compact(run_done=False) is True
+    manager.finish_user_task(end_message_id=5)
+    assert manager.begin_compact(run_done=True) is True
     await _run_compact_tools(
         manager,
         description="Summary",
@@ -816,42 +794,7 @@ async def test_compacted_messages_returns_summary_message():
 
     assert len(messages) == 1
     assert messages[0].role == "assistant"
-    assert messages[0].content[0].text == "Compacted todo: Summary\nUseful tool calls: [5]"
-
-
-@pytest.mark.asyncio
-async def test_sync_compaction_persists_rebuilt_task_tree():
-    db = _make_db()
-    manager = TaskManager(db)
-    _load(manager, None)
-    user_task = manager.create_user_task("Build feature")
-    first = _create_todo(manager, "One")
-    _finish_todo(manager, "done", end_message_id=1)
-    second = _create_todo(manager, "Two")
-    _finish_todo(manager, "done", end_message_id=2)
-    active = _create_todo(manager, "Three")
-    _save(manager)
-    assert manager.begin_compact(run_done=False) is True
-    compacted_buffer_id = await _run_compact_tools(
-        manager,
-        description="Summary",
-    )
-
-    with db.create_session() as session:
-        compacted = manager.sync_compaction(session=session)
-        session.commit()
-
-    loaded_compacted = db.get_managed_task(compacted.id)
-    loaded_active = db.get_managed_task(active.id)
-    loaded_manager = TaskManager(db)
-    _load(loaded_manager, user_task.id)
-
-    assert compacted.id == first.id
-    assert db.get_managed_task(compacted_buffer_id) is None
-    assert db.get_managed_task(second.id) is None
-    assert loaded_active.id == active.id
-    assert [task.id for task in loaded_manager.user_task.children] == [compacted.id, active.id]
-    assert loaded_compacted.parent_id == user_task.id
+    assert messages[0].content[0].text == "Compacted user task: Summary\nUseful tool calls: [5]"
 
 
 @pytest.mark.asyncio
@@ -864,9 +807,10 @@ async def test_sync_compaction_replaces_whole_user_task_when_done():
     todo = _create_todo(manager, "One")
     _finish_todo(manager, "done", end_message_id=1)
     second_tool = _record_tool_call(manager, 11)
+    manager.finish_user_task(end_message_id=2)
     _save(manager)
     assert manager.begin_compact(run_done=True) is True
-    compacted_buffer_id = await _run_compact_tools(
+    compacted_id = await _run_compact_tools(
         manager,
         description="Whole task summary",
     )
@@ -878,12 +822,12 @@ async def test_sync_compaction_replaces_whole_user_task_when_done():
     loaded_manager = TaskManager(db)
     _load(loaded_manager, user_task.id)
 
-    assert compacted.id == first_tool.id
-    assert db.get_managed_task(compacted_buffer_id) is None
+    assert compacted.id == user_task.id
+    assert compacted_id == user_task.id
     assert db.get_managed_task(todo.id) is None
     assert db.get_managed_task(second_tool.id) is None
-    assert [task.id for task in loaded_manager.user_task.children] == [compacted.id]
-    assert loaded_manager.user_task.children[0].result == "Whole task summary"
+    assert loaded_manager.user_task.children == []
+    assert loaded_manager.user_task.result == "Whole task summary"
 
 
 def test_load_loads_children_and_active_todo():

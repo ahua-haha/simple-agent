@@ -34,9 +34,9 @@ when they are needed, and explain outcomes clearly.
 DEFAULT_CONTEXT_TOKEN_THRESHOLD = 120_000
 DEFAULT_TOOL_CALL_THRESHOLD = 200
 
-COMPACT_SYSTEM_PROMPT = """Compact finished todos into one compacted todo.
-Use only the compact tools. Create exactly one compacted todo, record useful
-tool-call log IDs, then finish the compacted todo."""
+COMPACT_SYSTEM_PROMPT = """Compact the finished user task into one compacted user task.
+Use only the compact tools. Set the compacted user task result, record useful
+tool-call log IDs, then finish the compacted user task."""
 
 
 @dataclass(frozen=True)

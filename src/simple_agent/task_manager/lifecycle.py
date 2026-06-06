@@ -6,12 +6,13 @@ agent-facing tools, turn instructions, and direct database sync.
 
 from __future__ import annotations
 
-from typing import Any, Callable
+from typing import Any, Callable, Mapping
 
 from pi.agent import AgentTool, AgentToolResult
-from pi.ai.types import TextContent
+from pi.ai.types import AssistantMessage, TextContent
 
 from simple_agent.task_manager.models import ManagedTask, TaskRuntimeContext, TodoTask, ToolCallTask, UserTask
+from simple_agent.task_manager.review import TaskTreeReviewRenderer, ToolCallReview
 
 
 class TaskLifecycleError(RuntimeError):
@@ -45,6 +46,9 @@ class UserTaskLifecycle(BaseTaskLifecycle):
     def __init__(self, task: UserTask, *, allocate_task_id: Callable[[], int] | None = None):
         super().__init__(allocate_task_id=allocate_task_id)
         self.task = task
+        self._compacting = False
+        self._compacted_tool_calls: list[ToolCallTask] = []
+        self._compacted_user_task_finished = False
 
     def instruction_text(self, context: TaskRuntimeContext) -> str:
         if context.active_task_tool_calls > 5:
@@ -177,6 +181,159 @@ class UserTaskLifecycle(BaseTaskLifecycle):
 
         tool.execute = execute
         return tool
+
+    # ------------------------------------------------------------------
+    # User-task compaction phase
+    # ------------------------------------------------------------------
+
+    def begin_compaction(self) -> bool:
+        if self.task.status != "done" or not self.task.children:
+            self._clear_compaction()
+            return False
+        self._compacting = True
+        self._compacted_tool_calls = []
+        self._compacted_user_task_finished = False
+        return True
+
+    def compaction_instruction_text(self, *, tool_calls: Mapping[int, ToolCallReview]) -> str:
+        self._require_compaction()
+        task_view = TaskTreeReviewRenderer(
+            format="tree",
+            depth=None,
+            tool_calls=tool_calls,
+        ).render(self.task)
+        return (
+            "Runtime instruction for compacting phase:\n"
+            "- Complete the compacted user task information first: define the task result.\n"
+            "- Record every must-include tool call based on the compacted task result to avoid context loss.\n"
+            "- Use only compact tools: set the compacted user task result, record must-include tool calls, then finish it.\n"
+            "\n"
+            "Task view to compact:\n"
+            f"{task_view.text}"
+        )
+
+    def create_compact_tools(self) -> list[AgentTool]:
+        create_tool = AgentTool(
+            name="create_compacted_user_task",
+            description="Set the compacted user task result with a concise summary.",
+            parameters={
+                "type": "object",
+                "properties": {
+                    "description": {"type": "string", "description": "Compacted user task summary"},
+                },
+                "required": ["description"],
+            },
+        )
+
+        async def create_execute(tool_call_id, params, cancel_event=None, on_update=None):
+            task = self.create_compacted_user_task(
+                description=params["description"],
+            )
+            return AgentToolResult(content=[TextContent(text=f"created compacted user task {task.id}")])
+
+        create_tool.execute = create_execute
+
+        record_tool = AgentTool(
+            name="record_compacted_tool_call",
+            description="Keep one useful runner tool-call log ID in the compacted user task.",
+            parameters={
+                "type": "object",
+                "properties": {
+                    "tool_call_log_id": {"type": "integer", "description": "Runner tool-call log ID"},
+                },
+                "required": ["tool_call_log_id"],
+            },
+        )
+
+        async def record_execute(tool_call_id, params, cancel_event=None, on_update=None):
+            self.record_compacted_tool_call(
+                tool_call_log_id=params["tool_call_log_id"],
+            )
+            return AgentToolResult(content=[TextContent(text="recorded compacted tool call")])
+
+        record_tool.execute = record_execute
+
+        finish_tool = AgentTool(
+            name="finish_compacted_user_task",
+            description="Finish the compacted user task after selecting useful tool calls.",
+            parameters={"type": "object", "properties": {}, "required": []},
+        )
+
+        async def finish_execute(tool_call_id, params, cancel_event=None, on_update=None):
+            task = self.finish_compacted_user_task()
+            return AgentToolResult(content=[TextContent(text=f"finished compacted user task {task.id}")])
+
+        finish_tool.execute = finish_execute
+        return [create_tool, record_tool, finish_tool]
+
+    def create_compacted_user_task(self, *, description: str) -> UserTask:
+        self._require_compaction()
+        self.task.result = description
+        self.task.touch()
+        return self.task
+
+    def record_compacted_tool_call(self, *, tool_call_log_id: int) -> None:
+        self._require_compaction()
+        tool_call_task = ToolCallTask(
+            id=self.allocate_task_id(),
+            title=f"Tool call {tool_call_log_id}",
+            status="done",
+            parent_id=self.task.id,
+            tool_call_log_id=tool_call_log_id,
+        )
+        self._compacted_tool_calls.append(tool_call_task)
+
+    def finish_compacted_user_task(self) -> UserTask:
+        self._require_compacted_result()
+        self._compacted_user_task_finished = True
+        self.task.touch()
+        return self.task
+
+    def compaction_result(self) -> tuple[int, int, list[Any]]:
+        self._require_finished_compacted_user_task()
+        if self.task.start_message_id is None or self.task.end_message_id is None:
+            raise TaskLifecycleError("Compact scope is missing message boundaries")
+        tool_refs = [
+            child.tool_call_log_id
+            for child in self._compacted_tool_calls
+            if child.tool_call_log_id is not None
+        ]
+        text = (
+            f"Compacted user task: {self.task.result or self.task.title}\n"
+            f"Useful tool calls: {tool_refs}"
+        )
+        return (
+            self.task.start_message_id,
+            self.task.end_message_id,
+            [AssistantMessage(role="assistant", content=[TextContent(text=text)])],
+        )
+
+    def sync_compaction(self, database: Any, session: Any) -> UserTask:
+        self._require_finished_compacted_user_task()
+        self.task.children = list(self._compacted_tool_calls)
+        self.task.touch()
+        database.replace_managed_task_tree(self.task, session=session)
+        self._clear_compaction()
+        return self.task
+
+    def _require_compaction(self) -> None:
+        if not self._compacting:
+            raise TaskLifecycleError("Compaction is not active")
+
+    def _require_compacted_result(self) -> None:
+        self._require_compaction()
+        if self.task.result is None:
+            raise TaskLifecycleError("No compacted user task result")
+
+    def _require_finished_compacted_user_task(self) -> None:
+        self._require_compacted_result()
+        if not self._compacted_user_task_finished:
+            raise TaskLifecycleError("Compacted user task is not finished")
+
+    def _clear_compaction(self) -> None:
+        self._compacting = False
+        self._compacted_tool_calls = []
+        self._compacted_user_task_finished = False
 
     def create_finish_user_task_tool(self) -> AgentTool:
         tool = AgentTool(

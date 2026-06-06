@@ -171,8 +171,8 @@ async def test_session_run_creates_queue_and_runs_agent_once(tmp_path, monkeypat
     assert "finish_todo" not in calls[0]["tools"]
     assert "error_todo" not in calls[0]["tools"]
     assert calls[2]["tools"] == [
-        "create_compacted_todo",
+        "create_compacted_user_task",
         "record_compacted_tool_call",
-        "finish_compacted_todo",
+        "finish_compacted_user_task",
     ]
     assert calls[0]["cancel_event"] is session._runner._cancel_event
