@@ -9,6 +9,7 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING, Callable, Literal, TypeAlias
 
 from pi.ai.types import AssistantMessage, TextContent, ToolCall, ToolResultMessage, UserMessage
+from simple_agent.run_log import runtime_logger
 from simple_agent.token_estimation import estimate_messages_tokens
 from simple_agent.tool.common_tools import create_all_coding_tools
 
@@ -281,12 +282,14 @@ class SessionRunner:
             return self._next_action
 
         tools = self._create_tools()
+        user_instruction_message = UserMessage(
+            content=[TextContent(text=self._task_manager.user_instruction_text())],
+            timestamp=int(time.time() * 1000),
+        )
+        message_context = list(self._messages)
         llm_messages = [
             *self._message_values(),
-            UserMessage(
-                content=[TextContent(text=self._task_manager.user_instruction_text())],
-                timestamp=int(time.time() * 1000),
-            ),
+            user_instruction_message,
         ]
         assistant_message = await self._agent_process.call_llm_step(
             system_prompt=SYSTEM_PROMPT,
@@ -315,13 +318,12 @@ class SessionRunner:
             for log_id, _tool_call, _tool_result in tool_call_records:
                 self._task_manager.record_tool_call(log_id)
 
-        pending_messages = [
-            MessageEntry(id=assistant_message_id, message=assistant_message),
-            *[
-                MessageEntry(id=self._allocate_message_id(), message=tool_result)
-                for tool_result in tool_results
-            ],
+        assistant_entry = MessageEntry(id=assistant_message_id, message=assistant_message)
+        tool_result_entries = [
+            MessageEntry(id=self._allocate_message_id(), message=tool_result)
+            for tool_result in tool_results
         ]
+        pending_messages = [assistant_entry, *tool_result_entries]
         self.append_messages(pending_messages)
 
         if not has_tool_calls:
@@ -330,6 +332,15 @@ class SessionRunner:
         else:
             self.pause_for_compaction_if_needed(tool_call_records=tool_call_records)
 
+        runtime_logger.log_handle_running(
+            session_id=self._session_id,
+            assistant_message_id=assistant_message_id,
+            assistant_message=assistant_message,
+            messages=message_context,
+            user_instruction_message=user_instruction_message,
+            tool_result_entries=tool_result_entries,
+            next_action=self._next_action,
+        )
         self.sync_current_data(
             messages=pending_messages,
             tool_calls=tool_call_records,
@@ -402,6 +413,15 @@ class SessionRunner:
 
         with self._db.create_session() as session:
             self._next_action = "wait_user_input" if run_done else "normal_run"
+            runtime_logger.log_handle_compact_result(
+                session_id=self._session_id,
+                compact_messages=compact_messages,
+                start_message_id=start_message_id,
+                end_message_id=end_message_id,
+                compacted_messages=compacted_messages,
+                replacement_messages=replacement_messages,
+                next_action=self._next_action,
+            )
             self.sync_replaced_messages(
                 messages=replacement_messages,
                 session=session,

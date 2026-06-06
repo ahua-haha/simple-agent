@@ -19,6 +19,7 @@ openspec/
 
 # Tool log
 tool_log.jsonl
+logs/
 
 data/
 sessions/

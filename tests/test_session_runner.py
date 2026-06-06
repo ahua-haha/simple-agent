@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import sqlite3
 
 import pytest
@@ -10,6 +11,7 @@ import pytest
 from pi.ai.types import AssistantMessage, TextContent, ToolCall, ToolResultMessage, UserMessage
 
 from simple_agent.db.db import Database
+from simple_agent.run_log import runtime_logger
 from simple_agent.session.runner import MessageEntry, SessionRunner
 from simple_agent.task_manager import TaskManager
 
@@ -225,6 +227,22 @@ def _save_task_manager(manager: TaskManager) -> None:
         session.commit()
 
 
+def _run_log_dir(tmp_path):
+    return tmp_path / "logs"
+
+
+def _run_log_path(tmp_path, session_id: str = "session_a"):
+    return _run_log_dir(tmp_path) / f"{session_id}.jsonl"
+
+
+def _use_run_log_dir(tmp_path) -> None:
+    runtime_logger.set_log_dir(_run_log_dir(tmp_path))
+
+
+def _read_jsonl(path):
+    return [json.loads(line) for line in path.read_text().splitlines()]
+
+
 @pytest.mark.asyncio
 async def test_session_runner_creates_task_runs_agent_and_persists_messages(tmp_path):
     db = Database(str(tmp_path / "session.db"))
@@ -300,6 +318,45 @@ async def test_session_runner_routes_normal_run_until_waiting_for_input(tmp_path
         "tool done",
         "final answer",
     ]
+
+
+@pytest.mark.asyncio
+async def test_handle_running_writes_message_change_log(tmp_path):
+    _use_run_log_dir(tmp_path)
+    db = Database(str(tmp_path / "session.db"))
+    task_manager = TaskManager(db)
+    agent_process = FakeAgentProcess()
+    runner = SessionRunner(
+        session_id="session_a",
+        db=db,
+        task_manager=task_manager,
+        agent_process=agent_process,
+        cancel_event=asyncio.Event(),
+    )
+    runner.load()
+    runner.handle_input("Build feature")
+
+    next_action = await runner.handle_running("Build feature")
+
+    records = _read_jsonl(_run_log_path(tmp_path))
+    running_record = next(record for record in records if record["event"] == "handle_running")
+
+    assert next_action == "normal_run"
+    assert len(records) == 1
+    assert running_record["messages"][0]["message"]["content"][0]["text"] == "Build feature"
+    assert "Runtime instruction for this turn" in running_record["user_instruction_message"]["content"][0]["text"]
+    assert running_record["assistant_message"]["content"] == [
+        {"type": "text", "text": "done"},
+        {"type": "tool_call", "id": "tool_1", "name": "example_tool", "arguments": {}},
+    ]
+    assert running_record["tool_results"] == [
+        {
+            "tool_call_id": "tool_1",
+            "tool_name": "example_tool",
+            "message_id": 3,
+        }
+    ]
+    assert "tool done" not in json.dumps(running_record)
 
 
 @pytest.mark.asyncio
@@ -998,6 +1055,7 @@ async def test_handle_compact_without_finished_todo_returns_running(tmp_path):
 
 @pytest.mark.asyncio
 async def test_handle_compact_runs_loop_then_replaces_scoped_messages_and_tasks(tmp_path):
+    _use_run_log_dir(tmp_path)
     db = Database(str(tmp_path / "session.db"))
     task_manager = TaskManager(db)
     compact_agent = FakeCompactAgentProcess()
@@ -1093,6 +1151,18 @@ async def test_handle_compact_runs_loop_then_replaces_scoped_messages_and_tasks(
     assert loaded_task_manager.active_user_task.children[0].result == "Compact summary"
     assert db.get_runner_state_metadata("session_a").next_action == "normal_run"
     assert next_action == "normal_run"
+    log_records = _read_jsonl(_run_log_path(tmp_path))
+    compact_log = next(record for record in log_records if record["event"] == "handle_compact_result")
+    assert compact_log["message_scope"] == {"start_message_id": 2, "end_message_id": 4}
+    assert compact_log["compact_messages"][0]["content"][0]["text"] == "original request"
+    assert compact_log["compacted_messages"][0]["content"][0]["text"] == (
+        "Compacted todo: Compact summary\nUseful tool calls: [1]"
+    )
+    assert [entry["message"]["content"][0]["text"] for entry in compact_log["replacement_messages"]] == [
+        "original request",
+        "Compacted todo: Compact summary\nUseful tool calls: [1]",
+        "active todo",
+    ]
 
 
 @pytest.mark.asyncio
