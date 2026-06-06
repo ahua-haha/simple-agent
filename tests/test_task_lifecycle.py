@@ -99,3 +99,18 @@ def test_todo_task_lifecycle_uses_owned_message_id_for_finish():
 
     assert todo.status == "done"
     assert todo.end_message_id == 44
+
+
+def test_lifecycle_tracks_next_task_transition():
+    user_task = UserTask(id=1, title="Build feature")
+    user_lifecycle = UserTaskLifecycle(user_task, allocate_task_id=lambda: 2)
+
+    todo = user_lifecycle.create_todo_task(title="Inspect files")
+
+    assert user_lifecycle.consume_next_task() is todo
+    assert user_lifecycle.consume_next_task() is None
+
+    todo_lifecycle = TodoTaskLifecycle(todo, user_task=user_task)
+    todo_lifecycle.finish_task(result="Done")
+
+    assert todo_lifecycle.consume_next_task() is user_task

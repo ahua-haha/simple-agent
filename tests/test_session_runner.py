@@ -237,7 +237,7 @@ def _create_todo(
         title=title,
         start_message_id=start_message_id,
     )
-    manager.refresh_active_task_state()
+    manager.refresh_active_task()
     return todo
 
 
@@ -251,7 +251,7 @@ def _finish_todo(
         result=result,
         end_message_id=end_message_id,
     )
-    manager.refresh_active_task_state()
+    manager.refresh_active_task()
     return todo
 
 
@@ -803,7 +803,7 @@ def test_tool_call_log_records_pair_results_assign_ids_then_sync(tmp_path):
     records = db.list_runner_tool_calls("session_a")
     loaded_manager = TaskManager(db)
     _load_task_manager(loaded_manager, user_task.id)
-    loaded_todo = next(child for child in loaded_manager.active_user_task.children if child.id == todo.id)
+    loaded_todo = next(child for child in loaded_manager.user_task.children if child.id == todo.id)
     assert len(records) == 1
     assert records[0].id == 0
     assert records[0].tool_call_id == "call_1"
@@ -930,7 +930,7 @@ async def test_handle_running_sets_current_assistant_message_id_for_task_tools(t
 
     loaded_manager = TaskManager(db)
     _load_task_manager(loaded_manager, user_task.id)
-    todo = next(child for child in loaded_manager.active_user_task.children if child.kind == "todo")
+    todo = next(child for child in loaded_manager.user_task.children if child.kind == "todo")
     with sqlite3.connect(db_path) as conn:
         assistant_message_id = conn.execute(
             """
@@ -1201,8 +1201,8 @@ async def test_handle_compact_runs_loop_then_replaces_scoped_messages_and_tasks(
         "active todo",
     ]
     assert [message.content for message in messages] == [entry.message.content for entry in runner._messages]
-    assert [task.id for task in loaded_task_manager.active_user_task.children] == [todo.id, active.id]
-    assert loaded_task_manager.active_user_task.children[0].result == "Compact summary"
+    assert [task.id for task in loaded_task_manager.user_task.children] == [todo.id, active.id]
+    assert loaded_task_manager.user_task.children[0].result == "Compact summary"
     assert db.get_runner_state_metadata("session_a").next_action == "normal_run"
     assert next_action == "normal_run"
     log_records = _read_jsonl(_run_log_path(tmp_path))

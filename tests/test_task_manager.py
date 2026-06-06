@@ -58,7 +58,7 @@ def _create_todo(
         title=title,
         start_message_id=start_message_id,
     )
-    manager.refresh_active_task_state()
+    manager.refresh_active_task()
     return todo
 
 
@@ -72,7 +72,7 @@ def _finish_todo(
         result=result,
         end_message_id=end_message_id,
     )
-    manager.refresh_active_task_state()
+    manager.refresh_active_task()
     return todo
 
 
@@ -86,7 +86,7 @@ def _error_todo(
         error=error,
         end_message_id=end_message_id,
     )
-    manager.refresh_active_task_state()
+    manager.refresh_active_task()
     return todo
 
 
@@ -237,8 +237,56 @@ def test_create_user_task_sets_active_user_task():
     assert user_task.id is not None
     assert user_task.kind == "user_task"
     assert user_task.title == "Build feature"
-    assert manager.active_user_task_id == user_task.id
+    assert manager.active_task_id == user_task.id
     assert db.get_managed_task(user_task.id) is None
+
+
+def test_task_manager_maintains_one_active_task_lifecycle():
+    db = _make_db()
+    manager = TaskManager(db)
+    _load(manager, None)
+
+    assert not hasattr(manager, "_active_todo")
+    assert not hasattr(manager, "_user_task_lifecycle")
+    assert not hasattr(manager, "_active_todo_lifecycle")
+    assert not hasattr(manager, "active_user_task")
+    assert not hasattr(manager, "active_user_task_id")
+    assert not hasattr(manager, "active_todo")
+    assert not hasattr(manager, "active_todo_id")
+
+
+def test_active_task_moves_to_created_child_and_back_to_parent_when_done():
+    db = _make_db()
+    manager = TaskManager(db)
+    _load(manager, None)
+    user_task = manager.create_user_task("Build feature")
+
+    todo = manager.active_lifecycle_for_tools().create_todo_task(title="Inspect files")
+    manager.refresh_active_task()
+
+    assert manager.active_task_id == todo.id
+    assert manager.active_lifecycle_for_tools().task is todo
+
+    manager.active_lifecycle_for_tools().finish_task(result="Done")
+    manager.refresh_active_task()
+
+    assert manager.active_task_id == user_task.id
+    assert manager.active_lifecycle_for_tools().task is user_task
+
+
+def test_active_task_moves_to_parent_when_child_errors():
+    db = _make_db()
+    manager = TaskManager(db)
+    _load(manager, None)
+    user_task = manager.create_user_task("Build feature")
+    todo = manager.active_lifecycle_for_tools().create_todo_task(title="Inspect files")
+    manager.refresh_active_task()
+
+    manager.active_lifecycle_for_tools().error_task(error="failed")
+    manager.refresh_active_task()
+
+    assert todo.status == "error"
+    assert manager.active_task_id == user_task.id
 
 
 def test_create_todo_appends_child_task_to_user_task():
@@ -250,13 +298,13 @@ def test_create_todo_appends_child_task_to_user_task():
     todo = _create_todo(manager, "Inspect files")
 
     assert todo.parent_id == user_task.id
-    assert manager.active_todo_id == todo.id
+    assert manager.active_task_id == todo.id
     assert db.get_managed_task(user_task.id) is None
 
     _save(manager)
     loaded_manager = TaskManager(db)
     _load(loaded_manager, user_task.id)
-    loaded_user_task = loaded_manager.active_user_task
+    loaded_user_task = loaded_manager.user_task
 
     assert [task.id for task in loaded_user_task.children] == [todo.id]
     assert [task.id for task in loaded_user_task.children] == [todo.id]
@@ -288,7 +336,7 @@ def test_finish_todo_marks_done_and_clears_active_todo():
     assert finished.status == "done"
     assert finished.result == "Found app.py"
     assert finished.end_message_id == 21
-    assert manager.active_todo_id is None
+    assert manager.active_task_id == todo.parent_id
 
 
 def test_active_lifecycle_routes_to_user_task_without_active_todo():
@@ -354,10 +402,11 @@ def test_task_manager_routes_message_id_to_active_lifecycle():
     import asyncio
 
     asyncio.run(run())
-    manager.refresh_active_task_state()
+    manager.refresh_active_task()
 
-    assert manager.active_todo.start_message_id == 31
-    assert manager.active_lifecycle_for_tools().task is manager.active_todo
+    active_task = manager.active_lifecycle_for_tools().task
+    assert active_task.start_message_id == 31
+    assert active_task.kind == "todo"
 
 
 def test_record_tool_call_without_active_todo_attaches_to_user_task():
@@ -597,7 +646,7 @@ def test_mixed_user_task_order_is_preserved():
     _save(manager)
     loaded_manager = TaskManager(db)
     _load(loaded_manager, user_task.id)
-    loaded_children = loaded_manager.active_user_task.children
+    loaded_children = loaded_manager.user_task.children
     assert [(task.kind, task.id if task.kind == "todo" else task.tool_call_log_id) for task in loaded_children] == [
         ("tool_call", 1),
         ("todo", todo.id),
@@ -801,7 +850,7 @@ async def test_sync_compaction_persists_rebuilt_task_tree():
     assert db.get_managed_task(compacted_buffer_id) is None
     assert db.get_managed_task(second.id) is None
     assert loaded_active.id == active.id
-    assert [task.id for task in loaded_manager.active_user_task.children] == [compacted.id, active.id]
+    assert [task.id for task in loaded_manager.user_task.children] == [compacted.id, active.id]
     assert loaded_compacted.parent_id == user_task.id
 
 
@@ -833,8 +882,8 @@ async def test_sync_compaction_replaces_whole_user_task_when_done():
     assert db.get_managed_task(compacted_buffer_id) is None
     assert db.get_managed_task(todo.id) is None
     assert db.get_managed_task(second_tool.id) is None
-    assert [task.id for task in loaded_manager.active_user_task.children] == [compacted.id]
-    assert loaded_manager.active_user_task.children[0].result == "Whole task summary"
+    assert [task.id for task in loaded_manager.user_task.children] == [compacted.id]
+    assert loaded_manager.user_task.children[0].result == "Whole task summary"
 
 
 def test_load_loads_children_and_active_todo():
@@ -848,11 +897,10 @@ def test_load_loads_children_and_active_todo():
 
     loaded_manager = TaskManager(db)
     _load(loaded_manager, user_task.id)
-    loaded_user_task = loaded_manager.active_user_task
-    loaded_todo = loaded_manager.active_todo
+    loaded_user_task = loaded_manager.user_task
+    loaded_todo = loaded_manager.active_lifecycle_for_tools().task
 
-    assert loaded_manager.active_user_task_id == user_task.id
-    assert loaded_manager.active_todo_id == todo.id
+    assert loaded_manager.active_task_id == todo.id
     assert loaded_user_task.children[0].id == todo.id
     assert loaded_todo.children[0].tool_call_log_id == 9
 

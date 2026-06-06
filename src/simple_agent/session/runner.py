@@ -265,14 +265,15 @@ class SessionRunner:
         return self._next_action
 
     def finish_previous_user_task(self) -> None:
-        previous_user_task = self._task_manager.active_user_task
+        previous_user_task = self._task_manager.user_task
         if previous_user_task is None:
             return
 
         if previous_user_task.status != "done":
-            if self._task_manager.active_todo_id is not None:
+            active_task = self._task_manager.active_lifecycle_for_tools().task
+            if active_task.kind == "todo":
                 self._task_manager.active_lifecycle_for_tools().error_task(error="Interrupted by new user input")
-                self._task_manager.refresh_active_task_state()
+                self._task_manager.refresh_active_task()
             self._task_manager.finish_user_task()
             self._next_action = "wait_user_input"
             self.sync_current_data()
@@ -317,14 +318,13 @@ class SessionRunner:
                 )
             finally:
                 self._task_manager.set_current_assistant_message_id(None)
-            self._task_manager.refresh_active_task_state()
             tool_call_records = self.tool_call_log_records(assistant_message, tool_results)
             self._task_manager.record_turn_tool_calls(
                 target_task=tool_owner_task,
                 assistant_message=assistant_message,
                 tool_call_records=tool_call_records,
             )
-            self._task_manager.refresh_active_task_state()
+            self._task_manager.refresh_active_task()
 
         assistant_entry = MessageEntry(id=assistant_message_id, message=assistant_message)
         tool_result_entries = [
@@ -521,7 +521,7 @@ class SessionRunner:
         return start_index, end_index
 
     def _user_task_is_done(self) -> bool:
-        user_task = self._task_manager.active_user_task
+        user_task = self._task_manager.user_task
         return user_task is not None and user_task.status == "done"
 
     def exit(

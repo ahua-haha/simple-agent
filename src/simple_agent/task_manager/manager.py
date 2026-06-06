@@ -156,54 +156,41 @@ class TaskManager:
     """Manage one user task and one active todo at a time."""
 
     _db: Database
-    active_user_task_id: int | None
-    active_todo_id: int | None
+    active_task_id: int | None
     _user_task: UserTask | None
-    _active_todo: TodoTask | None
-    _user_task_lifecycle: UserTaskLifecycle | None
-    _active_todo_lifecycle: TodoTaskLifecycle | None
+    _active_lifecycle: UserTaskLifecycle | TodoTaskLifecycle | None
     _next_task_id: int | None
     _compaction: BaseCompaction | None
 
     def __init__(self, db: Database):
         self._db = db
-        self.active_user_task_id: int | None = None
-        self.active_todo_id: int | None = None
+        self.active_task_id: int | None = None
         self._user_task: UserTask | None = None
-        self._active_todo: TodoTask | None = None
-        self._user_task_lifecycle: UserTaskLifecycle | None = None
-        self._active_todo_lifecycle: TodoTaskLifecycle | None = None
+        self._active_lifecycle: UserTaskLifecycle | TodoTaskLifecycle | None = None
         self._next_task_id: int | None = None
         self._compaction: BaseCompaction | None = None
 
-    def load(self, active_user_task_id: int | None, *, session: Session) -> None:
+    def load(self, user_task_id: int | None, *, session: Session) -> None:
         self._user_task = None
-        self._active_todo = None
-        self._user_task_lifecycle = None
-        self._active_todo_lifecycle = None
-        self.active_user_task_id = active_user_task_id
-        self.active_todo_id = None
+        self._active_lifecycle = None
+        self.active_task_id = None
         self._next_task_id = self._db.next_managed_task_id(session=session)
         self._compaction = None
-        if active_user_task_id is None:
+        if user_task_id is None:
             return
-        self._user_task = self.build_task_tree(active_user_task_id, session=session)
+        self._user_task = self.build_task_tree(user_task_id, session=session)
         if self._user_task is None:
             raise TaskManagerError("Active user task is missing")
         if self._user_task.kind != "user_task":
             raise TaskManagerError("Active task is not a user task")
         self._user_task = cast(UserTask, self._user_task)
-        self._user_task_lifecycle = self._create_user_task_lifecycle(self._user_task)
-        for task in self._walk_tasks():
-            if task.kind == "todo" and task.status == "active":
-                self._active_todo = cast(TodoTask, task)
-                self._active_todo_lifecycle = self._create_todo_task_lifecycle(self._active_todo)
-                self.active_todo_id = task.id
-                break
+        self.active_task_id = self._user_task.id
+        self._active_lifecycle = self._create_user_task_lifecycle(self._user_task)
+        self._set_active_task(self._loaded_active_task())
 
     def save(self, *, session: Session) -> None:
         if self._user_task is not None:
-            self._require_user_task_lifecycle().sync(self._db, session)
+            self._lifecycle_for_task(self._user_task).sync(self._db, session)
             for task in self._user_task.children:
                 if task.kind == "todo":
                     self._lifecycle_for_task(cast(TodoTask, task)).sync(self._db, session)
@@ -213,32 +200,26 @@ class TaskManager:
     # ------------------------------------------------------------------
 
     def create_user_task(self, input: str, start_message_id: int | None = None) -> UserTask:
-        if self.active_user_task_id is not None:
+        if self._user_task is not None and self._user_task.status == "active":
             raise TaskManagerError("Cannot create a second active user task")
         task = UserTask(title=input, start_message_id=start_message_id)
         task.id = self._allocate_task_id()
         self._user_task = task
-        self._user_task_lifecycle = self._create_user_task_lifecycle(task)
-        self.active_user_task_id = task.id
+        self.active_task_id = task.id
+        self._active_lifecycle = self._create_user_task_lifecycle(task)
         return task
 
     @property
-    def active_user_task(self) -> UserTask | None:
+    def user_task(self) -> UserTask | None:
         return self._user_task
 
-    @property
-    def active_todo(self) -> TodoTask | None:
-        return self._active_todo
-
     def active_task_for_tools(self) -> ManagedTask:
-        if self._active_todo is not None:
-            return self._active_todo
-        return self._require_active_user_task()
+        return self.active_lifecycle_for_tools().task
 
     def active_lifecycle_for_tools(self) -> BaseTaskLifecycle:
-        if self._active_todo_lifecycle is not None:
-            return self._active_todo_lifecycle
-        return self._require_user_task_lifecycle()
+        if self._active_lifecycle is None:
+            raise TaskManagerError("No active task lifecycle")
+        return self._active_lifecycle
 
     def allocate_task_id(self) -> int:
         return self._allocate_task_id()
@@ -248,8 +229,6 @@ class TaskManager:
 
     def set_current_assistant_message_id(self, message_id: int | None) -> None:
         self.active_lifecycle_for_tools().set_current_assistant_message_id(message_id)
-        if self._active_todo_lifecycle is not None:
-            self._active_todo_lifecycle.set_current_assistant_message_id(message_id)
 
     def record_turn_tool_calls(
         self,
@@ -265,35 +244,32 @@ class TaskManager:
         )
 
     def finish_user_task(self, result: str | None = None, end_message_id: int | None = None) -> ManagedTask:
-        user_task = self._require_active_user_task()
-        if self._active_todo is not None:
+        user_task = self._require_user_task()
+        if isinstance(self._active_lifecycle, TodoTaskLifecycle):
             raise TaskManagerError("Cannot finish user task while a todo is active")
-        self._require_user_task_lifecycle().finish_task(result=result, end_message_id=end_message_id)
-        self.active_user_task_id = None
+        self._lifecycle_for_task(user_task).finish_task(result=result, end_message_id=end_message_id)
+        self.refresh_active_task()
         return user_task
 
-    def refresh_active_task_state(self) -> None:
-        self._active_todo = None
-        self._active_todo_lifecycle = None
-        self.active_todo_id = None
-        if self._user_task is None:
-            self.active_user_task_id = None
-            self._user_task_lifecycle = None
-            return
-        self.active_user_task_id = self._user_task.id if self._user_task.status == "active" else None
-        for task in self._user_task.children:
-            if task.kind == "todo" and task.status == "active":
-                self._active_todo = cast(TodoTask, task)
-                self._active_todo_lifecycle = self._create_todo_task_lifecycle(self._active_todo)
-                self.active_todo_id = task.id
-                break
+    def refresh_active_task(self) -> None:
+        current_lifecycle = self._active_lifecycle
+        current_task = current_lifecycle.task if current_lifecycle is not None else None
+        next_task = current_lifecycle.consume_next_task() if current_lifecycle is not None else None
+        if next_task is None:
+            next_task = self._current_or_root_task(current_task)
+        self._set_active_task(next_task)
+
+    def _set_active_task(self, task: ManagedTask | None) -> None:
+        self.active_task_id = task.id if task is not None else None
+        self._active_lifecycle = self._lifecycle_for_task(task) if task is not None else None
 
     def todo_status_text(self) -> str:
-        return todo_status_text(self._require_active_user_task())
+        return todo_status_text(self._require_user_task())
 
     def active_task_tool_call_count(self) -> int:
-        if self._active_todo is not None:
-            return self._count_tool_calls(self._active_todo.children)
+        active_task = self._active_lifecycle.task if self._active_lifecycle is not None else None
+        if active_task is not None and active_task.kind == "todo":
+            return self._count_tool_calls(active_task.children)
         if self._user_task is not None:
             return self._count_tool_calls_after_latest_todo(self._user_task)
         return 0
@@ -305,17 +281,14 @@ class TaskManager:
                 "- Wait for the user to provide a task before creating todos or doing tool work."
             )
 
-        if self._active_todo is not None:
-            return self._require_active_todo_lifecycle().instruction_text(context)
-
-        return self._require_user_task_lifecycle().instruction_text(context)
+        return self.active_lifecycle_for_tools().instruction_text(context)
 
     # ------------------------------------------------------------------
     # Compact phase
     # ------------------------------------------------------------------
 
     def begin_compact(self, *, run_done: bool) -> bool:
-        user_task = self._require_loaded_user_task() if run_done else self._require_active_user_task()
+        user_task = self._require_loaded_user_task() if run_done else self._require_user_task()
         if run_done:
             compaction = UserTaskCompaction(user_task=user_task)
         else:
@@ -438,7 +411,7 @@ class TaskManager:
         depth: int | None = None,
         tool_calls: Mapping[int, ToolCallReview] | None = None,
     ) -> TaskTreeReview:
-        user_task = self._require_active_user_task()
+        user_task = self._require_user_task()
         renderer = _TaskTreeReviewRenderer(format=format, depth=depth, tool_calls=tool_calls or {})
         return renderer.render(user_task)
 
@@ -464,15 +437,30 @@ class TaskManager:
         return TodoTaskLifecycle(task, allocate_task_id=self.allocate_task_id, user_task=self._user_task)
 
     def _lifecycle_for_task(self, task: ManagedTask) -> UserTaskLifecycle | TodoTaskLifecycle:
+        if self._active_lifecycle is not None and task.id == self._active_lifecycle.task.id:
+            return self._active_lifecycle
         if task.kind == "user_task":
-            if self._user_task_lifecycle is not None and task.id == self._user_task_lifecycle.task.id:
-                return self._user_task_lifecycle
             return self._create_user_task_lifecycle(cast(UserTask, task))
         if task.kind == "todo":
-            if self._active_todo_lifecycle is not None and task.id == self._active_todo_lifecycle.task.id:
-                return self._active_todo_lifecycle
             return self._create_todo_task_lifecycle(cast(TodoTask, task))
         raise TaskManagerError("Tool-call tasks do not have a lifecycle")
+
+    def _current_or_root_task(self, task: ManagedTask | None) -> ManagedTask | None:
+        if self._user_task is None or self._user_task.status != "active":
+            return None
+        if task is None:
+            return self._user_task
+        if task.status != "active":
+            return None
+        return task
+
+    def _loaded_active_task(self) -> ManagedTask | None:
+        if self._user_task is None or self._user_task.status != "active":
+            return None
+        for task in self._walk_tasks():
+            if task.kind == "todo" and task.status == "active":
+                return task
+        return self._user_task
 
     def _allocate_task_id(self) -> int:
         if self._next_task_id is None:
@@ -481,8 +469,8 @@ class TaskManager:
         self._next_task_id += 1
         return task_id
 
-    def _require_active_user_task(self) -> UserTask:
-        if self._user_task is None or self.active_user_task_id is None:
+    def _require_user_task(self) -> UserTask:
+        if self._user_task is None or self._user_task.status != "active":
             raise TaskManagerError("No active user task")
         return self._user_task
 
@@ -490,21 +478,6 @@ class TaskManager:
         if self._user_task is None:
             raise TaskManagerError("No loaded user task")
         return self._user_task
-
-    def _require_active_todo(self) -> TodoTask:
-        if self._active_todo is None:
-            raise TaskManagerError("No active todo")
-        return self._active_todo
-
-    def _require_user_task_lifecycle(self) -> UserTaskLifecycle:
-        if self._user_task_lifecycle is None:
-            raise TaskManagerError("No active user task lifecycle")
-        return self._user_task_lifecycle
-
-    def _require_active_todo_lifecycle(self) -> TodoTaskLifecycle:
-        if self._active_todo_lifecycle is None:
-            raise TaskManagerError("No active todo lifecycle")
-        return self._active_todo_lifecycle
 
     def _require_compaction(self) -> BaseCompaction:
         if self._compaction is None:

@@ -144,7 +144,7 @@ def test_replace_managed_task_tree_deletes_all_tasks_after_root_id(tmp_path):
     with db.create_session() as session:
         loaded.load(user_task.id, session=session)
     assert db.get_managed_task(stale_orphan.id) is None
-    assert [child.title for child in loaded.active_user_task.children] == ["New child"]
+    assert [child.title for child in loaded.user_task.children] == ["New child"]
 
 
 def test_runner_tool_call_roundtrip_success(tmp_path):

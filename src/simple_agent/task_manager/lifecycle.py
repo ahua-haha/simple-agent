@@ -11,7 +11,7 @@ from typing import Any, Callable
 from pi.agent import AgentTool, AgentToolResult
 from pi.ai.types import TextContent
 
-from simple_agent.task_manager.models import TaskRuntimeContext, TodoTask, ToolCallTask, UserTask
+from simple_agent.task_manager.models import ManagedTask, TaskRuntimeContext, TodoTask, ToolCallTask, UserTask
 
 
 class TaskLifecycleError(RuntimeError):
@@ -22,6 +22,7 @@ class BaseTaskLifecycle:
     def __init__(self, *, allocate_task_id: Callable[[], int] | None = None):
         self._allocate_task_id = allocate_task_id
         self.current_assistant_message_id: int | None = None
+        self.next_task: ManagedTask | None = None
 
     def allocate_task_id(self) -> int:
         if self._allocate_task_id is None:
@@ -33,6 +34,11 @@ class BaseTaskLifecycle:
 
     def resolve_message_id(self, message_id: int | None = None) -> int | None:
         return message_id if message_id is not None else self.current_assistant_message_id
+
+    def consume_next_task(self) -> ManagedTask | None:
+        next_task = self.next_task
+        self.next_task = None
+        return next_task
 
 
 class UserTaskLifecycle(BaseTaskLifecycle):
@@ -70,6 +76,7 @@ class UserTaskLifecycle(BaseTaskLifecycle):
         )
         self.task.children.append(todo)
         self.task.touch()
+        self.next_task = todo
         return todo
 
     def finish_task(self, *, result: str | None = None, end_message_id: int | None = None) -> UserTask:
@@ -77,6 +84,7 @@ class UserTaskLifecycle(BaseTaskLifecycle):
         self.task.result = result
         self.task.end_message_id = self.resolve_message_id(end_message_id)
         self.task.touch()
+        self.next_task = None
         return self.task
 
     def append_tool_call_task(
@@ -229,6 +237,7 @@ class TodoTaskLifecycle(BaseTaskLifecycle):
         self.task.result = result
         self.task.end_message_id = self.resolve_message_id(end_message_id)
         self.task.touch()
+        self.next_task = self.user_task
         return self.task
 
     def error_task(self, *, error: str, end_message_id: int | None = None) -> TodoTask:
@@ -236,6 +245,7 @@ class TodoTaskLifecycle(BaseTaskLifecycle):
         self.task.error = error
         self.task.end_message_id = self.resolve_message_id(end_message_id)
         self.task.touch()
+        self.next_task = self.user_task
         return self.task
 
     def append_tool_call_task(
