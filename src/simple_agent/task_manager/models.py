@@ -12,6 +12,17 @@ TaskKind = Literal["user_task", "todo", "tool_call"]
 TaskStatus = Literal["active", "done", "error"]
 
 
+class TaskRuntimeContext(BaseModel):
+    """Transient runtime data used by task lifecycle decisions."""
+
+    session_id: str
+    context_tokens: int
+    total_tool_calls: int
+    active_task_tool_calls: int
+    current_assistant_message_id: int | None = None
+    run_done: bool = False
+
+
 class BaseTask(BaseModel):
     """Common in-memory task fields."""
 
@@ -38,6 +49,21 @@ class UserTask(BaseTask):
     start_message_id: int | None = None
     end_message_id: int | None = None
 
+    def instruction_text(self, context: TaskRuntimeContext) -> str:
+        if context.active_task_tool_calls > 5:
+            return (
+                "Runtime instruction for this turn:\n"
+                "- More than 5 tool calls have run since the previous todo.\n"
+                "- Stop and create a small atomic todo before doing more work.\n"
+                "- The todo should describe only the next coherent unit of work."
+            )
+        return (
+            "Runtime instruction for this turn:\n"
+            "- Determine whether the user task is complex before doing more work.\n"
+            "- If it is complex or long-running, create the next small atomic todo first.\n"
+            "- If it is simple, answer directly or use the needed tools."
+        )
+
     @classmethod
     def from_metadata(
         cls,
@@ -57,6 +83,22 @@ class TodoTask(BaseTask):
     error: str | None = None
     start_message_id: int | None = None
     end_message_id: int | None = None
+
+    def instruction_text(self, context: TaskRuntimeContext) -> str:
+        if context.active_task_tool_calls > 10:
+            return (
+                "Runtime instruction for this turn:\n"
+                "- More than 10 tool calls have run for the active todo.\n"
+                "- Determine whether the active todo is finished.\n"
+                "- If it is finished, call finish_todo now with a concise result.\n"
+                "- If it is not finished, do only the next action needed to complete it."
+            )
+        return (
+            "Runtime instruction for this turn:\n"
+            f"- Focus on the active todo: {self.title}\n"
+            "- Use tools only for work needed by this todo.\n"
+            "- Call finish_todo immediately when it is complete."
+        )
 
     @classmethod
     def from_metadata(
