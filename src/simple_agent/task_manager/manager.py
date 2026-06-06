@@ -9,7 +9,7 @@ from typing import Any, TYPE_CHECKING, Literal, Mapping
 from pi.agent import AgentTool, AgentToolResult
 from pi.ai.types import AssistantMessage, TextContent
 
-from simple_agent.task_manager.models import ManagedTask, TodoTask, ToolCallTask, UserTask
+from simple_agent.task_manager.models import ManagedTask, TaskRuntimeContext, TodoTask, ToolCallTask, UserTask
 
 if TYPE_CHECKING:
     from simple_agent.db.db import Database
@@ -372,44 +372,24 @@ class TaskManager:
             lines.append(line)
         return "\n".join(lines)
 
-    def user_instruction_text(self) -> str:
+    def active_task_tool_call_count(self) -> int:
+        if self._active_todo is not None:
+            return self._count_tool_calls(self._active_todo.children)
+        if self._user_task is not None:
+            return self._count_tool_calls_after_latest_todo(self._user_task)
+        return 0
+
+    def user_instruction_text(self, context: TaskRuntimeContext) -> str:
         if self._user_task is None:
             return (
                 "Runtime instruction for this turn:\n"
                 "- Wait for the user to provide a task before creating todos or doing tool work."
             )
 
-        if self._active_todo is None:
-            tool_calls_after_previous_todo = self._count_tool_calls_after_latest_todo(self._user_task)
-            if tool_calls_after_previous_todo > 5:
-                return (
-                    "Runtime instruction for this turn:\n"
-                    "- More than 5 tool calls have run since the previous todo.\n"
-                    "- Stop and create a small atomic todo before doing more work.\n"
-                    "- The todo should describe only the next coherent unit of work."
-                )
-            return (
-                "Runtime instruction for this turn:\n"
-                "- Determine whether the user task is complex before doing more work.\n"
-                "- If it is complex or long-running, create the next small atomic todo first.\n"
-                "- If it is simple, answer directly or use the needed tools."
-            )
+        if self._active_todo is not None:
+            return self._active_todo.instruction_text(context)
 
-        active_todo_tool_calls = self._count_tool_calls(self._active_todo.children)
-        if active_todo_tool_calls > 10:
-            return (
-                "Runtime instruction for this turn:\n"
-                "- More than 10 tool calls have run for the active todo.\n"
-                "- Determine whether the active todo is finished.\n"
-                "- If it is finished, call finish_todo now with a concise result.\n"
-                "- If it is not finished, do only the next action needed to complete it."
-            )
-        return (
-            "Runtime instruction for this turn:\n"
-            f"- Focus on the active todo: {self._active_todo.title}\n"
-            "- Use tools only for work needed by this todo.\n"
-            "- Call finish_todo immediately when it is complete."
-        )
+        return self._user_task.instruction_text(context)
 
     # ------------------------------------------------------------------
     # Compact phase

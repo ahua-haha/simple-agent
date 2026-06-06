@@ -8,7 +8,7 @@ import pytest
 
 from simple_agent.db.db import Database
 from simple_agent.task_manager import TaskManager, TaskManagerError, ToolCallReview
-from simple_agent.task_manager.models import TodoTask, UserTask
+from simple_agent.task_manager.models import TaskRuntimeContext, TodoTask, UserTask
 
 
 def test_managed_task_defaults():
@@ -35,6 +35,15 @@ def _save(manager: TaskManager) -> None:
     with manager._db.create_session() as session:
         manager.save(session=session)
         session.commit()
+
+
+def _runtime_context(manager: TaskManager) -> TaskRuntimeContext:
+    return TaskRuntimeContext(
+        session_id="session_a",
+        context_tokens=100,
+        total_tool_calls=0,
+        active_task_tool_calls=manager.active_task_tool_call_count(),
+    )
 
 
 async def _run_compact_tools(
@@ -259,7 +268,7 @@ def test_user_instruction_without_active_todo_asks_for_complexity_check():
     _load(manager, None)
     manager.create_user_task("Build feature")
 
-    instruction = manager.user_instruction_text()
+    instruction = manager.user_instruction_text(_runtime_context(manager))
 
     assert "determine whether the user task is complex" in instruction.lower()
     assert "create the next small atomic todo" in instruction
@@ -275,7 +284,7 @@ def test_user_instruction_without_active_todo_after_many_tools_requires_todo():
     for tool_call_id in range(6):
         manager.record_tool_call(tool_call_id)
 
-    instruction = manager.user_instruction_text()
+    instruction = manager.user_instruction_text(_runtime_context(manager))
 
     assert todo.status == "done"
     assert "More than 5 tool calls have run since the previous todo" in instruction
@@ -289,7 +298,7 @@ def test_user_instruction_with_active_todo_focuses_on_current_todo():
     manager.create_user_task("Build feature")
     manager.create_todo("Inspect files")
 
-    instruction = manager.user_instruction_text()
+    instruction = manager.user_instruction_text(_runtime_context(manager))
 
     assert "Focus on the active todo" in instruction
     assert "finish_todo immediately when it is complete" in instruction
@@ -304,11 +313,24 @@ def test_user_instruction_with_active_todo_after_many_tools_asks_to_finish_if_do
     for tool_call_id in range(11):
         manager.record_tool_call(tool_call_id)
 
-    instruction = manager.user_instruction_text()
+    instruction = manager.user_instruction_text(_runtime_context(manager))
 
     assert "More than 10 tool calls have run for the active todo" in instruction
     assert "determine whether the active todo is finished" in instruction.lower()
     assert "call finish_todo now" in instruction
+
+
+def test_user_instruction_routes_to_active_todo_before_user_task():
+    db = _make_db()
+    manager = TaskManager(db)
+    _load(manager, None)
+    manager.create_user_task("Build feature")
+    manager.create_todo("Inspect files")
+
+    instruction = manager.user_instruction_text(_runtime_context(manager))
+
+    assert "Focus on the active todo: Inspect files" in instruction
+    assert "Determine whether the user task is complex" not in instruction
 
 
 def test_review_task_tree_renders_tasks_and_tool_calls_with_temp_sequence():
