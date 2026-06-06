@@ -8,11 +8,11 @@ import pytest
 
 from simple_agent.db.db import Database
 from simple_agent.task_manager import TaskManager, TaskManagerError, ToolCallReview
-from simple_agent.task_manager.models import ManagedTask
+from simple_agent.task_manager.models import TodoTask, UserTask
 
 
 def test_managed_task_defaults():
-    task = ManagedTask(kind="user_task", title="Build feature")
+    task = UserTask(title="Build feature")
     assert task.kind == "user_task"
     assert task.status == "active"
     assert not hasattr(task, "seq")
@@ -77,9 +77,8 @@ def test_task_manager_save_requires_session():
 
 def test_managed_task_roundtrip_preserves_parent():
     db = _make_db()
-    child = ManagedTask(kind="todo", title="Runtime child", parent_id=10)
-    task = ManagedTask(
-        kind="user_task",
+    child = TodoTask(title="Runtime child", parent_id=10)
+    task = UserTask(
         title="Build feature",
         parent_id=10,
         children=[child],
@@ -99,8 +98,7 @@ def test_managed_task_roundtrip_preserves_parent():
 
 def test_managed_task_roundtrip_preserves_message_boundaries():
     db = _make_db()
-    task = ManagedTask(
-        kind="todo",
+    task = TodoTask(
         title="Inspect files",
         start_message_id=12,
         end_message_id=15,

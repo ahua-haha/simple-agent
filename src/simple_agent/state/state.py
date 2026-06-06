@@ -5,10 +5,11 @@ from __future__ import annotations
 import time
 
 from pydantic import BaseModel, TypeAdapter
+from sqlalchemy import Column, String
 from sqlmodel import SQLModel, Field
 
 from pi.agent.types import AgentMessage
-from simple_agent.task_manager.models import ManagedTask
+from simple_agent.task_manager.models import ManagedTask, task_from_metadata
 
 
 # ── DB record classes ────────────────────────────────────────────────
@@ -24,21 +25,14 @@ class SessionRecord(SQLModel, table=True):
     updated_at: float = Field(default_factory=time.time)
 
 
-class ManagedTaskRecord(SQLModel, table=True):
-    """SQLite model for the replacement task manager."""
+class TaskRecord(SQLModel, table=True):
+    """SQLite model for task-manager tasks."""
 
     id: int | None = Field(default=None, primary_key=True)
     parent_id: int | None = Field(default=None, index=True)
     kind: str = Field(index=True)
-    title: str
     status: str = Field(default="active", index=True)
-    result: str | None = None
-    error: str | None = None
-    start_message_id: int | None = Field(default=None, index=True)
-    end_message_id: int | None = Field(default=None, index=True)
-    tool_call_log_id: int | None = Field(default=None, index=True)
-    created_at: float = Field(default_factory=time.time)
-    updated_at: float = Field(default_factory=time.time)
+    metadata_json: str = Field(sa_column=Column("metadata", String))
 
 
 class RunnerStateMetadataRecord(SQLModel, table=True):
@@ -104,37 +98,23 @@ def agent_message_from_json(payload: str) -> AgentMessage:
     return _single_message_adapter.validate_json(payload)
 
 
-def managed_task_to_record(task: ManagedTask) -> ManagedTaskRecord:
-    return ManagedTaskRecord(
+def managed_task_to_record(task: ManagedTask) -> TaskRecord:
+    return TaskRecord(
         id=task.id,
         parent_id=task.parent_id,
         kind=task.kind,
-        title=task.title,
         status=task.status,
-        result=task.result,
-        error=task.error,
-        start_message_id=task.start_message_id,
-        end_message_id=task.end_message_id,
-        tool_call_log_id=task.tool_call_log_id,
-        created_at=task.created_at,
-        updated_at=task.updated_at,
+        metadata_json=task.metadata_json(),
     )
 
 
-def managed_task_from_record(record: ManagedTaskRecord) -> ManagedTask:
-    return ManagedTask(
+def managed_task_from_record(record: TaskRecord) -> ManagedTask:
+    return task_from_metadata(
         id=record.id,
         parent_id=record.parent_id,
         kind=record.kind,
-        title=record.title,
         status=record.status,
-        result=record.result,
-        error=record.error,
-        start_message_id=record.start_message_id,
-        end_message_id=record.end_message_id,
-        tool_call_log_id=record.tool_call_log_id,
-        created_at=record.created_at,
-        updated_at=record.updated_at,
+        metadata=record.metadata_json,
     )
 
 

@@ -11,11 +11,11 @@ import sqlite3
 from pi.agent.types import AgentMessage
 
 from simple_agent.state.state import (
-    ManagedTaskRecord,
     RunnerMessageRecord,
     RunnerStateMetadataRecord,
     RunnerToolCallRecord,
     SessionRecord,
+    TaskRecord,
     agent_message_from_json,
     agent_message_to_json,
     managed_task_from_record,
@@ -93,7 +93,7 @@ class Database:
     @standalone_or_compose
     def get_managed_task(self, task_id: int, *, session: Session | None = None):
         """Return a managed task by ID, or None."""
-        record = session.get(ManagedTaskRecord, task_id)
+        record = session.get(TaskRecord, task_id)
         if record is None:
             return None
         session.expunge(record)
@@ -102,7 +102,7 @@ class Database:
     @standalone_or_compose
     def list_managed_tasks(self, *, session: Session | None = None):
         """Return all managed tasks ordered by ID."""
-        records = list(session.exec(select(ManagedTaskRecord).order_by(ManagedTaskRecord.id)).all())
+        records = list(session.exec(select(TaskRecord).order_by(TaskRecord.id)).all())
         for record in records:
             session.expunge(record)
         return [managed_task_from_record(record) for record in records]
@@ -112,9 +112,9 @@ class Database:
         """Return direct managed-task children in append order."""
         records = list(
             session.exec(
-                select(ManagedTaskRecord)
-                .where(ManagedTaskRecord.parent_id == parent_id)
-                .order_by(ManagedTaskRecord.id)
+                select(TaskRecord)
+                .where(TaskRecord.parent_id == parent_id)
+                .order_by(TaskRecord.id)
             ).all()
         )
         for record in records:
@@ -123,13 +123,13 @@ class Database:
 
     @standalone_or_compose
     def next_managed_task_id(self, *, session: Session | None = None) -> int:
-        record = session.exec(select(ManagedTaskRecord).order_by(ManagedTaskRecord.id.desc())).first()
+        record = session.exec(select(TaskRecord).order_by(TaskRecord.id.desc())).first()
         return (record.id + 1) if record and record.id is not None else 1
 
     @standalone_or_compose
     def delete_managed_tasks(self, task_ids: list[int], *, session: Session | None = None) -> None:
         for task_id in task_ids:
-            record = session.get(ManagedTaskRecord, task_id)
+            record = session.get(TaskRecord, task_id)
             if record is not None:
                 session.delete(record)
 
@@ -138,8 +138,8 @@ class Database:
         if root_task.id is None:
             raise ValueError("Cannot replace a managed task tree without a root task id")
         session.exec(
-            delete(ManagedTaskRecord)
-            .where(ManagedTaskRecord.id > root_task.id)
+            delete(TaskRecord)
+            .where(TaskRecord.id > root_task.id)
         )
         for task in _flatten_managed_task_tree(root_task):
             self.upsert_managed_task(task, session=session)

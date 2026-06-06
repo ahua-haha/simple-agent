@@ -28,8 +28,8 @@ class TestDatabaseInit:
             conn.close()
 
             assert "runnertoolcallrecord" in tables
-            assert "managedtaskrecord" in tables
-            assert "taskrecord" not in tables
+            assert "taskrecord" in tables
+            assert "managedtaskrecord" not in tables
         finally:
             os.unlink(db_path)
 

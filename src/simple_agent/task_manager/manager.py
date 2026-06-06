@@ -9,7 +9,7 @@ from typing import Any, TYPE_CHECKING, Literal, Mapping
 from pi.agent import AgentTool, AgentToolResult
 from pi.ai.types import AssistantMessage, TextContent
 
-from simple_agent.task_manager.models import ManagedTask
+from simple_agent.task_manager.models import ManagedTask, TodoTask, ToolCallTask, UserTask
 
 if TYPE_CHECKING:
     from simple_agent.db.db import Database
@@ -29,13 +29,12 @@ class BaseCompaction:
     def create_result(self, *, task_id: int, description: str) -> ManagedTask:
         if self.result is not None:
             raise TaskManagerError("Compacted todo already exists")
-        self.result = ManagedTask(kind="todo", title="Compacted work", status="active", result=description, id=task_id)
+        self.result = TodoTask(title="Compacted work", status="active", result=description, id=task_id)
         return self.result
 
     def record_tool_call(self, *, task_id: int, tool_call_log_id: int) -> None:
         result = self._require_result()
-        tool_call_task = ManagedTask(
-            kind="tool_call",
+        tool_call_task = ToolCallTask(
             title=f"Tool call {tool_call_log_id}",
             status="done",
             parent_id=result.id,
@@ -204,7 +203,7 @@ class TaskManager:
     def create_user_task(self, input: str, start_message_id: int | None = None) -> ManagedTask:
         if self.active_user_task_id is not None:
             raise TaskManagerError("Cannot create a second active user task")
-        task = ManagedTask(kind="user_task", title=input, start_message_id=start_message_id)
+        task = UserTask(title=input, start_message_id=start_message_id)
         task.id = self._allocate_task_id()
         self._user_task = task
         self.active_user_task_id = task.id
@@ -297,8 +296,7 @@ class TaskManager:
         if self._active_todo is not None:
             raise TaskManagerError("Cannot create todo while another active todo exists")
 
-        todo = ManagedTask(
-            kind="todo",
+        todo = TodoTask(
             title=title,
             parent_id=user_task.id,
             start_message_id=start_message_id if start_message_id is not None else self.current_assistant_message_id,
@@ -336,8 +334,7 @@ class TaskManager:
             target = self._active_todo
         else:
             target = self._require_active_user_task()
-        tool_call_task = ManagedTask(
-            kind="tool_call",
+        tool_call_task = ToolCallTask(
             title=f"Tool call {tool_call_id}",
             status="done",
             parent_id=target.id,
@@ -438,9 +435,8 @@ class TaskManager:
     ) -> str:
         compaction = self._require_compaction()
         user_task = self._require_loaded_user_task()
-        compact_root = ManagedTask(
+        compact_root = UserTask(
             id=user_task.id,
-            kind=user_task.kind,
             title=user_task.title,
             status=user_task.status,
             result=user_task.result,

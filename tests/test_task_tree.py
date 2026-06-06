@@ -1,15 +1,13 @@
 """Compatibility tests for the retired task tree runtime."""
 
-from simple_agent.task_manager.models import ManagedTask
+from simple_agent.task_manager.models import UserTask
 
 
-def test_replacement_task_model_uses_parent_and_seq():
-    task = ManagedTask(
-        kind="user_task",
+def test_replacement_task_model_uses_parent_without_seq():
+    task = UserTask(
         title="Build feature",
         parent_id=1,
-        seq="U",
     )
 
     assert task.parent_id == 1
-    assert task.seq == "U"
+    assert not hasattr(task, "seq")
