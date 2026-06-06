@@ -201,8 +201,9 @@ class SessionRunner:
             session.commit()
 
     def _create_tools(self):
+        task_tools = self._task_manager.create_tools()
         return [
-            *self._task_manager.create_tools(),
+            *task_tools,
             *create_all_coding_tools("."),
         ]
 
@@ -280,6 +281,7 @@ class SessionRunner:
         if self._next_action != "normal_run":
             return self._next_action
 
+        tool_owner_task = self._task_manager.active_task_for_tools()
         tools = self._create_tools()
         user_instruction_context = self.task_runtime_context()
         user_instruction_message = UserMessage(
@@ -314,11 +316,14 @@ class SessionRunner:
                 )
             finally:
                 self._task_manager.current_assistant_message_id = None
+            self._task_manager.refresh_active_task_state()
             tool_call_records = self.tool_call_log_records(assistant_message, tool_results)
             self._task_manager.record_turn_tool_calls(
+                target_task=tool_owner_task,
                 assistant_message=assistant_message,
                 tool_call_records=tool_call_records,
             )
+            self._task_manager.refresh_active_task_state()
 
         assistant_entry = MessageEntry(id=assistant_message_id, message=assistant_message)
         tool_result_entries = [
@@ -328,7 +333,9 @@ class SessionRunner:
         pending_messages = [assistant_entry, *tool_result_entries]
         self.append_messages(pending_messages)
 
-        if not has_tool_calls:
+        if self._user_task_is_done():
+            self._next_action = "compact"
+        elif not has_tool_calls:
             self._task_manager.finish_user_task(end_message_id=assistant_message_id)
             self._next_action = "compact"
         else:

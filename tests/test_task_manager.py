@@ -337,6 +337,7 @@ def test_record_turn_tool_calls_appends_task_under_active_task():
     )
 
     tasks = manager.record_turn_tool_calls(
+        target_task=todo,
         assistant_message=assistant_message,
         tool_call_records=[(9, None, tool_result)],
     )

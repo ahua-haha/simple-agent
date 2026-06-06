@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import json
 import time
-from typing import Any, Literal
+from typing import Any, Callable, Literal
 
 from pi.agent import AgentTool, AgentToolResult
 from pi.ai.types import TextContent
@@ -109,10 +109,33 @@ class UserTask(BaseTask):
         self.touch()
         return tool_call_task
 
-    def create_tools(self, manager: Any) -> list[AgentTool]:
+    def todo_status_text(self) -> str:
+        todos = [child for child in self.children if child.kind == "todo"]
+        if not todos:
+            return "Todos: []"
+
+        lines = ["Todos:"]
+        for todo in todos:
+            line = f"- [{todo.status}] {todo.title}"
+            if todo.result:
+                line += f" result={todo.result}"
+            if todo.error:
+                line += f" error={todo.error}"
+            lines.append(line)
+        return "\n".join(lines)
+
+    def create_tools(
+        self,
+        *,
+        allocate_task_id: Callable[[], int],
+        current_assistant_message_id: int | Callable[[], int | None] | None = None,
+    ) -> list[AgentTool]:
         return [
-            self.create_create_todo_tool(manager),
-            self.create_finish_user_task_tool(manager),
+            self.create_create_todo_tool(
+                allocate_task_id=allocate_task_id,
+                current_assistant_message_id=current_assistant_message_id,
+            ),
+            self.create_finish_user_task_tool(current_assistant_message_id=current_assistant_message_id),
         ]
 
     def sync(self, database: Any, session: Any) -> None:
@@ -120,7 +143,12 @@ class UserTask(BaseTask):
         for child in sorted(self.children, key=lambda item: item.id or 0):
             database.upsert_managed_task(child, session=session)
 
-    def create_create_todo_tool(self, manager: Any) -> AgentTool:
+    def create_create_todo_tool(
+        self,
+        *,
+        allocate_task_id: Callable[[], int],
+        current_assistant_message_id: int | Callable[[], int | None] | None = None,
+    ) -> AgentTool:
         tool = AgentTool(
             name="create_todo",
             description=(
@@ -142,13 +170,21 @@ class UserTask(BaseTask):
         )
 
         async def execute(tool_call_id, params, cancel_event=None, on_update=None):
-            manager.create_todo(params["title"])
-            return AgentToolResult(content=[TextContent(text=manager.todo_status_text())])
+            self.create_todo_task(
+                task_id=allocate_task_id(),
+                title=params["title"],
+                start_message_id=_resolve_message_id(current_assistant_message_id),
+            )
+            return AgentToolResult(content=[TextContent(text=self.todo_status_text())])
 
         tool.execute = execute
         return tool
 
-    def create_finish_user_task_tool(self, manager: Any) -> AgentTool:
+    def create_finish_user_task_tool(
+        self,
+        *,
+        current_assistant_message_id: int | Callable[[], int | None] | None = None,
+    ) -> AgentTool:
         tool = AgentTool(
             name="finish_user_task",
             description=(
@@ -165,7 +201,10 @@ class UserTask(BaseTask):
         )
 
         async def execute(tool_call_id, params, cancel_event=None, on_update=None):
-            task = manager.finish_user_task(params.get("result"))
+            task = self.finish_task(
+                result=params.get("result"),
+                end_message_id=_resolve_message_id(current_assistant_message_id),
+            )
             return AgentToolResult(content=[TextContent(text=f"User task finished: {task.result or task.title}")])
 
         tool.execute = execute
@@ -240,10 +279,21 @@ class TodoTask(BaseTask):
         self.touch()
         return tool_call_task
 
-    def create_tools(self, manager: Any) -> list[AgentTool]:
+    def create_tools(
+        self,
+        *,
+        current_assistant_message_id: int | Callable[[], int | None] | None = None,
+        user_task: UserTask | None = None,
+    ) -> list[AgentTool]:
         return [
-            self.create_finish_todo_tool(manager),
-            self.create_error_todo_tool(manager),
+            self.create_finish_todo_tool(
+                current_assistant_message_id=current_assistant_message_id,
+                user_task=user_task,
+            ),
+            self.create_error_todo_tool(
+                current_assistant_message_id=current_assistant_message_id,
+                user_task=user_task,
+            ),
         ]
 
     def sync(self, database: Any, session: Any) -> None:
@@ -251,7 +301,12 @@ class TodoTask(BaseTask):
         for child in sorted(self.children, key=lambda item: item.id or 0):
             database.upsert_managed_task(child, session=session)
 
-    def create_finish_todo_tool(self, manager: Any) -> AgentTool:
+    def create_finish_todo_tool(
+        self,
+        *,
+        current_assistant_message_id: int | Callable[[], int | None] | None = None,
+        user_task: UserTask | None = None,
+    ) -> AgentTool:
         tool = AgentTool(
             name="finish_todo",
             description=(
@@ -268,13 +323,22 @@ class TodoTask(BaseTask):
         )
 
         async def execute(tool_call_id, params, cancel_event=None, on_update=None):
-            manager.finish_task(params.get("result"))
-            return AgentToolResult(content=[TextContent(text=manager.todo_status_text())])
+            self.finish_task(
+                result=params.get("result"),
+                end_message_id=_resolve_message_id(current_assistant_message_id),
+            )
+            text = user_task.todo_status_text() if user_task is not None else f"Todo finished: {self.result or self.title}"
+            return AgentToolResult(content=[TextContent(text=text)])
 
         tool.execute = execute
         return tool
 
-    def create_error_todo_tool(self, manager: Any) -> AgentTool:
+    def create_error_todo_tool(
+        self,
+        *,
+        current_assistant_message_id: int | Callable[[], int | None] | None = None,
+        user_task: UserTask | None = None,
+    ) -> AgentTool:
         tool = AgentTool(
             name="error_todo",
             description=(
@@ -291,8 +355,12 @@ class TodoTask(BaseTask):
         )
 
         async def execute(tool_call_id, params, cancel_event=None, on_update=None):
-            manager.error_task(params["error"])
-            return AgentToolResult(content=[TextContent(text=manager.todo_status_text())])
+            self.error_task(
+                error=params["error"],
+                end_message_id=_resolve_message_id(current_assistant_message_id),
+            )
+            text = user_task.todo_status_text() if user_task is not None else f"Todo errored: {self.error or self.title}"
+            return AgentToolResult(content=[TextContent(text=text)])
 
         tool.execute = execute
         return tool
@@ -354,3 +422,9 @@ def _metadata_dict(metadata: str) -> dict:
     if not isinstance(payload, dict):
         raise ValueError("Task metadata must be a JSON object")
     return payload
+
+
+def _resolve_message_id(value: int | Callable[[], int | None] | None) -> int | None:
+    if callable(value):
+        return value()
+    return value

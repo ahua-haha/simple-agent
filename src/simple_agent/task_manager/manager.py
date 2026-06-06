@@ -195,8 +195,9 @@ class TaskManager:
     def save(self, *, session: Session) -> None:
         if self._user_task is not None:
             self._user_task.sync(self._db, session)
-        if self._active_todo is not None:
-            self._active_todo.sync(self._db, session)
+            for task in self._user_task.children:
+                if task.kind == "todo":
+                    task.sync(self._db, session)
 
     # ------------------------------------------------------------------
     # Normal running phase
@@ -219,23 +220,25 @@ class TaskManager:
     def active_todo(self) -> ManagedTask | None:
         return self._active_todo
 
-    def create_tools(self) -> list[AgentTool]:
+    def active_task_for_tools(self) -> ManagedTask:
         if self._active_todo is not None:
-            return self._active_todo.create_tools(self)
-        user_task = self._require_active_user_task()
-        return user_task.create_tools(self)
+            return self._active_todo
+        return self._require_active_user_task()
 
-    def create_create_todo_tool(self) -> AgentTool:
-        return self._require_active_user_task().create_create_todo_tool(self)
+    def allocate_task_id(self) -> int:
+        return self._allocate_task_id()
 
-    def create_finish_user_task_tool(self) -> AgentTool:
-        return self._require_active_user_task().create_finish_user_task_tool(self)
-
-    def create_finish_todo_tool(self) -> AgentTool:
-        return self._require_active_todo().create_finish_todo_tool(self)
-
-    def create_error_todo_tool(self) -> AgentTool:
-        return self._require_active_todo().create_error_todo_tool(self)
+    def create_tools(self) -> list[AgentTool]:
+        active_task = self.active_task_for_tools()
+        if active_task.kind == "todo":
+            return active_task.create_tools(
+                current_assistant_message_id=lambda: self.current_assistant_message_id,
+                user_task=self._user_task,
+            )
+        return active_task.create_tools(
+            allocate_task_id=self.allocate_task_id,
+            current_assistant_message_id=lambda: self.current_assistant_message_id,
+        )
 
     def create_todo(self, title: str, start_message_id: int | None = None) -> ManagedTask:
         user_task = self._require_active_user_task()
@@ -275,13 +278,11 @@ class TaskManager:
         self,
         tool_call_id: int,
         *,
+        target_task: ManagedTask | None = None,
         assistant_message: AssistantMessage | None = None,
         tool_result_message: ToolResultMessage | None = None,
     ) -> ManagedTask:
-        if self._active_todo is not None:
-            target = self._active_todo
-        else:
-            target = self._require_active_user_task()
+        target = target_task or self.active_task_for_tools()
         return target.append_tool_call_task(
             task_id=self._allocate_task_id(),
             tool_call_log_id=tool_call_id,
@@ -292,6 +293,7 @@ class TaskManager:
     def record_turn_tool_calls(
         self,
         *,
+        target_task: ManagedTask,
         assistant_message: AssistantMessage,
         tool_call_records: list[tuple[int, Any, ToolResultMessage]],
     ) -> list[ManagedTask]:
@@ -300,6 +302,7 @@ class TaskManager:
             tasks.append(
                 self.record_tool_call(
                     log_id,
+                    target_task=target_task,
                     assistant_message=assistant_message,
                     tool_result_message=tool_result,
                 )
@@ -313,6 +316,19 @@ class TaskManager:
         user_task.finish_task(result=result, end_message_id=end_message_id)
         self.active_user_task_id = None
         return user_task
+
+    def refresh_active_task_state(self) -> None:
+        self._active_todo = None
+        self.active_todo_id = None
+        if self._user_task is None:
+            self.active_user_task_id = None
+            return
+        self.active_user_task_id = self._user_task.id if self._user_task.status == "active" else None
+        for task in self._user_task.children:
+            if task.kind == "todo" and task.status == "active":
+                self._active_todo = task
+                self.active_todo_id = task.id
+                break
 
     def todo_status_text(self) -> str:
         user_task = self._require_active_user_task()

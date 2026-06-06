@@ -29,13 +29,14 @@ def test_create_todo_tool_creates_active_todo():
     db = _make_db()
     manager = TaskManager(db)
     _load(manager, None)
-    manager.create_user_task("Build feature")
-    tool = manager.create_create_todo_tool()
+    user_task = manager.create_user_task("Build feature")
+    tool = user_task.create_create_todo_tool(allocate_task_id=manager.allocate_task_id)
 
     async def run():
         return await tool.execute("call_1", {"title": "Inspect files"})
 
     result = asyncio.run(run())
+    manager.refresh_active_task_state()
 
     assert "Todos:" in result.content[0].text
     assert "- [active] Inspect files" in result.content[0].text
@@ -47,14 +48,15 @@ def test_finish_todo_tool_finishes_active_todo():
     db = _make_db()
     manager = TaskManager(db)
     _load(manager, None)
-    manager.create_user_task("Build feature")
+    user_task = manager.create_user_task("Build feature")
     todo = manager.create_todo("Inspect files")
-    tool = manager.create_finish_todo_tool()
+    tool = todo.create_finish_todo_tool(user_task=user_task)
 
     async def run():
         return await tool.execute("call_1", {"result": "Inspected files"})
 
     result = asyncio.run(run())
+    manager.refresh_active_task_state()
     _save(manager)
     loaded = db.get_managed_task(todo.id)
 
@@ -70,14 +72,15 @@ def test_error_todo_tool_returns_latest_todo_status():
     db = _make_db()
     manager = TaskManager(db)
     _load(manager, None)
-    manager.create_user_task("Build feature")
+    user_task = manager.create_user_task("Build feature")
     todo = manager.create_todo("Inspect files")
-    tool = manager.create_error_todo_tool()
+    tool = todo.create_error_todo_tool(user_task=user_task)
 
     async def run():
         return await tool.execute("call_1", {"error": "Missing dependency"})
 
     result = asyncio.run(run())
+    manager.refresh_active_task_state()
     _save(manager)
     loaded = db.get_managed_task(todo.id)
 
@@ -92,8 +95,8 @@ def test_todo_tools_do_not_require_runner_wrapping():
     db = _make_db()
     manager = TaskManager(db)
     _load(manager, None)
-    manager.create_user_task("Build feature")
-    tool = manager.create_create_todo_tool()
+    user_task = manager.create_user_task("Build feature")
+    tool = user_task.create_create_todo_tool(allocate_task_id=manager.allocate_task_id)
 
     async def run():
         return await tool.execute("call_1", {"title": "Inspect files"})
@@ -107,6 +110,34 @@ def test_user_task_tools_include_create_todo_and_finish_user_task():
     db = _make_db()
     manager = TaskManager(db)
     _load(manager, None)
+    user_task = manager.create_user_task("Build feature")
+
+    tools = [
+        tool.name
+        for tool in user_task.create_tools(
+            allocate_task_id=manager.allocate_task_id,
+        )
+    ]
+
+    assert tools == ["create_todo", "finish_user_task"]
+
+
+def test_active_todo_tools_include_todo_lifecycle_tools():
+    db = _make_db()
+    manager = TaskManager(db)
+    _load(manager, None)
+    user_task = manager.create_user_task("Build feature")
+    todo = manager.create_todo("Inspect files")
+
+    tools = [tool.name for tool in todo.create_tools(user_task=user_task)]
+
+    assert tools == ["finish_todo", "error_todo"]
+
+
+def test_task_manager_create_tools_delegates_to_active_user_task():
+    db = _make_db()
+    manager = TaskManager(db)
+    _load(manager, None)
     manager.create_user_task("Build feature")
 
     tools = [tool.name for tool in manager.create_tools()]
@@ -114,7 +145,7 @@ def test_user_task_tools_include_create_todo_and_finish_user_task():
     assert tools == ["create_todo", "finish_user_task"]
 
 
-def test_active_todo_tools_include_todo_lifecycle_tools():
+def test_task_manager_create_tools_delegates_to_active_todo():
     db = _make_db()
     manager = TaskManager(db)
     _load(manager, None)
@@ -131,12 +162,13 @@ def test_finish_user_task_tool_finishes_user_task():
     manager = TaskManager(db)
     _load(manager, None)
     user_task = manager.create_user_task("Build feature")
-    tool = manager.create_finish_user_task_tool()
+    tool = user_task.create_finish_user_task_tool()
 
     async def run():
         return await tool.execute("call_1", {"result": "Feature built"})
 
     result = asyncio.run(run())
+    manager.refresh_active_task_state()
 
     assert user_task.status == "done"
     assert user_task.result == "Feature built"
