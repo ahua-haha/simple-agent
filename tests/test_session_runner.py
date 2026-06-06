@@ -270,8 +270,9 @@ async def test_session_runner_creates_task_runs_agent_and_persists_messages(tmp_
     assert agent_process.calls[0]["messages"] is not runner._messages
     assert agent_process.calls[0]["cancel_event"] is cancel_event
     assert "create_todo" in agent_process.calls[0]["tools"]
-    assert "finish_todo" in agent_process.calls[0]["tools"]
-    assert "error_todo" in agent_process.calls[0]["tools"]
+    assert "finish_user_task" in agent_process.calls[0]["tools"]
+    assert "finish_todo" not in agent_process.calls[0]["tools"]
+    assert "error_todo" not in agent_process.calls[0]["tools"]
     assert len(agent_process.tool_step_calls) == 0
 
     metadata = db.get_runner_state_metadata("session_a")

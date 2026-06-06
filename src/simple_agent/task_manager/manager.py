@@ -7,7 +7,7 @@ from dataclasses import dataclass
 from typing import Any, TYPE_CHECKING, Literal, Mapping
 
 from pi.agent import AgentTool, AgentToolResult
-from pi.ai.types import AssistantMessage, TextContent
+from pi.ai.types import AssistantMessage, TextContent, ToolResultMessage
 
 from simple_agent.task_manager.models import ManagedTask, TaskRuntimeContext, TodoTask, ToolCallTask, UserTask
 
@@ -193,8 +193,10 @@ class TaskManager:
                 break
 
     def save(self, *, session: Session) -> None:
-        for task in sorted(self._walk_tasks(), key=lambda item: item.id or 0):
-            self._db.upsert_managed_task(task, session=session)
+        if self._user_task is not None:
+            self._user_task.sync(self._db, session)
+        if self._active_todo is not None:
+            self._active_todo.sync(self._db, session)
 
     # ------------------------------------------------------------------
     # Normal running phase
@@ -217,142 +219,98 @@ class TaskManager:
     def active_todo(self) -> ManagedTask | None:
         return self._active_todo
 
+    def create_tools(self) -> list[AgentTool]:
+        if self._active_todo is not None:
+            return self._active_todo.create_tools(self)
+        user_task = self._require_active_user_task()
+        return user_task.create_tools(self)
+
     def create_create_todo_tool(self) -> AgentTool:
-        tool = AgentTool(
-            name="create_todo",
-            description=(
-                "Create the next todo item for the current session task list. "
-                "Use for complex tasks with 3+ steps or when the user provides "
-                "multiple tasks. Create items in priority order. Only one todo "
-                "may be active at a time."
-            ),
-            parameters={
-                "type": "object",
-                "properties": {
-                    "title": {
-                        "type": "string",
-                        "description": "Short content for the next coherent unit of work.",
-                    },
-                },
-                "required": ["title"],
-            },
-        )
+        return self._require_active_user_task().create_create_todo_tool(self)
 
-        async def execute(tool_call_id, params, cancel_event=None, on_update=None):
-            self.create_todo(params["title"])
-            return AgentToolResult(content=[TextContent(text=self.todo_status_text())])
-
-        tool.execute = execute
-        return tool
+    def create_finish_user_task_tool(self) -> AgentTool:
+        return self._require_active_user_task().create_finish_user_task_tool(self)
 
     def create_finish_todo_tool(self) -> AgentTool:
-        tool = AgentTool(
-            name="finish_todo",
-            description=(
-                "Mark the active todo as completed. Call immediately when the "
-                "todo is done before moving to the next item."
-            ),
-            parameters={
-                "type": "object",
-                "properties": {
-                    "result": {"type": "string", "description": "Optional concise result for this todo"},
-                },
-                "required": [],
-            },
-        )
-
-        async def execute(tool_call_id, params, cancel_event=None, on_update=None):
-            self.finish_task(params.get("result"))
-            return AgentToolResult(content=[TextContent(text=self.todo_status_text())])
-
-        tool.execute = execute
-        return tool
+        return self._require_active_todo().create_finish_todo_tool(self)
 
     def create_error_todo_tool(self) -> AgentTool:
-        tool = AgentTool(
-            name="error_todo",
-            description=(
-                "Cancel the active todo because it cannot be completed. If "
-                "there is a clear next step, create a revised todo after this."
-            ),
-            parameters={
-                "type": "object",
-                "properties": {
-                    "error": {"type": "string", "description": "Error details for the active todo"},
-                },
-                "required": ["error"],
-            },
-        )
-
-        async def execute(tool_call_id, params, cancel_event=None, on_update=None):
-            self.error_task(params["error"])
-            return AgentToolResult(content=[TextContent(text=self.todo_status_text())])
-
-        tool.execute = execute
-        return tool
+        return self._require_active_todo().create_error_todo_tool(self)
 
     def create_todo(self, title: str, start_message_id: int | None = None) -> ManagedTask:
         user_task = self._require_active_user_task()
         if self._active_todo is not None:
             raise TaskManagerError("Cannot create todo while another active todo exists")
 
-        todo = TodoTask(
+        todo = user_task.create_todo_task(
+            task_id=self._allocate_task_id(),
             title=title,
-            parent_id=user_task.id,
             start_message_id=start_message_id if start_message_id is not None else self.current_assistant_message_id,
         )
-        todo.id = self._allocate_task_id()
-
-        user_task.children.append(todo)
-        user_task.touch()
         self._active_todo = todo
         self.active_todo_id = todo.id
         return todo
 
     def finish_task(self, result: str | None = None, end_message_id: int | None = None) -> ManagedTask:
         todo = self._require_active_todo()
-        todo.status = "done"
-        todo.result = result
-        todo.end_message_id = end_message_id if end_message_id is not None else self.current_assistant_message_id
-        todo.touch()
+        todo.finish_task(
+            result=result,
+            end_message_id=end_message_id if end_message_id is not None else self.current_assistant_message_id,
+        )
         self._active_todo = None
         self.active_todo_id = None
         return todo
 
     def error_task(self, error: str, end_message_id: int | None = None) -> ManagedTask:
         todo = self._require_active_todo()
-        todo.status = "error"
-        todo.error = error
-        todo.end_message_id = end_message_id if end_message_id is not None else self.current_assistant_message_id
-        todo.touch()
+        todo.error_task(
+            error=error,
+            end_message_id=end_message_id if end_message_id is not None else self.current_assistant_message_id,
+        )
         self._active_todo = None
         self.active_todo_id = None
         return todo
 
-    def record_tool_call(self, tool_call_id: int) -> ManagedTask:
+    def record_tool_call(
+        self,
+        tool_call_id: int,
+        *,
+        assistant_message: AssistantMessage | None = None,
+        tool_result_message: ToolResultMessage | None = None,
+    ) -> ManagedTask:
         if self._active_todo is not None:
             target = self._active_todo
         else:
             target = self._require_active_user_task()
-        tool_call_task = ToolCallTask(
-            title=f"Tool call {tool_call_id}",
-            status="done",
-            parent_id=target.id,
+        return target.append_tool_call_task(
+            task_id=self._allocate_task_id(),
             tool_call_log_id=tool_call_id,
+            assistant_message=assistant_message,
+            tool_result_message=tool_result_message,
         )
-        tool_call_task.id = self._allocate_task_id()
-        target.children.append(tool_call_task)
-        target.touch()
-        return tool_call_task
+
+    def record_turn_tool_calls(
+        self,
+        *,
+        assistant_message: AssistantMessage,
+        tool_call_records: list[tuple[int, Any, ToolResultMessage]],
+    ) -> list[ManagedTask]:
+        tasks: list[ManagedTask] = []
+        for log_id, _tool_call, tool_result in tool_call_records:
+            tasks.append(
+                self.record_tool_call(
+                    log_id,
+                    assistant_message=assistant_message,
+                    tool_result_message=tool_result,
+                )
+            )
+        return tasks
 
     def finish_user_task(self, result: str | None = None, end_message_id: int | None = None) -> ManagedTask:
         user_task = self._require_active_user_task()
         if self._active_todo is not None:
             raise TaskManagerError("Cannot finish user task while a todo is active")
-        user_task.status = "done"
-        user_task.result = result
-        user_task.end_message_id = end_message_id
-        user_task.touch()
+        user_task.finish_task(result=result, end_message_id=end_message_id)
         self.active_user_task_id = None
         return user_task
 

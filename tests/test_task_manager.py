@@ -5,6 +5,7 @@ from __future__ import annotations
 import tempfile
 
 import pytest
+from pi.ai.types import AssistantMessage, TextContent, ToolCall, ToolResultMessage
 
 from simple_agent.db.db import Database
 from simple_agent.task_manager import TaskManager, TaskManagerError, ToolCallReview
@@ -118,6 +119,63 @@ def test_managed_task_roundtrip_preserves_message_boundaries():
 
     assert loaded.start_message_id == 12
     assert loaded.end_message_id == 15
+
+
+def test_user_task_sync_persists_task_and_direct_children_only():
+    db = _make_db()
+    user_task = UserTask(id=1, title="Build feature")
+    todo = user_task.create_todo_task(task_id=2, title="Inspect files")
+    todo.append_tool_call_task(task_id=3, tool_call_log_id=7)
+    direct_tool_call = user_task.append_tool_call_task(task_id=4, tool_call_log_id=8)
+
+    with db.create_session() as session:
+        user_task.sync(db, session)
+        session.commit()
+
+    loaded_user_task = db.get_managed_task(1)
+    loaded_todo = db.get_managed_task(2)
+    loaded_nested_tool_call = db.get_managed_task(3)
+    loaded_direct_tool_call = db.get_managed_task(4)
+    assert loaded_user_task.title == "Build feature"
+    assert loaded_todo.parent_id == user_task.id
+    assert loaded_nested_tool_call is None
+    assert loaded_direct_tool_call.parent_id == user_task.id
+    assert loaded_direct_tool_call.tool_call_log_id == direct_tool_call.tool_call_log_id
+
+
+def test_todo_task_sync_persists_task_and_direct_tool_calls():
+    db = _make_db()
+    todo = TodoTask(id=2, parent_id=1, title="Inspect files")
+    tool_call = todo.append_tool_call_task(task_id=3, tool_call_log_id=7)
+
+    with db.create_session() as session:
+        todo.sync(db, session)
+        session.commit()
+
+    loaded_todo = db.get_managed_task(2)
+    loaded_tool_call = db.get_managed_task(3)
+    assert loaded_todo.title == "Inspect files"
+    assert loaded_tool_call.parent_id == todo.id
+    assert loaded_tool_call.tool_call_log_id == tool_call.tool_call_log_id
+
+
+def test_task_manager_save_syncs_each_task_in_tree():
+    db = _make_db()
+    manager = TaskManager(db)
+    _load(manager, None)
+    user_task = manager.create_user_task("Build feature")
+    todo = manager.create_todo("Inspect files")
+    tool_call = manager.record_tool_call(7)
+
+    _save(manager)
+
+    loaded_user_task = db.get_managed_task(user_task.id)
+    loaded_todo = db.get_managed_task(todo.id)
+    loaded_tool_call = db.get_managed_task(tool_call.id)
+    assert loaded_user_task.title == "Build feature"
+    assert loaded_todo.parent_id == user_task.id
+    assert loaded_tool_call.parent_id == todo.id
+    assert loaded_tool_call.tool_call_log_id == 7
 
 
 def test_create_user_task_sets_active_user_task():
@@ -260,6 +318,33 @@ def test_record_tool_call_with_active_todo_attaches_to_todo():
     assert loaded_tool_call.parent_id == todo.id
     assert loaded_tool_call.kind == "tool_call"
     assert loaded_tool_call.tool_call_log_id == 8
+
+
+def test_record_turn_tool_calls_appends_task_under_active_task():
+    db = _make_db()
+    manager = TaskManager(db)
+    _load(manager, None)
+    manager.create_user_task("Build feature")
+    todo = manager.create_todo("Inspect files")
+    assistant_message = AssistantMessage(
+        role="assistant",
+        content=[ToolCall(id="call_1", name="ls", arguments={"path": "."})],
+    )
+    tool_result = ToolResultMessage(
+        toolCallId="call_1",
+        toolName="ls",
+        content=[TextContent(text="files")],
+    )
+
+    tasks = manager.record_turn_tool_calls(
+        assistant_message=assistant_message,
+        tool_call_records=[(9, None, tool_result)],
+    )
+
+    assert len(tasks) == 1
+    assert tasks[0].parent_id == todo.id
+    assert tasks[0].kind == "tool_call"
+    assert tasks[0].tool_call_log_id == 9
 
 
 def test_user_instruction_without_active_todo_asks_for_complexity_check():

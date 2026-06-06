@@ -167,8 +167,9 @@ async def test_session_run_creates_queue_and_runs_agent_once(tmp_path, monkeypat
 
     assert len(calls) == 3
     assert "create_todo" in calls[0]["tools"]
-    assert "finish_todo" in calls[0]["tools"]
-    assert "error_todo" in calls[0]["tools"]
+    assert "finish_user_task" in calls[0]["tools"]
+    assert "finish_todo" not in calls[0]["tools"]
+    assert "error_todo" not in calls[0]["tools"]
     assert calls[2]["tools"] == [
         "create_compacted_todo",
         "record_compacted_tool_call",

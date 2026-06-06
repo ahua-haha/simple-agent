@@ -202,9 +202,7 @@ class SessionRunner:
 
     def _create_tools(self):
         return [
-            self._task_manager.create_create_todo_tool(),
-            self._task_manager.create_finish_todo_tool(),
-            self._task_manager.create_error_todo_tool(),
+            *self._task_manager.create_tools(),
             *create_all_coding_tools("."),
         ]
 
@@ -317,8 +315,10 @@ class SessionRunner:
             finally:
                 self._task_manager.current_assistant_message_id = None
             tool_call_records = self.tool_call_log_records(assistant_message, tool_results)
-            for log_id, _tool_call, _tool_result in tool_call_records:
-                self._task_manager.record_tool_call(log_id)
+            self._task_manager.record_turn_tool_calls(
+                assistant_message=assistant_message,
+                tool_call_records=tool_call_records,
+            )
 
         assistant_entry = MessageEntry(id=assistant_message_id, message=assistant_message)
         tool_result_entries = [
