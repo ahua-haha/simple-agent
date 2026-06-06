@@ -11,17 +11,6 @@ TaskKind = Literal["user_task", "todo", "tool_call"]
 TaskStatus = Literal["active", "done", "error"]
 
 
-class TaskRuntimeContext(BaseModel):
-    """Transient runtime data used by task lifecycle decisions."""
-
-    session_id: str
-    context_tokens: int
-    total_tool_calls: int
-    active_task_tool_calls: int
-    current_assistant_message_id: int | None = None
-    run_done: bool = False
-
-
 class BaseTask(BaseModel):
     """Common in-memory task fields."""
 

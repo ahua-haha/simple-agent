@@ -5,7 +5,6 @@ from simple_agent.task_manager.manager import TaskManager, TaskManagerError, Tas
 from simple_agent.task_manager.models import (
     BaseTask,
     ManagedTask,
-    TaskRuntimeContext,
     TodoTask,
     ToolCallTask,
     UserTask,
@@ -14,7 +13,6 @@ from simple_agent.task_manager.models import (
 __all__ = [
     "BaseTask",
     "ManagedTask",
-    "TaskRuntimeContext",
     "TaskManager",
     "TaskManagerError",
     "TaskTreeReview",

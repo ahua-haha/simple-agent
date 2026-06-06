@@ -11,7 +11,7 @@ from typing import Any, Callable, Mapping
 from pi.agent import AgentTool, AgentToolResult
 from pi.ai.types import AssistantMessage, TextContent
 
-from simple_agent.task_manager.models import ManagedTask, TaskRuntimeContext, TodoTask, ToolCallTask, UserTask
+from simple_agent.task_manager.models import ManagedTask, TodoTask, ToolCallTask, UserTask
 from simple_agent.task_manager.review import TaskTreeReviewRenderer, ToolCallReview
 
 
@@ -50,8 +50,8 @@ class UserTaskLifecycle(BaseTaskLifecycle):
         self._compacted_tool_calls: list[ToolCallTask] = []
         self._compacted_user_task_finished = False
 
-    def instruction_text(self, context: TaskRuntimeContext) -> str:
-        if context.active_task_tool_calls > 5:
+    def instruction_text(self) -> str:
+        if _count_user_task_tool_calls_after_latest_todo(self.task) > 5:
             return (
                 "Runtime instruction for this turn:\n"
                 "- More than 5 tool calls have run since the previous todo.\n"
@@ -373,8 +373,8 @@ class TodoTaskLifecycle(BaseTaskLifecycle):
         self.task = task
         self.user_task = user_task
 
-    def instruction_text(self, context: TaskRuntimeContext) -> str:
-        if context.active_task_tool_calls > 10:
+    def instruction_text(self) -> str:
+        if _count_tool_calls(self.task.children) > 10:
             return (
                 "Runtime instruction for this turn:\n"
                 "- More than 10 tool calls have run for the active todo.\n"
@@ -538,3 +538,15 @@ def todo_status_text(user_task: UserTask) -> str:
             line += f" error={todo.error}"
         lines.append(line)
     return "\n".join(lines)
+
+
+def _count_user_task_tool_calls_after_latest_todo(user_task: UserTask) -> int:
+    latest_todo_index = -1
+    for index, child in enumerate(user_task.children):
+        if child.kind == "todo":
+            latest_todo_index = index
+    return _count_tool_calls(user_task.children[latest_todo_index + 1:])
+
+
+def _count_tool_calls(tasks: list[ManagedTask]) -> int:
+    return sum(1 for task in tasks if task.kind == "tool_call")

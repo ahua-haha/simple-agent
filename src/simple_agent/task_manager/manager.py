@@ -9,7 +9,7 @@ from pi.agent import AgentTool
 from pi.ai.types import AssistantMessage, ToolResultMessage
 
 from simple_agent.task_manager.lifecycle import BaseTaskLifecycle, TodoTaskLifecycle, UserTaskLifecycle, todo_status_text
-from simple_agent.task_manager.models import ManagedTask, TaskRuntimeContext, TodoTask, ToolCallTask, UserTask
+from simple_agent.task_manager.models import ManagedTask, TodoTask, ToolCallTask, UserTask
 from simple_agent.task_manager.review import (
     TaskTreeReview,
     TaskTreeReviewFormat,
@@ -138,22 +138,14 @@ class TaskManager:
     def todo_status_text(self) -> str:
         return todo_status_text(self._require_user_task())
 
-    def active_task_tool_call_count(self) -> int:
-        active_task = self._active_lifecycle.task if self._active_lifecycle is not None else None
-        if active_task is not None and active_task.kind == "todo":
-            return self._count_tool_calls(active_task.children)
-        if self._user_task is not None:
-            return self._count_tool_calls_after_latest_todo(self._user_task)
-        return 0
-
-    def user_instruction_text(self, context: TaskRuntimeContext) -> str:
+    def user_instruction_text(self) -> str:
         if self._user_task is None:
             return (
                 "Runtime instruction for this turn:\n"
                 "- Wait for the user to provide a task before creating todos or doing tool work."
             )
 
-        return self.active_lifecycle_for_tools().instruction_text(context)
+        return self.active_lifecycle_for_tools().instruction_text()
 
     # ------------------------------------------------------------------
     # Compact phase
@@ -286,16 +278,6 @@ class TaskManager:
             tasks.append(task)
             stack.extend(reversed(task.children))
         return tasks
-
-    def _count_tool_calls_after_latest_todo(self, user_task: ManagedTask) -> int:
-        latest_todo_index = -1
-        for index, child in enumerate(user_task.children):
-            if child.kind == "todo":
-                latest_todo_index = index
-        return self._count_tool_calls(user_task.children[latest_todo_index + 1:])
-
-    def _count_tool_calls(self, tasks: list[ManagedTask]) -> int:
-        return sum(1 for task in tasks if task.kind == "tool_call")
 
     def _load_tool_call_reviews(self, session_id: str) -> dict[int, ToolCallReview]:
         records = self._db.list_runner_tool_calls(session_id)

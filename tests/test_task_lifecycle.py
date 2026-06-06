@@ -4,27 +4,18 @@ from pi.ai.types import AssistantMessage, TextContent
 
 from simple_agent.db.db import Database
 from simple_agent.task_manager.lifecycle import TodoTaskLifecycle, UserTaskLifecycle
-from simple_agent.task_manager.models import TaskRuntimeContext, TodoTask, ToolCallTask, UserTask
+from simple_agent.task_manager.models import TodoTask, ToolCallTask, UserTask
 
 
 def _make_db(tmp_path):
     return Database(str(tmp_path / "session.db"))
 
 
-def _context(*, active_task_tool_calls: int) -> TaskRuntimeContext:
-    return TaskRuntimeContext(
-        session_id="session_a",
-        context_tokens=100,
-        total_tool_calls=active_task_tool_calls,
-        active_task_tool_calls=active_task_tool_calls,
-    )
-
-
 def test_user_task_instruction_asks_for_complexity_check_when_tool_count_is_small():
     task = UserTask(title="Build feature")
     lifecycle = UserTaskLifecycle(task)
 
-    instruction = lifecycle.instruction_text(_context(active_task_tool_calls=2))
+    instruction = lifecycle.instruction_text()
 
     assert "Runtime instruction for this turn" in instruction
     assert "Determine whether the user task is complex" in instruction
@@ -33,9 +24,13 @@ def test_user_task_instruction_asks_for_complexity_check_when_tool_count_is_smal
 
 def test_user_task_instruction_requires_todo_after_many_tool_calls():
     task = UserTask(title="Build feature")
+    task.children = [
+        ToolCallTask(title=f"Tool call {index}", tool_call_log_id=index)
+        for index in range(6)
+    ]
     lifecycle = UserTaskLifecycle(task)
 
-    instruction = lifecycle.instruction_text(_context(active_task_tool_calls=6))
+    instruction = lifecycle.instruction_text()
 
     assert "More than 5 tool calls have run since the previous todo" in instruction
     assert "create a small atomic todo before doing more work" in instruction
@@ -45,7 +40,7 @@ def test_todo_task_instruction_focuses_active_todo_when_tool_count_is_small():
     task = TodoTask(title="Inspect files")
     lifecycle = TodoTaskLifecycle(task)
 
-    instruction = lifecycle.instruction_text(_context(active_task_tool_calls=3))
+    instruction = lifecycle.instruction_text()
 
     assert "Focus on the active todo: Inspect files" in instruction
     assert "Call finish_todo immediately when it is complete" in instruction
@@ -53,9 +48,13 @@ def test_todo_task_instruction_focuses_active_todo_when_tool_count_is_small():
 
 def test_todo_task_instruction_prompts_finish_check_after_many_tool_calls():
     task = TodoTask(title="Inspect files")
+    task.children = [
+        ToolCallTask(title=f"Tool call {index}", tool_call_log_id=index)
+        for index in range(11)
+    ]
     lifecycle = TodoTaskLifecycle(task)
 
-    instruction = lifecycle.instruction_text(_context(active_task_tool_calls=11))
+    instruction = lifecycle.instruction_text()
 
     assert "More than 10 tool calls have run for the active todo" in instruction
     assert "call finish_todo now with a concise result" in instruction
