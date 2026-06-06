@@ -307,7 +307,7 @@ class SessionRunner:
         has_tool_calls = self._assistant_has_tool_calls(assistant_message)
         assistant_message_id = self._allocate_message_id()
         if has_tool_calls:
-            self._task_manager.current_assistant_message_id = assistant_message_id
+            self._task_manager.set_current_assistant_message_id(assistant_message_id)
             try:
                 tool_results = await self._agent_process.run_tool_calls_step(
                     tools=tools,
@@ -315,7 +315,7 @@ class SessionRunner:
                     cancel_event=self._cancel_event,
                 )
             finally:
-                self._task_manager.current_assistant_message_id = None
+                self._task_manager.set_current_assistant_message_id(None)
             self._task_manager.refresh_active_task_state()
             tool_call_records = self.tool_call_log_records(assistant_message, tool_results)
             self._task_manager.record_turn_tool_calls(
@@ -380,7 +380,7 @@ class SessionRunner:
             context_tokens=context_tokens,
             total_tool_calls=total_tool_calls + additional_tool_calls,
             active_task_tool_calls=self._task_manager.active_task_tool_call_count(),
-            current_assistant_message_id=self._task_manager.current_assistant_message_id,
+            current_assistant_message_id=None,
             run_done=self._user_task_is_done(),
         )
 

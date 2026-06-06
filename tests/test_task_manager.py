@@ -9,6 +9,7 @@ from pi.ai.types import AssistantMessage, TextContent, ToolCall, ToolResultMessa
 
 from simple_agent.db.db import Database
 from simple_agent.task_manager import TaskManager, TaskManagerError, ToolCallReview
+from simple_agent.task_manager.lifecycle import TodoTaskLifecycle, UserTaskLifecycle
 from simple_agent.task_manager.models import TaskRuntimeContext, TodoTask, UserTask
 
 
@@ -124,12 +125,13 @@ def test_managed_task_roundtrip_preserves_message_boundaries():
 def test_user_task_sync_persists_task_and_direct_children_only():
     db = _make_db()
     user_task = UserTask(id=1, title="Build feature")
-    todo = user_task.create_todo_task(task_id=2, title="Inspect files")
-    todo.append_tool_call_task(task_id=3, tool_call_log_id=7)
-    direct_tool_call = user_task.append_tool_call_task(task_id=4, tool_call_log_id=8)
+    user_lifecycle = UserTaskLifecycle(user_task)
+    todo = user_lifecycle.create_todo_task(task_id=2, title="Inspect files")
+    TodoTaskLifecycle(todo, user_task=user_task).append_tool_call_task(task_id=3, tool_call_log_id=7)
+    direct_tool_call = user_lifecycle.append_tool_call_task(task_id=4, tool_call_log_id=8)
 
     with db.create_session() as session:
-        user_task.sync(db, session)
+        user_lifecycle.sync(db, session)
         session.commit()
 
     loaded_user_task = db.get_managed_task(1)
@@ -146,10 +148,11 @@ def test_user_task_sync_persists_task_and_direct_children_only():
 def test_todo_task_sync_persists_task_and_direct_tool_calls():
     db = _make_db()
     todo = TodoTask(id=2, parent_id=1, title="Inspect files")
-    tool_call = todo.append_tool_call_task(task_id=3, tool_call_log_id=7)
+    lifecycle = TodoTaskLifecycle(todo)
+    tool_call = lifecycle.append_tool_call_task(task_id=3, tool_call_log_id=7)
 
     with db.create_session() as session:
-        todo.sync(db, session)
+        lifecycle.sync(db, session)
         session.commit()
 
     loaded_todo = db.get_managed_task(2)
@@ -280,13 +283,33 @@ def test_task_tools_use_current_assistant_message_id_for_boundaries():
     manager = TaskManager(db)
     _load(manager, None)
     manager.create_user_task("Build feature")
-    manager.current_assistant_message_id = 22
+    manager.set_current_assistant_message_id(22)
 
     todo = manager.create_todo("Inspect files")
     finished = manager.finish_task("Done")
 
     assert todo.start_message_id == 22
     assert finished.end_message_id == 22
+
+
+def test_task_manager_routes_message_id_to_active_lifecycle():
+    db = _make_db()
+    manager = TaskManager(db)
+    _load(manager, None)
+    manager.create_user_task("Build feature")
+    tools = {tool.name: tool for tool in manager.create_tools()}
+    manager.set_current_assistant_message_id(31)
+
+    async def run():
+        return await tools["create_todo"].execute("call_1", {"title": "Inspect files"})
+
+    import asyncio
+
+    asyncio.run(run())
+    manager.refresh_active_task_state()
+
+    assert manager.active_todo.start_message_id == 31
+    assert manager.active_lifecycle_for_tools().task is manager.active_todo
 
 
 def test_record_tool_call_without_active_todo_attaches_to_user_task():

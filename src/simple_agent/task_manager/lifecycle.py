@@ -1,0 +1,373 @@
+"""Task lifecycle handlers.
+
+Task data classes stay as records. Lifecycle classes own mutations,
+agent-facing tools, turn instructions, and direct database sync.
+"""
+
+from __future__ import annotations
+
+from typing import Any, Callable
+
+from pi.agent import AgentTool, AgentToolResult
+from pi.ai.types import TextContent
+
+from simple_agent.task_manager.models import TaskRuntimeContext, TodoTask, ToolCallTask, UserTask
+
+
+class TaskLifecycleError(RuntimeError):
+    """Raised when a task lifecycle cannot complete an operation."""
+
+
+class BaseTaskLifecycle:
+    def __init__(self, *, allocate_task_id: Callable[[], int] | None = None):
+        self._allocate_task_id = allocate_task_id
+        self.current_assistant_message_id: int | None = None
+
+    def allocate_task_id(self) -> int:
+        if self._allocate_task_id is None:
+            raise TaskLifecycleError("Task lifecycle needs an ID allocator")
+        return self._allocate_task_id()
+
+    def set_current_assistant_message_id(self, message_id: int | None) -> None:
+        self.current_assistant_message_id = message_id
+
+    def resolve_message_id(self, message_id: int | None = None) -> int | None:
+        return message_id if message_id is not None else self.current_assistant_message_id
+
+
+class UserTaskLifecycle(BaseTaskLifecycle):
+    def __init__(self, task: UserTask, *, allocate_task_id: Callable[[], int] | None = None):
+        super().__init__(allocate_task_id=allocate_task_id)
+        self.task = task
+
+    def instruction_text(self, context: TaskRuntimeContext) -> str:
+        if context.active_task_tool_calls > 5:
+            return (
+                "Runtime instruction for this turn:\n"
+                "- More than 5 tool calls have run since the previous todo.\n"
+                "- Stop and create a small atomic todo before doing more work.\n"
+                "- The todo should describe only the next coherent unit of work."
+            )
+        return (
+            "Runtime instruction for this turn:\n"
+            "- Determine whether the user task is complex before doing more work.\n"
+            "- If it is complex or long-running, create the next small atomic todo first.\n"
+            "- If it is simple, answer directly or use the needed tools."
+        )
+
+    def create_todo_task(
+        self,
+        *,
+        task_id: int | None = None,
+        title: str,
+        start_message_id: int | None = None,
+    ) -> TodoTask:
+        todo = TodoTask(
+            id=task_id if task_id is not None else self.allocate_task_id(),
+            title=title,
+            parent_id=self.task.id,
+            start_message_id=self.resolve_message_id(start_message_id),
+        )
+        self.task.children.append(todo)
+        self.task.touch()
+        return todo
+
+    def finish_task(self, *, result: str | None = None, end_message_id: int | None = None) -> UserTask:
+        self.task.status = "done"
+        self.task.result = result
+        self.task.end_message_id = self.resolve_message_id(end_message_id)
+        self.task.touch()
+        return self.task
+
+    def append_tool_call_task(
+        self,
+        *,
+        task_id: int | None = None,
+        tool_call_log_id: int,
+        assistant_message: Any | None = None,
+        tool_result_message: Any | None = None,
+    ) -> ToolCallTask:
+        tool_call_task = ToolCallTask(
+            id=task_id if task_id is not None else self.allocate_task_id(),
+            title=f"Tool call {tool_call_log_id}",
+            status="done",
+            parent_id=self.task.id,
+            tool_call_log_id=tool_call_log_id,
+        )
+        self.task.children.append(tool_call_task)
+        self.task.touch()
+        return tool_call_task
+
+    def record_tool_call(
+        self,
+        tool_call_log_id: int,
+        *,
+        assistant_message: Any | None = None,
+        tool_result_message: Any | None = None,
+    ) -> ToolCallTask:
+        return self.append_tool_call_task(
+            tool_call_log_id=tool_call_log_id,
+            assistant_message=assistant_message,
+            tool_result_message=tool_result_message,
+        )
+
+    def record_turn_tool_calls(
+        self,
+        *,
+        assistant_message: Any,
+        tool_call_records: list[tuple[int, Any, Any]],
+    ) -> list[ToolCallTask]:
+        return [
+            self.record_tool_call(
+                log_id,
+                assistant_message=assistant_message,
+                tool_result_message=tool_result,
+            )
+            for log_id, _tool_call, tool_result in tool_call_records
+        ]
+
+    def todo_status_text(self) -> str:
+        return todo_status_text(self.task)
+
+    def create_tools(self) -> list[AgentTool]:
+        return [
+            self.create_create_todo_tool(),
+            self.create_finish_user_task_tool(),
+        ]
+
+    def sync(self, database: Any, session: Any) -> None:
+        database.upsert_managed_task(self.task, session=session)
+        for child in sorted(self.task.children, key=lambda item: item.id or 0):
+            database.upsert_managed_task(child, session=session)
+
+    def create_create_todo_tool(self) -> AgentTool:
+        tool = AgentTool(
+            name="create_todo",
+            description=(
+                "Create the next todo item for the current session task list. "
+                "Use for complex tasks with 3+ steps or when the user provides "
+                "multiple tasks. Create items in priority order. Only one todo "
+                "may be active at a time."
+            ),
+            parameters={
+                "type": "object",
+                "properties": {
+                    "title": {
+                        "type": "string",
+                        "description": "Short content for the next coherent unit of work.",
+                    },
+                },
+                "required": ["title"],
+            },
+        )
+
+        async def execute(tool_call_id, params, cancel_event=None, on_update=None):
+            self.create_todo_task(
+                title=params["title"],
+            )
+            return AgentToolResult(content=[TextContent(text=self.todo_status_text())])
+
+        tool.execute = execute
+        return tool
+
+    def create_finish_user_task_tool(self) -> AgentTool:
+        tool = AgentTool(
+            name="finish_user_task",
+            description=(
+                "Mark the current user task as completed. Call when the user's "
+                "request is fully satisfied and no todo is active."
+            ),
+            parameters={
+                "type": "object",
+                "properties": {
+                    "result": {"type": "string", "description": "Optional concise result for this user task"},
+                },
+                "required": [],
+            },
+        )
+
+        async def execute(tool_call_id, params, cancel_event=None, on_update=None):
+            task = self.finish_task(
+                result=params.get("result"),
+            )
+            return AgentToolResult(content=[TextContent(text=f"User task finished: {task.result or task.title}")])
+
+        tool.execute = execute
+        return tool
+
+
+class TodoTaskLifecycle(BaseTaskLifecycle):
+    def __init__(
+        self,
+        task: TodoTask,
+        *,
+        allocate_task_id: Callable[[], int] | None = None,
+        user_task: UserTask | None = None,
+    ):
+        super().__init__(allocate_task_id=allocate_task_id)
+        self.task = task
+        self.user_task = user_task
+
+    def instruction_text(self, context: TaskRuntimeContext) -> str:
+        if context.active_task_tool_calls > 10:
+            return (
+                "Runtime instruction for this turn:\n"
+                "- More than 10 tool calls have run for the active todo.\n"
+                "- Determine whether the active todo is finished.\n"
+                "- If it is finished, call finish_todo now with a concise result.\n"
+                "- If it is not finished, do only the next action needed to complete it."
+            )
+        return (
+            "Runtime instruction for this turn:\n"
+            f"- Focus on the active todo: {self.task.title}\n"
+            "- Use tools only for work needed by this todo.\n"
+            "- Call finish_todo immediately when it is complete."
+        )
+
+    def finish_task(self, *, result: str | None = None, end_message_id: int | None = None) -> TodoTask:
+        self.task.status = "done"
+        self.task.result = result
+        self.task.end_message_id = self.resolve_message_id(end_message_id)
+        self.task.touch()
+        return self.task
+
+    def error_task(self, *, error: str, end_message_id: int | None = None) -> TodoTask:
+        self.task.status = "error"
+        self.task.error = error
+        self.task.end_message_id = self.resolve_message_id(end_message_id)
+        self.task.touch()
+        return self.task
+
+    def append_tool_call_task(
+        self,
+        *,
+        task_id: int | None = None,
+        tool_call_log_id: int,
+        assistant_message: Any | None = None,
+        tool_result_message: Any | None = None,
+    ) -> ToolCallTask:
+        tool_call_task = ToolCallTask(
+            id=task_id if task_id is not None else self.allocate_task_id(),
+            title=f"Tool call {tool_call_log_id}",
+            status="done",
+            parent_id=self.task.id,
+            tool_call_log_id=tool_call_log_id,
+        )
+        self.task.children.append(tool_call_task)
+        self.task.touch()
+        return tool_call_task
+
+    def record_tool_call(
+        self,
+        tool_call_log_id: int,
+        *,
+        assistant_message: Any | None = None,
+        tool_result_message: Any | None = None,
+    ) -> ToolCallTask:
+        return self.append_tool_call_task(
+            tool_call_log_id=tool_call_log_id,
+            assistant_message=assistant_message,
+            tool_result_message=tool_result_message,
+        )
+
+    def record_turn_tool_calls(
+        self,
+        *,
+        assistant_message: Any,
+        tool_call_records: list[tuple[int, Any, Any]],
+    ) -> list[ToolCallTask]:
+        return [
+            self.record_tool_call(
+                log_id,
+                assistant_message=assistant_message,
+                tool_result_message=tool_result,
+            )
+            for log_id, _tool_call, tool_result in tool_call_records
+        ]
+
+    def create_tools(self) -> list[AgentTool]:
+        return [
+            self.create_finish_todo_tool(),
+            self.create_error_todo_tool(),
+        ]
+
+    def sync(self, database: Any, session: Any) -> None:
+        database.upsert_managed_task(self.task, session=session)
+        for child in sorted(self.task.children, key=lambda item: item.id or 0):
+            database.upsert_managed_task(child, session=session)
+
+    def create_finish_todo_tool(self) -> AgentTool:
+        tool = AgentTool(
+            name="finish_todo",
+            description=(
+                "Mark the active todo as completed. Call immediately when the "
+                "todo is done before moving to the next item."
+            ),
+            parameters={
+                "type": "object",
+                "properties": {
+                    "result": {"type": "string", "description": "Optional concise result for this todo"},
+                },
+                "required": [],
+            },
+        )
+
+        async def execute(tool_call_id, params, cancel_event=None, on_update=None):
+            self.finish_task(
+                result=params.get("result"),
+            )
+            text = (
+                todo_status_text(self.user_task)
+                if self.user_task is not None
+                else f"Todo finished: {self.task.result or self.task.title}"
+            )
+            return AgentToolResult(content=[TextContent(text=text)])
+
+        tool.execute = execute
+        return tool
+
+    def create_error_todo_tool(self) -> AgentTool:
+        tool = AgentTool(
+            name="error_todo",
+            description=(
+                "Cancel the active todo because it cannot be completed. If "
+                "there is a clear next step, create a revised todo after this."
+            ),
+            parameters={
+                "type": "object",
+                "properties": {
+                    "error": {"type": "string", "description": "Error details for the active todo"},
+                },
+                "required": ["error"],
+            },
+        )
+
+        async def execute(tool_call_id, params, cancel_event=None, on_update=None):
+            self.error_task(
+                error=params["error"],
+            )
+            text = (
+                todo_status_text(self.user_task)
+                if self.user_task is not None
+                else f"Todo errored: {self.task.error or self.task.title}"
+            )
+            return AgentToolResult(content=[TextContent(text=text)])
+
+        tool.execute = execute
+        return tool
+
+
+def todo_status_text(user_task: UserTask) -> str:
+    todos = [child for child in user_task.children if child.kind == "todo"]
+    if not todos:
+        return "Todos: []"
+
+    lines = ["Todos:"]
+    for todo in todos:
+        line = f"- [{todo.status}] {todo.title}"
+        if todo.result:
+            line += f" result={todo.result}"
+        if todo.error:
+            line += f" error={todo.error}"
+        lines.append(line)
+    return "\n".join(lines)

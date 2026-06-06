@@ -912,7 +912,7 @@ async def test_handle_running_sets_current_assistant_message_id_for_task_tools(t
 
     assert next_action == "normal_run"
     assert todo.start_message_id == assistant_message_id
-    assert task_manager.current_assistant_message_id is None
+    assert task_manager.active_lifecycle_for_tools().current_assistant_message_id is None
 
 
 @pytest.mark.asyncio

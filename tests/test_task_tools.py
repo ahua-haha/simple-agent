@@ -7,6 +7,7 @@ import tempfile
 
 from simple_agent.db.db import Database
 from simple_agent.task_manager import TaskManager
+from simple_agent.task_manager.lifecycle import TodoTaskLifecycle, UserTaskLifecycle
 
 
 def _make_db() -> Database:
@@ -30,7 +31,8 @@ def test_create_todo_tool_creates_active_todo():
     manager = TaskManager(db)
     _load(manager, None)
     user_task = manager.create_user_task("Build feature")
-    tool = user_task.create_create_todo_tool(allocate_task_id=manager.allocate_task_id)
+    lifecycle = UserTaskLifecycle(user_task, allocate_task_id=manager.allocate_task_id)
+    tool = lifecycle.create_create_todo_tool()
 
     async def run():
         return await tool.execute("call_1", {"title": "Inspect files"})
@@ -50,7 +52,8 @@ def test_finish_todo_tool_finishes_active_todo():
     _load(manager, None)
     user_task = manager.create_user_task("Build feature")
     todo = manager.create_todo("Inspect files")
-    tool = todo.create_finish_todo_tool(user_task=user_task)
+    lifecycle = TodoTaskLifecycle(todo, user_task=user_task)
+    tool = lifecycle.create_finish_todo_tool()
 
     async def run():
         return await tool.execute("call_1", {"result": "Inspected files"})
@@ -74,7 +77,8 @@ def test_error_todo_tool_returns_latest_todo_status():
     _load(manager, None)
     user_task = manager.create_user_task("Build feature")
     todo = manager.create_todo("Inspect files")
-    tool = todo.create_error_todo_tool(user_task=user_task)
+    lifecycle = TodoTaskLifecycle(todo, user_task=user_task)
+    tool = lifecycle.create_error_todo_tool()
 
     async def run():
         return await tool.execute("call_1", {"error": "Missing dependency"})
@@ -96,7 +100,8 @@ def test_todo_tools_do_not_require_runner_wrapping():
     manager = TaskManager(db)
     _load(manager, None)
     user_task = manager.create_user_task("Build feature")
-    tool = user_task.create_create_todo_tool(allocate_task_id=manager.allocate_task_id)
+    lifecycle = UserTaskLifecycle(user_task, allocate_task_id=manager.allocate_task_id)
+    tool = lifecycle.create_create_todo_tool()
 
     async def run():
         return await tool.execute("call_1", {"title": "Inspect files"})
@@ -111,13 +116,9 @@ def test_user_task_tools_include_create_todo_and_finish_user_task():
     manager = TaskManager(db)
     _load(manager, None)
     user_task = manager.create_user_task("Build feature")
+    lifecycle = UserTaskLifecycle(user_task, allocate_task_id=manager.allocate_task_id)
 
-    tools = [
-        tool.name
-        for tool in user_task.create_tools(
-            allocate_task_id=manager.allocate_task_id,
-        )
-    ]
+    tools = [tool.name for tool in lifecycle.create_tools()]
 
     assert tools == ["create_todo", "finish_user_task"]
 
@@ -128,8 +129,9 @@ def test_active_todo_tools_include_todo_lifecycle_tools():
     _load(manager, None)
     user_task = manager.create_user_task("Build feature")
     todo = manager.create_todo("Inspect files")
+    lifecycle = TodoTaskLifecycle(todo, user_task=user_task)
 
-    tools = [tool.name for tool in todo.create_tools(user_task=user_task)]
+    tools = [tool.name for tool in lifecycle.create_tools()]
 
     assert tools == ["finish_todo", "error_todo"]
 
@@ -162,7 +164,8 @@ def test_finish_user_task_tool_finishes_user_task():
     manager = TaskManager(db)
     _load(manager, None)
     user_task = manager.create_user_task("Build feature")
-    tool = user_task.create_finish_user_task_tool()
+    lifecycle = UserTaskLifecycle(user_task)
+    tool = lifecycle.create_finish_user_task_tool()
 
     async def run():
         return await tool.execute("call_1", {"result": "Feature built"})
