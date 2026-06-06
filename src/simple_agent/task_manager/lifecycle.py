@@ -6,17 +6,32 @@ agent-facing tools, turn instructions, and direct database sync.
 
 from __future__ import annotations
 
-from typing import Any, Callable, Mapping
+import asyncio
+import time
+from dataclasses import dataclass
+from typing import TYPE_CHECKING, Any, Callable, Mapping
 
 from pi.agent import AgentTool, AgentToolResult
-from pi.ai.types import AssistantMessage, TextContent
+from pi.ai.types import AssistantMessage, TextContent, ToolCall, ToolResultMessage, UserMessage
 
+from simple_agent.message_store import MessageEntry
 from simple_agent.task_manager.models import ManagedTask, TodoTask, ToolCallTask, UserTask
 from simple_agent.task_manager.review import TaskTreeReviewRenderer, ToolCallReview
+
+if TYPE_CHECKING:
+    from simple_agent.process.agent_process import AgentProcess
 
 
 class TaskLifecycleError(RuntimeError):
     """Raised when a task lifecycle cannot complete an operation."""
+
+
+@dataclass(frozen=True)
+class UserTaskRunTurnResult:
+    user_instruction_message: UserMessage
+    assistant_message: AssistantMessage
+    new_messages: list[MessageEntry]
+    tool_call_records: list[tuple[int, ToolCall | None, ToolResultMessage]]
 
 
 class BaseTaskLifecycle:
@@ -24,6 +39,9 @@ class BaseTaskLifecycle:
         self._allocate_task_id = allocate_task_id
         self.current_assistant_message_id: int | None = None
         self.next_task: ManagedTask | None = None
+        self.messages: list[MessageEntry] = []
+        self.next_message_id: int = 1
+        self.next_tool_call_log_id: int = 0
 
     def allocate_task_id(self) -> int:
         if self._allocate_task_id is None:
@@ -40,6 +58,105 @@ class BaseTaskLifecycle:
         next_task = self.next_task
         self.next_task = None
         return next_task
+
+    def load_messages(self, messages: list[MessageEntry], *, next_message_id: int) -> None:
+        self.messages = list(messages)
+        self.next_message_id = next_message_id
+
+    def load_tool_call_log_id(self, next_tool_call_log_id: int) -> None:
+        self.next_tool_call_log_id = next_tool_call_log_id
+
+    def allocate_message_id(self) -> int:
+        message_id = self.next_message_id
+        self.next_message_id += 1
+        return message_id
+
+    def allocate_tool_call_log_id(self) -> int:
+        tool_call_log_id = self.next_tool_call_log_id
+        self.next_tool_call_log_id += 1
+        return tool_call_log_id
+
+    def message_values(self) -> list[Any]:
+        return [entry.message for entry in self.messages]
+
+    def append_message(self, message: Any) -> MessageEntry:
+        entry = MessageEntry(id=self.allocate_message_id(), message=message)
+        self.messages.append(entry)
+        return entry
+
+    def append_messages(self, messages: list[MessageEntry]) -> None:
+        self.messages.extend(messages)
+
+    def replace_message_range(
+        self,
+        *,
+        start_message_id: int,
+        end_message_id: int,
+        replacement_messages: list[Any],
+    ) -> list[MessageEntry]:
+        start_index = self._message_index(start_message_id)
+        end_index = self._message_index(end_message_id)
+        if end_index < start_index:
+            raise RuntimeError("Compact end message is before compact start message")
+        replacement_entries = [
+            MessageEntry(id=self.allocate_message_id(), message=message)
+            for message in replacement_messages
+        ]
+        self.messages = [
+            *self.messages[:start_index],
+            *replacement_entries,
+            *self.messages[end_index + 1:],
+        ]
+        return replacement_entries
+
+    def sync_messages(self, session_id: str, database: Any, messages: list[MessageEntry], *, session: Any) -> None:
+        for pending in messages:
+            database.insert_runner_message(
+                session_id,
+                pending.message,
+                id=pending.id,
+                session=session,
+            )
+
+    def sync_replaced_messages(
+        self,
+        session_id: str,
+        database: Any,
+        messages: list[MessageEntry],
+        *,
+        session: Any,
+    ) -> None:
+        database.replace_runner_messages(
+            session_id,
+            [entry.message for entry in messages],
+            ids=[entry.id for entry in messages],
+            session=session,
+        )
+
+    def sync_tool_calls(
+        self,
+        session_id: str,
+        database: Any,
+        tool_calls: list[tuple[int, ToolCall | None, ToolResultMessage]],
+        *,
+        session: Any,
+    ) -> None:
+        for log_id, tool_call, tool_result in tool_calls:
+            database.insert_runner_tool_call(
+                id=log_id,
+                session_id=session_id,
+                tool_call_id=tool_result.tool_call_id,
+                tool_name=tool_result.tool_name,
+                tool_call_json=tool_call.model_dump_json() if tool_call is not None else "null",
+                tool_result_json=tool_result.model_dump_json(),
+                session=session,
+            )
+
+    def _message_index(self, message_id: int) -> int:
+        for index, entry in enumerate(self.messages):
+            if entry.id == message_id:
+                return index
+        raise RuntimeError(f"Could not find message id {message_id}")
 
 
 class UserTaskLifecycle(BaseTaskLifecycle):
@@ -123,19 +240,37 @@ class UserTaskLifecycle(BaseTaskLifecycle):
             tool_result_message=tool_result_message,
         )
 
+    def create_tool_call_record_task_entries(
+        self,
+        *,
+        assistant_message: AssistantMessage,
+        tool_result_messages: list[ToolResultMessage],
+    ) -> list[tuple[tuple[int, ToolCall | None, ToolResultMessage], ToolCallTask]]:
+        entries = []
+        for tool_result_message in tool_result_messages:
+            log_id = self.allocate_tool_call_log_id()
+            tool_call = _tool_call_for_result(
+                assistant_message=assistant_message,
+                tool_result_message=tool_result_message,
+            )
+            tool_call_task = ToolCallTask(
+                id=self.allocate_task_id(),
+                title=f"Tool call {log_id}",
+                status="done",
+                parent_id=self.task.id,
+                tool_call_log_id=log_id,
+            )
+            entries.append(((log_id, tool_call, tool_result_message), tool_call_task))
+        return entries
+
     def record_turn_tool_calls(
         self,
         *,
-        assistant_message: Any,
-        tool_call_records: list[tuple[int, Any, Any]],
+        tool_call_records: list[tuple[int, Any, ToolResultMessage]],
     ) -> list[ToolCallTask]:
         return [
-            self.record_tool_call(
-                log_id,
-                assistant_message=assistant_message,
-                tool_result_message=tool_result,
-            )
-            for log_id, _tool_call, tool_result in tool_call_records
+            self.append_tool_call_task(tool_call_log_id=log_id)
+            for log_id, _tool_call, _tool_result in tool_call_records
         ]
 
     def todo_status_text(self) -> str:
@@ -146,6 +281,63 @@ class UserTaskLifecycle(BaseTaskLifecycle):
             self.create_create_todo_tool(),
             self.create_finish_user_task_tool(),
         ]
+
+    async def run_one_turn(
+        self,
+        *,
+        agent_process: AgentProcess,
+        system_prompt: str,
+        cancel_event: asyncio.Event | None = None,
+    ) -> UserTaskRunTurnResult:
+        tools = self.create_tools()
+        user_instruction_message = UserMessage(
+            content=[TextContent(text=self.instruction_text())],
+            timestamp=int(time.time() * 1000),
+        )
+        assistant_message = await agent_process.call_llm_step(
+            system_prompt=system_prompt,
+            messages=[*self.message_values(), user_instruction_message],
+            tools=tools,
+            cancel_event=cancel_event,
+        )
+        if _assistant_is_error(assistant_message):
+            return UserTaskRunTurnResult(
+                user_instruction_message=user_instruction_message,
+                assistant_message=assistant_message,
+                new_messages=[],
+                tool_call_records=[],
+            )
+
+        assistant_entry = MessageEntry(id=self.allocate_message_id(), message=assistant_message)
+        tool_results: list[ToolResultMessage] = []
+        tool_call_records: list[tuple[int, ToolCall | None, ToolResultMessage]] = []
+        if _assistant_has_tool_calls(assistant_message):
+            tool_results = await agent_process.run_tool_calls_step(
+                tools=tools,
+                assistant_message=assistant_message,
+                cancel_event=cancel_event,
+            )
+            tool_call_entries = self.create_tool_call_record_task_entries(
+                assistant_message=assistant_message,
+                tool_result_messages=tool_results,
+            )
+            tool_call_records = [entry[0] for entry in tool_call_entries]
+            self.task.children.extend(entry[1] for entry in tool_call_entries)
+            if tool_call_entries:
+                self.task.touch()
+
+        tool_result_entries = [
+            MessageEntry(id=self.allocate_message_id(), message=tool_result)
+            for tool_result in tool_results
+        ]
+        new_messages = [assistant_entry, *tool_result_entries]
+        self.append_messages(new_messages)
+        return UserTaskRunTurnResult(
+            user_instruction_message=user_instruction_message,
+            assistant_message=assistant_message,
+            new_messages=new_messages,
+            tool_call_records=tool_call_records,
+        )
 
     def sync(self, database: Any, session: Any) -> None:
         database.upsert_managed_task(self.task, session=session)
@@ -440,16 +632,11 @@ class TodoTaskLifecycle(BaseTaskLifecycle):
     def record_turn_tool_calls(
         self,
         *,
-        assistant_message: Any,
-        tool_call_records: list[tuple[int, Any, Any]],
+        tool_call_records: list[tuple[int, Any, ToolResultMessage]],
     ) -> list[ToolCallTask]:
         return [
-            self.record_tool_call(
-                log_id,
-                assistant_message=assistant_message,
-                tool_result_message=tool_result,
-            )
-            for log_id, _tool_call, tool_result in tool_call_records
+            self.append_tool_call_task(tool_call_log_id=log_id)
+            for log_id, _tool_call, _tool_result in tool_call_records
         ]
 
     def create_tools(self) -> list[AgentTool]:
@@ -550,3 +737,22 @@ def _count_user_task_tool_calls_after_latest_todo(user_task: UserTask) -> int:
 
 def _count_tool_calls(tasks: list[ManagedTask]) -> int:
     return sum(1 for task in tasks if task.kind == "tool_call")
+
+
+def _assistant_has_tool_calls(message: AssistantMessage) -> bool:
+    return any(isinstance(content, ToolCall) for content in message.content)
+
+
+def _assistant_is_error(message: AssistantMessage) -> bool:
+    return message.stop_reason == "error" or bool(message.error_message)
+
+
+def _tool_call_for_result(
+    *,
+    assistant_message: AssistantMessage,
+    tool_result_message: ToolResultMessage,
+) -> ToolCall | None:
+    for content in assistant_message.content:
+        if isinstance(content, ToolCall) and content.id == tool_result_message.tool_call_id:
+            return content
+    return None

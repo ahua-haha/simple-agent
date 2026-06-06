@@ -5,10 +5,10 @@ from __future__ import annotations
 import asyncio
 import logging
 import time
-from dataclasses import dataclass
 from typing import TYPE_CHECKING, Callable, Literal, TypeAlias
 
 from pi.ai.types import AssistantMessage, TextContent, ToolCall, ToolResultMessage, UserMessage
+from simple_agent.message_store import MessageEntry
 from simple_agent.run_log import runtime_logger
 from simple_agent.token_estimation import estimate_messages_tokens
 from simple_agent.tool.common_tools import create_all_coding_tools
@@ -17,7 +17,6 @@ if TYPE_CHECKING:
     from simple_agent.db.db import Database
     from simple_agent.process.agent_process import AgentProcess
     from simple_agent.task_manager import TaskManager
-    from pi.agent.types import AgentMessage
     from sqlmodel import Session
 
 _log = logging.getLogger(__name__)
@@ -36,12 +35,6 @@ DEFAULT_TOOL_CALL_THRESHOLD = 200
 COMPACT_SYSTEM_PROMPT = """Compact the finished user task into one compacted user task.
 Use only the compact tools. Set the compacted user task result, record useful
 tool-call log IDs, then finish the compacted user task."""
-
-
-@dataclass(frozen=True)
-class MessageEntry:
-    id: int
-    message: AgentMessage
 
 
 ToolCallLogRecord: TypeAlias = tuple[int, ToolCall | None, ToolResultMessage]
@@ -317,7 +310,6 @@ class SessionRunner:
                 self._task_manager.set_current_assistant_message_id(None)
             tool_call_records = self.tool_call_log_records(assistant_message, tool_results)
             self._task_manager.record_turn_tool_calls(
-                assistant_message=assistant_message,
                 tool_call_records=tool_call_records,
             )
             self._task_manager.refresh_active_task()

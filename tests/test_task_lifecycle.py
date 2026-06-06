@@ -1,14 +1,44 @@
 import pytest
 
-from pi.ai.types import AssistantMessage, TextContent
+from pi.ai.types import AssistantMessage, TextContent, ToolCall, ToolResultMessage, UserMessage
 
 from simple_agent.db.db import Database
+from simple_agent.message_store import MessageEntry
 from simple_agent.task_manager.lifecycle import TodoTaskLifecycle, UserTaskLifecycle
 from simple_agent.task_manager.models import TodoTask, ToolCallTask, UserTask
 
 
 def _make_db(tmp_path):
     return Database(str(tmp_path / "session.db"))
+
+
+class FakeAgentProcess:
+    def __init__(self, assistant_message: AssistantMessage, tool_results: list[ToolResultMessage] | None = None):
+        self.assistant_message = assistant_message
+        self.tool_results = tool_results or []
+        self.llm_calls = []
+        self.tool_calls = []
+
+    async def call_llm_step(self, system_prompt, messages, tools, cancel_event=None):
+        self.llm_calls.append(
+            {
+                "system_prompt": system_prompt,
+                "messages": list(messages),
+                "tools": list(tools),
+                "cancel_event": cancel_event,
+            }
+        )
+        return self.assistant_message
+
+    async def run_tool_calls_step(self, tools, assistant_message, cancel_event=None):
+        self.tool_calls.append(
+            {
+                "tools": list(tools),
+                "assistant_message": assistant_message,
+                "cancel_event": cancel_event,
+            }
+        )
+        return self.tool_results
 
 
 def test_user_task_instruction_asks_for_complexity_check_when_tool_count_is_small():
@@ -98,6 +128,42 @@ def test_user_task_lifecycle_uses_owned_allocator_and_message_id():
     assert tool_call.parent_id == user_task.id
 
 
+def test_user_task_lifecycle_creates_tool_call_record_task_entries_without_appending():
+    next_task_id = 20
+
+    def allocate_task_id():
+        nonlocal next_task_id
+        task_id = next_task_id
+        next_task_id += 1
+        return task_id
+
+    user_task = UserTask(id=1, title="Build feature")
+    lifecycle = UserTaskLifecycle(user_task, allocate_task_id=allocate_task_id)
+    lifecycle.load_tool_call_log_id(7)
+    assistant_message = AssistantMessage(
+        role="assistant",
+        content=[ToolCall(id="call_1", name="ls", arguments={"path": "."})],
+    )
+    tool_result = ToolResultMessage(
+        toolCallId="call_1",
+        toolName="ls",
+        content=[TextContent(text="files")],
+    )
+
+    entries = lifecycle.create_tool_call_record_task_entries(
+        assistant_message=assistant_message,
+        tool_result_messages=[tool_result],
+    )
+    tool_call_record, tool_call_task = entries[0]
+
+    assert tool_call_record == (7, assistant_message.content[0], tool_result)
+    assert tool_call_task.id == 20
+    assert tool_call_task.parent_id == user_task.id
+    assert tool_call_task.tool_call_log_id == 7
+    assert user_task.children == []
+    assert lifecycle.next_tool_call_log_id == 8
+
+
 def test_todo_task_lifecycle_uses_owned_message_id_for_finish():
     todo = TodoTask(id=2, parent_id=1, title="Inspect files")
     lifecycle = TodoTaskLifecycle(todo, allocate_task_id=lambda: 3)
@@ -122,6 +188,151 @@ def test_lifecycle_tracks_next_task_transition():
     todo_lifecycle.finish_task(result="Done")
 
     assert todo_lifecycle.consume_next_task() is user_task
+
+
+def test_lifecycle_appends_messages_in_memory_until_explicit_sync(tmp_path):
+    db = _make_db(tmp_path)
+    lifecycle = UserTaskLifecycle(UserTask(id=1, title="Build feature"))
+    seed = MessageEntry(id=1, message=UserMessage(content=[TextContent(text="hello")], timestamp=1))
+    lifecycle.load_messages([seed], next_message_id=2)
+
+    entry = lifecycle.append_message(AssistantMessage(role="assistant", content=[TextContent(text="hi")]))
+
+    assert entry.id == 2
+    assert lifecycle.messages == [seed, entry]
+    assert lifecycle.next_message_id == 3
+    assert db.list_runner_messages("session_a") == []
+
+    with db.create_session() as session:
+        lifecycle.sync_messages("session_a", db, [entry], session=session)
+        session.commit()
+
+    persisted = db.list_runner_messages("session_a")
+    assert len(persisted) == 1
+    assert persisted[0].content[0].text == "hi"
+
+
+def test_lifecycle_replaces_message_range_and_syncs_explicit_message_list(tmp_path):
+    db = _make_db(tmp_path)
+    lifecycle = UserTaskLifecycle(UserTask(id=1, title="Build feature"))
+    first = MessageEntry(id=1, message=UserMessage(content=[TextContent(text="one")], timestamp=1))
+    second = MessageEntry(id=2, message=AssistantMessage(role="assistant", content=[TextContent(text="two")]))
+    third = MessageEntry(id=3, message=AssistantMessage(role="assistant", content=[TextContent(text="three")]))
+    lifecycle.load_messages([first, second, third], next_message_id=4)
+    with db.create_session() as session:
+        lifecycle.sync_replaced_messages("session_a", db, lifecycle.messages, session=session)
+        session.commit()
+
+    replacement = lifecycle.replace_message_range(
+        start_message_id=2,
+        end_message_id=3,
+        replacement_messages=[
+            AssistantMessage(role="assistant", content=[TextContent(text="compact")]),
+        ],
+    )
+
+    assert [entry.id for entry in replacement] == [4]
+    assert [entry.message.content[0].text for entry in lifecycle.messages] == ["one", "compact"]
+
+    with db.create_session() as session:
+        lifecycle.sync_replaced_messages("session_a", db, lifecycle.messages, session=session)
+        session.commit()
+
+    assert [message.content[0].text for message in db.list_runner_messages("session_a")] == ["one", "compact"]
+
+
+def test_lifecycle_syncs_explicit_tool_call_records_without_buffer(tmp_path):
+    db = _make_db(tmp_path)
+    lifecycle = UserTaskLifecycle(UserTask(id=1, title="Build feature"))
+    tool_call = ToolCall(id="call_1", name="ls", arguments={"path": "."})
+    tool_result = ToolResultMessage(
+        toolCallId="call_1",
+        toolName="ls",
+        content=[TextContent(text="files")],
+    )
+
+    with db.create_session() as session:
+        lifecycle.sync_tool_calls("session_a", db, [(3, tool_call, tool_result)], session=session)
+        session.commit()
+
+    records = db.list_runner_tool_calls("session_a")
+    assert len(records) == 1
+    assert records[0].id == 3
+    assert records[0].tool_call_id == "call_1"
+    assert records[0].tool_name == "ls"
+    assert '"path":"."' in records[0].tool_call_json
+    assert "files" in records[0].tool_result_json
+
+
+@pytest.mark.asyncio
+async def test_user_task_lifecycle_run_one_turn_calls_llm_and_appends_assistant_message():
+    user_task = UserTask(id=1, title="Build feature")
+    lifecycle = UserTaskLifecycle(user_task)
+    seed = MessageEntry(id=1, message=UserMessage(content=[TextContent(text="Build feature")], timestamp=1))
+    lifecycle.load_messages([seed], next_message_id=2)
+    assistant_message = AssistantMessage(role="assistant", content=[TextContent(text="Done")])
+    agent_process = FakeAgentProcess(assistant_message)
+
+    result = await lifecycle.run_one_turn(
+        agent_process=agent_process,
+        system_prompt="system",
+    )
+
+    assert agent_process.llm_calls[0]["system_prompt"] == "system"
+    assert [tool.name for tool in agent_process.llm_calls[0]["tools"]] == ["create_todo", "finish_user_task"]
+    assert agent_process.llm_calls[0]["messages"][:-1] == [seed.message]
+    assert "Runtime instruction for this turn" in agent_process.llm_calls[0]["messages"][-1].content[0].text
+    assert agent_process.tool_calls == []
+    assert result.assistant_message is assistant_message
+    assert result.new_messages == [MessageEntry(id=2, message=assistant_message)]
+    assert lifecycle.messages == [seed, *result.new_messages]
+    assert lifecycle.next_message_id == 3
+    assert result.tool_call_records == []
+
+
+@pytest.mark.asyncio
+async def test_user_task_lifecycle_run_one_turn_executes_tools_and_records_tool_calls():
+    user_task = UserTask(id=1, title="Build feature")
+    next_task_id = 10
+
+    def allocate_task_id():
+        nonlocal next_task_id
+        task_id = next_task_id
+        next_task_id += 1
+        return task_id
+
+    lifecycle = UserTaskLifecycle(user_task, allocate_task_id=allocate_task_id)
+    lifecycle.current_assistant_message_id = 42
+    lifecycle.load_messages([], next_message_id=1)
+    lifecycle.load_tool_call_log_id(7)
+    assistant_message = AssistantMessage(
+        role="assistant",
+        content=[ToolCall(id="call_1", name="ls", arguments={"path": "."})],
+    )
+    tool_result = ToolResultMessage(
+        toolCallId="call_1",
+        toolName="ls",
+        content=[TextContent(text="files")],
+    )
+    agent_process = FakeAgentProcess(assistant_message, [tool_result])
+    result = await lifecycle.run_one_turn(
+        agent_process=agent_process,
+        system_prompt="system",
+    )
+
+    assert agent_process.tool_calls[0]["assistant_message"] is assistant_message
+    assert [tool.name for tool in agent_process.tool_calls[0]["tools"]] == ["create_todo", "finish_user_task"]
+    assert result.new_messages == [
+        MessageEntry(id=1, message=assistant_message),
+        MessageEntry(id=2, message=tool_result),
+    ]
+    assert lifecycle.messages == result.new_messages
+    assert lifecycle.next_message_id == 3
+    assert lifecycle.next_tool_call_log_id == 8
+    assert result.tool_call_records == [(7, assistant_message.content[0], tool_result)]
+    assert [child.tool_call_log_id for child in user_task.children] == [7]
+    assert user_task.children[0].parent_id == user_task.id
+    assert lifecycle.current_assistant_message_id == 42
 
 
 def test_user_task_lifecycle_begins_compaction_only_when_done():

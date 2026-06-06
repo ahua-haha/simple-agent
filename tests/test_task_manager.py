@@ -5,7 +5,7 @@ from __future__ import annotations
 import tempfile
 
 import pytest
-from pi.ai.types import AssistantMessage, TextContent, ToolCall, ToolResultMessage
+from pi.ai.types import TextContent, ToolResultMessage
 
 from simple_agent.db.db import Database
 from simple_agent.task_manager import TaskManager, ToolCallReview
@@ -437,10 +437,6 @@ def test_record_turn_tool_calls_appends_task_under_active_task():
     _load(manager, None)
     manager.create_user_task("Build feature")
     todo = _create_todo(manager, "Inspect files")
-    assistant_message = AssistantMessage(
-        role="assistant",
-        content=[ToolCall(id="call_1", name="ls", arguments={"path": "."})],
-    )
     tool_result = ToolResultMessage(
         toolCallId="call_1",
         toolName="ls",
@@ -448,7 +444,6 @@ def test_record_turn_tool_calls_appends_task_under_active_task():
     )
 
     tasks = manager.record_turn_tool_calls(
-        assistant_message=assistant_message,
         tool_call_records=[(9, None, tool_result)],
     )
 

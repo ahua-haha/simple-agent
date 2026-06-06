@@ -11,8 +11,9 @@ import pytest
 from pi.ai.types import AssistantMessage, TextContent, ToolCall, ToolResultMessage, UserMessage
 
 from simple_agent.db.db import Database
+from simple_agent.message_store import MessageEntry
 from simple_agent.run_log import runtime_logger
-from simple_agent.session.runner import MessageEntry, SessionRunner
+from simple_agent.session.runner import SessionRunner
 from simple_agent.task_manager import TaskManager
 
 

@@ -11,7 +11,7 @@ from pi.ai.types import AssistantMessage, TextContent, ThinkingContent, ToolCall
 
 if TYPE_CHECKING:
     from pi.agent.types import AgentMessage
-    from simple_agent.session.runner import MessageEntry
+    from simple_agent.message_store import MessageEntry
 
 
 class RuntimeLogger:

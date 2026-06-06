@@ -105,11 +105,9 @@ class TaskManager:
     def record_turn_tool_calls(
         self,
         *,
-        assistant_message: AssistantMessage,
         tool_call_records: list[tuple[int, Any, ToolResultMessage]],
     ) -> list[ManagedTask]:
         return self.active_lifecycle_for_tools().record_turn_tool_calls(
-            assistant_message=assistant_message,
             tool_call_records=tool_call_records,
         )
 
