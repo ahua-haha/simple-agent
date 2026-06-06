@@ -10,6 +10,7 @@ from typing import TYPE_CHECKING, Callable, Literal, TypeAlias
 
 from pi.ai.types import AssistantMessage, TextContent, ToolCall, ToolResultMessage, UserMessage
 from simple_agent.run_log import runtime_logger
+from simple_agent.task_manager import TaskRuntimeContext
 from simple_agent.token_estimation import estimate_messages_tokens
 from simple_agent.tool.common_tools import create_all_coding_tools
 
@@ -282,8 +283,9 @@ class SessionRunner:
             return self._next_action
 
         tools = self._create_tools()
+        user_instruction_context = self.task_runtime_context()
         user_instruction_message = UserMessage(
-            content=[TextContent(text=self._task_manager.user_instruction_text())],
+            content=[TextContent(text=self._task_manager.user_instruction_text(user_instruction_context))],
             timestamp=int(time.time() * 1000),
         )
         message_context = list(self._messages)
@@ -361,6 +363,19 @@ class SessionRunner:
 
         self._next_action = "compact"
         self._cancel_event.set()
+
+    def task_runtime_context(self, *, additional_tool_calls: int = 0) -> TaskRuntimeContext:
+        context_tokens = estimate_messages_tokens(self._message_values())
+        with self._db.create_session() as session:
+            total_tool_calls = len(self._db.list_runner_tool_calls(self._session_id, session=session))
+        return TaskRuntimeContext(
+            session_id=self._session_id,
+            context_tokens=context_tokens,
+            total_tool_calls=total_tool_calls + additional_tool_calls,
+            active_task_tool_calls=self._task_manager.active_task_tool_call_count(),
+            current_assistant_message_id=self._task_manager.current_assistant_message_id,
+            run_done=self._user_task_is_done(),
+        )
 
     async def handle_compact(self, user_input: str | None, *, run_done: bool = False) -> RunnerAction:
         if not self._task_manager.begin_compact(run_done=run_done):

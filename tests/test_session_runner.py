@@ -321,6 +321,27 @@ async def test_session_runner_routes_normal_run_until_waiting_for_input(tmp_path
 
 
 @pytest.mark.asyncio
+async def test_session_runner_passes_runtime_context_to_task_instruction(tmp_path):
+    db = Database(str(tmp_path / "session.db"))
+    task_manager = TaskManager(db)
+    agent_process = FakeFinalAgentProcess()
+    runner = SessionRunner(
+        session_id="session_a",
+        db=db,
+        task_manager=task_manager,
+        agent_process=agent_process,
+        cancel_event=asyncio.Event(),
+    )
+
+    await runner.run("Build feature")
+
+    instruction_message = agent_process.calls[0]["messages"][-1]
+    instruction = instruction_message.content[0].text
+    assert "Runtime instruction for this turn" in instruction
+    assert "Determine whether the user task is complex" in instruction
+
+
+@pytest.mark.asyncio
 async def test_handle_running_writes_message_change_log(tmp_path):
     _use_run_log_dir(tmp_path)
     db = Database(str(tmp_path / "session.db"))
