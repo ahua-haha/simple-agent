@@ -164,6 +164,8 @@ class TaskManager:
             if current_lifecycle is not None
             else None
         )
+        if next_task is not None and next_task.status != "active":
+            next_task = None
         if next_task is None:
             next_task = self._current_or_root_task(current_task)
         self._set_active_task(next_task)
@@ -203,10 +205,19 @@ class TaskManager:
         return root
 
     def _create_user_task_lifecycle(self, task: UserTask) -> UserTaskLifecycle:
-        return UserTaskLifecycle(task, runtime=self._runtime)
+        lifecycle = UserTaskLifecycle()
+        self._runtime.next_task = task
+        self._runtime.next_task_id_to_run = task.id
+        lifecycle.set_data(self._runtime)
+        return lifecycle
 
     def _create_todo_task_lifecycle(self, task: TodoTask) -> TodoTaskLifecycle:
-        return TodoTaskLifecycle(task, user_task=self._user_task, runtime=self._runtime)
+        lifecycle = TodoTaskLifecycle()
+        self._runtime.next_task = task
+        self._runtime.next_task_id_to_run = task.id
+        lifecycle.set_data(self._runtime)
+        lifecycle.user_task = self._user_task
+        return lifecycle
 
     def _lifecycle_for_task(self, task: ManagedTask) -> UserTaskLifecycle | TodoTaskLifecycle:
         if self._active_lifecycle is not None and task.id == self._active_lifecycle.task.id:

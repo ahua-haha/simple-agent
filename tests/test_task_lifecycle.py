@@ -18,6 +18,38 @@ def _make_db(tmp_path):
     return Database(str(tmp_path / "session.db"))
 
 
+def _user_lifecycle(
+    task: UserTask,
+    *,
+    allocate_task_id=None,
+    runtime: TaskLifecycleRuntime | None = None,
+) -> UserTaskLifecycle:
+    runtime = runtime or TaskLifecycleRuntime(messages=[])
+    runtime.next_task = task
+    runtime.next_task_id_to_run = task.id
+    if allocate_task_id is not None and runtime.next_task_id_to_allocate is None:
+        runtime.next_task_id_to_allocate = allocate_task_id()
+    lifecycle = UserTaskLifecycle()
+    lifecycle.set_data(runtime)
+    return lifecycle
+
+
+def _todo_lifecycle(
+    task: TodoTask,
+    *,
+    allocate_task_id=None,
+    runtime: TaskLifecycleRuntime | None = None,
+) -> TodoTaskLifecycle:
+    runtime = runtime or TaskLifecycleRuntime(messages=[])
+    runtime.next_task = task
+    runtime.next_task_id_to_run = task.id
+    if allocate_task_id is not None and runtime.next_task_id_to_allocate is None:
+        runtime.next_task_id_to_allocate = allocate_task_id()
+    lifecycle = TodoTaskLifecycle()
+    lifecycle.set_data(runtime)
+    return lifecycle
+
+
 class FakeAgentProcess:
     def __init__(self, assistant_message: AssistantMessage, tool_results: list[ToolResultMessage] | None = None):
         self.assistant_message = assistant_message
@@ -98,7 +130,7 @@ class FakeCompactAgentProcess:
 
 def test_user_task_instruction_asks_for_complexity_check_when_tool_count_is_small():
     task = UserTask(title="Build feature")
-    lifecycle = UserTaskLifecycle(task)
+    lifecycle = _user_lifecycle(task)
 
     instruction = lifecycle.instruction_text()
 
@@ -113,7 +145,7 @@ def test_user_task_instruction_requires_todo_after_many_tool_calls():
         ToolCallTask(title=f"Tool call {index}", tool_call_log_id=index)
         for index in range(6)
     ]
-    lifecycle = UserTaskLifecycle(task)
+    lifecycle = _user_lifecycle(task)
 
     instruction = lifecycle.instruction_text()
 
@@ -123,7 +155,7 @@ def test_user_task_instruction_requires_todo_after_many_tool_calls():
 
 def test_todo_task_instruction_focuses_active_todo_when_tool_count_is_small():
     task = TodoTask(title="Inspect files")
-    lifecycle = TodoTaskLifecycle(task)
+    lifecycle = _todo_lifecycle(task)
 
     instruction = lifecycle.instruction_text()
 
@@ -137,7 +169,7 @@ def test_todo_task_instruction_prompts_finish_check_after_many_tool_calls():
         ToolCallTask(title=f"Tool call {index}", tool_call_log_id=index)
         for index in range(11)
     ]
-    lifecycle = TodoTaskLifecycle(task)
+    lifecycle = _todo_lifecycle(task)
 
     instruction = lifecycle.instruction_text()
 
@@ -171,7 +203,7 @@ def test_user_task_lifecycle_uses_owned_allocator():
         return task_id
 
     user_task = UserTask(id=1, title="Build feature")
-    lifecycle = UserTaskLifecycle(user_task, allocate_task_id=allocate_task_id)
+    lifecycle = _user_lifecycle(user_task, allocate_task_id=allocate_task_id)
     lifecycle.current_assistant_message_id = 22
     lifecycle.load_tool_call_log_id(7)
     assistant_message = AssistantMessage(
@@ -206,7 +238,7 @@ def test_user_task_lifecycle_creates_tool_call_record_task_entries_without_appen
         return task_id
 
     user_task = UserTask(id=1, title="Build feature")
-    lifecycle = UserTaskLifecycle(user_task, allocate_task_id=allocate_task_id)
+    lifecycle = _user_lifecycle(user_task, allocate_task_id=allocate_task_id)
     lifecycle.load_tool_call_log_id(7)
     assistant_message = AssistantMessage(
         role="assistant",
@@ -235,7 +267,7 @@ def test_user_task_lifecycle_creates_tool_call_record_task_entries_without_appen
 
 def test_todo_task_lifecycle_uses_owned_message_id_for_finish():
     todo = TodoTask(id=2, parent_id=1, title="Inspect files")
-    lifecycle = TodoTaskLifecycle(todo, allocate_task_id=lambda: 3)
+    lifecycle = _todo_lifecycle(todo, allocate_task_id=lambda: 3)
     lifecycle.current_assistant_message_id = 44
 
     lifecycle.finish_task(result="Inspected files")
@@ -246,14 +278,14 @@ def test_todo_task_lifecycle_uses_owned_message_id_for_finish():
 
 def test_lifecycle_tracks_next_task_transition():
     user_task = UserTask(id=1, title="Build feature")
-    user_lifecycle = UserTaskLifecycle(user_task, allocate_task_id=lambda: 2)
+    user_lifecycle = _user_lifecycle(user_task, allocate_task_id=lambda: 2)
 
     todo = user_lifecycle.create_todo_task(title="Inspect files")
 
     assert user_lifecycle._runtime.next_task_id_to_run == todo.id
     assert user_lifecycle._runtime.next_task is todo
 
-    todo_lifecycle = TodoTaskLifecycle(todo, user_task=user_task)
+    todo_lifecycle = _todo_lifecycle(todo)
     todo_lifecycle.finish_task(result="Done")
 
     assert todo_lifecycle._runtime.next_task_id_to_run == user_task.id
@@ -263,7 +295,7 @@ def test_lifecycle_tracks_next_task_transition():
 def test_lifecycle_allocates_task_id_from_runtime_context():
     runtime = TaskLifecycleRuntime(messages=[], next_task_id_to_allocate=7)
     user_task = UserTask(id=1, title="Build feature")
-    lifecycle = UserTaskLifecycle(user_task, runtime=runtime)
+    lifecycle = _user_lifecycle(user_task, runtime=runtime)
 
     todo = lifecycle.create_todo_task(title="Inspect files")
 
@@ -273,7 +305,7 @@ def test_lifecycle_allocates_task_id_from_runtime_context():
 
 def test_lifecycle_appends_messages_in_memory_until_explicit_sync(tmp_path):
     db = _make_db(tmp_path)
-    lifecycle = UserTaskLifecycle(UserTask(id=1, title="Build feature"))
+    lifecycle = _user_lifecycle(UserTask(id=1, title="Build feature"))
     seed = MessageEntry(id=1, message=UserMessage(content=[TextContent(text="hello")], timestamp=1))
     lifecycle.load_messages([seed], next_message_id=2)
 
@@ -295,7 +327,7 @@ def test_lifecycle_appends_messages_in_memory_until_explicit_sync(tmp_path):
 
 def test_lifecycle_replaces_message_range_and_syncs_explicit_message_list(tmp_path):
     db = _make_db(tmp_path)
-    lifecycle = UserTaskLifecycle(UserTask(id=1, title="Build feature"))
+    lifecycle = _user_lifecycle(UserTask(id=1, title="Build feature"))
     first = MessageEntry(id=1, message=UserMessage(content=[TextContent(text="one")], timestamp=1))
     second = MessageEntry(id=2, message=AssistantMessage(role="assistant", content=[TextContent(text="two")]))
     third = MessageEntry(id=3, message=AssistantMessage(role="assistant", content=[TextContent(text="three")]))
@@ -324,7 +356,7 @@ def test_lifecycle_replaces_message_range_and_syncs_explicit_message_list(tmp_pa
 
 def test_lifecycle_syncs_explicit_tool_call_records_without_buffer(tmp_path):
     db = _make_db(tmp_path)
-    lifecycle = UserTaskLifecycle(UserTask(id=1, title="Build feature"))
+    lifecycle = _user_lifecycle(UserTask(id=1, title="Build feature"))
     tool_call = ToolCall(id="call_1", name="ls", arguments={"path": "."})
     tool_result = ToolResultMessage(
         toolCallId="call_1",
@@ -349,7 +381,7 @@ def test_lifecycle_syncs_explicit_tool_call_records_without_buffer(tmp_path):
 async def test_user_task_lifecycle_run_calls_llm_appends_message_and_returns_next_action(tmp_path):
     db = _make_db(tmp_path)
     user_task = UserTask(id=1, title="Build feature")
-    lifecycle = UserTaskLifecycle(user_task)
+    lifecycle = _user_lifecycle(user_task)
     seed = MessageEntry(id=1, message=UserMessage(content=[TextContent(text="Build feature")], timestamp=1))
     lifecycle.load_messages([seed], next_message_id=2)
     assistant_message = AssistantMessage(role="assistant", content=[TextContent(text="Done")])
@@ -390,7 +422,7 @@ async def test_user_task_lifecycle_run_executes_tools_and_returns_current_task(t
         next_task_id += 1
         return task_id
 
-    lifecycle = UserTaskLifecycle(user_task, allocate_task_id=allocate_task_id)
+    lifecycle = _user_lifecycle(user_task, allocate_task_id=allocate_task_id)
     lifecycle.load_messages([], next_message_id=1)
     lifecycle.load_tool_call_log_id(7)
     assistant_message = AssistantMessage(
@@ -434,7 +466,7 @@ async def test_user_task_lifecycle_run_executes_tools_and_returns_current_task(t
 def test_user_task_lifecycle_compact_tools_do_not_require_begin_step():
     user_task = UserTask(id=1, title="Build feature", status="active")
     user_task.children.append(TodoTask(id=2, parent_id=1, title="Inspect files", status="done"))
-    lifecycle = UserTaskLifecycle(user_task, allocate_task_id=lambda: 3)
+    lifecycle = _user_lifecycle(user_task, allocate_task_id=lambda: 3)
 
     result = lifecycle.create_compacted_user_task(description="Summary")
 
@@ -459,7 +491,7 @@ def test_user_task_lifecycle_compaction_result_uses_user_task_boundaries():
         end_message_id=9,
         children=[ToolCallTask(id=2, parent_id=1, title="Tool call 7", status="done", tool_call_log_id=7)],
     )
-    lifecycle = UserTaskLifecycle(user_task, allocate_task_id=allocate_task_id)
+    lifecycle = _user_lifecycle(user_task, allocate_task_id=allocate_task_id)
 
     result = lifecycle.create_compacted_user_task(description="Summarized work")
     lifecycle.record_compacted_tool_call(tool_call_log_id=7)
@@ -499,7 +531,7 @@ def test_user_task_lifecycle_compaction_sync_replaces_user_task_children(tmp_pat
         next_id += 1
         return task_id
 
-    lifecycle = UserTaskLifecycle(user_task, allocate_task_id=allocate_task_id)
+    lifecycle = _user_lifecycle(user_task, allocate_task_id=allocate_task_id)
     lifecycle.create_compacted_user_task(description="Whole task summary")
     lifecycle.record_compacted_tool_call(tool_call_log_id=10)
     lifecycle.finish_compacted_user_task()
@@ -525,7 +557,7 @@ def test_user_task_lifecycle_compaction_requires_finished_compacted_user_task():
         end_message_id=2,
         children=[ToolCallTask(id=2, parent_id=1, title="Tool call 1", status="done", tool_call_log_id=1)],
     )
-    lifecycle = UserTaskLifecycle(user_task, allocate_task_id=lambda: 3)
+    lifecycle = _user_lifecycle(user_task, allocate_task_id=lambda: 3)
 
     with pytest.raises(RuntimeError, match="No compacted user task result"):
         lifecycle.compaction_result()
@@ -541,7 +573,7 @@ async def test_user_task_lifecycle_handle_compact_runs_loop_and_returns_compacti
         end_message_id=3,
         children=[ToolCallTask(id=2, parent_id=1, title="Tool call 7", status="done", tool_call_log_id=7)],
     )
-    lifecycle = UserTaskLifecycle(user_task, allocate_task_id=lambda: 10)
+    lifecycle = _user_lifecycle(user_task, allocate_task_id=lambda: 10)
     agent_process = FakeCompactAgentProcess()
     original_messages = [
         UserMessage(content=[TextContent(text="Build feature")], timestamp=1),

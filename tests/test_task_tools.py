@@ -7,7 +7,7 @@ import tempfile
 
 from simple_agent.db.db import Database
 from simple_agent.task_manager import TaskManager
-from simple_agent.task_manager.lifecycle import TodoTaskLifecycle, UserTaskLifecycle
+from simple_agent.task_manager.lifecycle import TaskLifecycleRuntime, TodoTaskLifecycle, UserTaskLifecycle
 
 
 def _make_db() -> Database:
@@ -24,6 +24,22 @@ def _save(manager: TaskManager) -> None:
     with manager._db.create_session() as session:
         manager.save(session=session)
         session.commit()
+
+
+def _user_lifecycle(user_task, *, allocate_task_id=None):
+    runtime = TaskLifecycleRuntime(messages=[], next_task=user_task, next_task_id_to_run=user_task.id)
+    if allocate_task_id is not None:
+        runtime.next_task_id_to_allocate = allocate_task_id()
+    lifecycle = UserTaskLifecycle()
+    lifecycle.set_data(runtime)
+    return lifecycle
+
+
+def _todo_lifecycle(todo):
+    runtime = TaskLifecycleRuntime(messages=[], next_task=todo, next_task_id_to_run=todo.id)
+    lifecycle = TodoTaskLifecycle()
+    lifecycle.set_data(runtime)
+    return lifecycle
 
 
 def _create_todo(manager: TaskManager, title: str):
@@ -103,7 +119,7 @@ def test_todo_tools_do_not_require_runner_wrapping():
     manager = TaskManager(db)
     _load(manager, None)
     user_task = manager.create_user_task("Build feature")
-    lifecycle = UserTaskLifecycle(user_task, allocate_task_id=manager.allocate_task_id)
+    lifecycle = _user_lifecycle(user_task, allocate_task_id=manager.allocate_task_id)
     tool = lifecycle.create_create_todo_tool()
 
     async def run():
@@ -119,7 +135,7 @@ def test_user_task_tools_include_create_todo_and_finish_user_task():
     manager = TaskManager(db)
     _load(manager, None)
     user_task = manager.create_user_task("Build feature")
-    lifecycle = UserTaskLifecycle(user_task, allocate_task_id=manager.allocate_task_id)
+    lifecycle = _user_lifecycle(user_task, allocate_task_id=manager.allocate_task_id)
 
     tools = [tool.name for tool in lifecycle.create_tools()]
 
@@ -133,7 +149,7 @@ def test_active_todo_tools_include_todo_lifecycle_tools():
     _load(manager, None)
     user_task = manager.create_user_task("Build feature")
     todo = _create_todo(manager, "Inspect files")
-    lifecycle = TodoTaskLifecycle(todo, user_task=user_task)
+    lifecycle = _todo_lifecycle(todo)
 
     tools = [tool.name for tool in lifecycle.create_tools()]
 
@@ -145,7 +161,7 @@ def test_finish_user_task_tool_finishes_user_task():
     manager = TaskManager(db)
     _load(manager, None)
     user_task = manager.create_user_task("Build feature")
-    lifecycle = UserTaskLifecycle(user_task)
+    lifecycle = _user_lifecycle(user_task)
     tool = lifecycle.create_finish_user_task_tool()
 
     async def run():

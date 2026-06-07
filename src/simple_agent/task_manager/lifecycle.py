@@ -9,7 +9,7 @@ from __future__ import annotations
 import asyncio
 import time
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Any, Callable, Literal, Mapping
+from typing import TYPE_CHECKING, Any, Literal, Mapping, cast
 
 from pi.agent import AgentTool, AgentToolResult
 from pi.ai.types import AssistantMessage, TextContent, ToolCall, ToolResultMessage, UserMessage
@@ -61,15 +61,13 @@ class TaskLifecycleRuntime:
 
 
 class BaseTaskLifecycle:
-    def __init__(
-        self,
-        *,
-        allocate_task_id: Callable[[], int] | None = None,
-        runtime: TaskLifecycleRuntime | None = None,
-    ):
-        self._allocate_task_id = allocate_task_id
+    def clear_data(self) -> None:
+        self.current_assistant_message_id = None
+
+    def set_data(self, runtime: TaskLifecycleRuntime) -> None:
+        self._runtime = runtime
         self.current_assistant_message_id: int | None = None
-        self._runtime = runtime or TaskLifecycleRuntime(messages=[])
+        raise NotImplementedError(f"{type(self).__name__}.set_data is not implemented")
 
     @property
     def messages(self) -> list[MessageEntry]:
@@ -100,9 +98,7 @@ class BaseTaskLifecycle:
             task_id = self._runtime.next_task_id_to_allocate
             self._runtime.next_task_id_to_allocate += 1
             return task_id
-        if self._allocate_task_id is None:
-            raise TaskLifecycleError("Task lifecycle needs an ID allocator")
-        return self._allocate_task_id()
+        raise TaskLifecycleError("Task lifecycle runtime is missing allocation state")
 
     async def run(
         self,
@@ -216,8 +212,9 @@ class BaseTaskLifecycle:
         *,
         assistant_message: AssistantMessage,
         tool_result_messages: list[ToolResultMessage],
+        parent_task: ManagedTask | None = None,
     ) -> tuple[list[tuple[int, ToolCall | None, ToolResultMessage]], list[ToolCallTask]]:
-        task = self.task
+        task = parent_task or self.task
         tool_call_records = []
         tool_call_tasks = []
         for tool_result_message in tool_result_messages:
@@ -246,17 +243,21 @@ class BaseTaskLifecycle:
 
 
 class UserTaskLifecycle(BaseTaskLifecycle):
-    def __init__(
-        self,
-        task: UserTask,
-        *,
-        allocate_task_id: Callable[[], int] | None = None,
-        runtime: TaskLifecycleRuntime | None = None,
-    ):
-        super().__init__(allocate_task_id=allocate_task_id, runtime=runtime)
-        self.task = task
+    def set_data(self, runtime: TaskLifecycleRuntime) -> None:
+        self._runtime = runtime
+        self.current_assistant_message_id = None
+        task = self._runtime.next_task
+        if task is None:
+            raise TaskLifecycleError("Task lifecycle runtime has no next task")
+        if task.kind != "user_task":
+            raise TaskLifecycleError("Active lifecycle task is not a user task")
+        self.task = cast(UserTask, task)
         self._compacted_tool_calls: list[ToolCallTask] = []
         self._compacted_user_task_finished = False
+
+    def clear_data(self) -> None:
+        super().clear_data()
+        self.task = None
 
     def instruction_text(self) -> str:
         if _count_user_task_tool_calls_after_latest_todo(self.task) > 5:
@@ -329,24 +330,25 @@ class UserTaskLifecycle(BaseTaskLifecycle):
             tool_call_threshold=tool_call_threshold,
         )
 
-    def _next_task_after_turn(self) -> ManagedTask | None:
-        next_task = _find_task(self.task, self._runtime.next_task_id_to_run)
+    def _next_task_after_turn(self, task: UserTask) -> ManagedTask | None:
+        next_task = _find_task(task, self._runtime.next_task_id_to_run)
         if next_task is not None:
             return next_task
-        if self.task.status == "active":
-            self.set_next_task(self.task, task_instance=True)
-            return self.task
+        if task.status == "active":
+            self.set_next_task(task, task_instance=True)
+            return task
         return None
 
     def _next_action_after_thresholds(
         self,
         *,
+        task: UserTask,
         context_token_threshold: int,
         tool_call_threshold: int,
         cancel_event: asyncio.Event | None,
     ) -> TaskLifecycleAction:
         context_tokens = estimate_messages_tokens(self.message_values())
-        tool_calls = _count_task_tree_tool_calls(self.task)
+        tool_calls = _count_task_tree_tool_calls(task)
         if (
             context_tokens <= context_token_threshold
             and tool_calls <= tool_call_threshold
@@ -364,6 +366,7 @@ class UserTaskLifecycle(BaseTaskLifecycle):
         context_token_threshold: int,
         tool_call_threshold: int,
     ) -> TaskLifecycleRunResult:
+        task = self.task
         tools = self.create_tools()
         user_instruction_message = UserMessage(
             content=[TextContent(text=self.instruction_text())],
@@ -378,7 +381,7 @@ class UserTaskLifecycle(BaseTaskLifecycle):
         if _assistant_is_error(assistant_message):
             return TaskLifecycleRunResult(
                 next_action="handle_error",
-                next_task=self.task,
+                next_task=task,
                 error=assistant_message,
                 new_messages=[],
                 tool_call_records=[],
@@ -400,10 +403,11 @@ class UserTaskLifecycle(BaseTaskLifecycle):
             tool_call_records, tool_call_tasks = self.create_tool_call_record_task_entries(
                 assistant_message=assistant_message,
                 tool_result_messages=tool_results,
+                parent_task=task,
             )
-            self.task.children.extend(tool_call_tasks)
+            task.children.extend(tool_call_tasks)
             if tool_call_tasks:
-                self.task.touch()
+                task.touch()
 
         tool_result_entries = [
             MessageEntry(id=self.allocate_message_id(), message=tool_result)
@@ -414,9 +418,9 @@ class UserTaskLifecycle(BaseTaskLifecycle):
 
         # TODO: replace this temporary next-action block with the lifecycle-owned
         # determine-next logic for a completed normal turn.
-        if self.task.status == "done":
+        if task.status == "done":
             next_action: TaskLifecycleAction = "compact"
-            next_task = self.task
+            next_task = task
         elif not _assistant_has_tool_calls(assistant_message):
             self.current_assistant_message_id = assistant_entry.id
             try:
@@ -424,14 +428,15 @@ class UserTaskLifecycle(BaseTaskLifecycle):
             finally:
                 self.current_assistant_message_id = None
             next_action = "compact"
-            next_task = self.task
+            next_task = task
         else:
             next_action = self._next_action_after_thresholds(
+                task=task,
                 context_token_threshold=context_token_threshold,
                 tool_call_threshold=tool_call_threshold,
                 cancel_event=cancel_event,
             )
-            next_task = self._next_task_after_turn()
+            next_task = self._next_task_after_turn(task)
 
         # TODO: sync normal run messages, tool calls, and task data to database here.
         return TaskLifecycleRunResult(
@@ -471,7 +476,7 @@ class UserTaskLifecycle(BaseTaskLifecycle):
             self.create_todo_task(
                 title=params["title"],
             )
-            return AgentToolResult(content=[TextContent(text=self.todo_status_text())])
+            return AgentToolResult(content=[TextContent(text=todo_status_text(self.task))])
 
         tool.execute = execute
         return tool
@@ -698,20 +703,25 @@ class UserTaskLifecycle(BaseTaskLifecycle):
 
 
 class TodoTaskLifecycle(BaseTaskLifecycle):
-    def __init__(
-        self,
-        task: TodoTask,
-        *,
-        allocate_task_id: Callable[[], int] | None = None,
-        user_task: UserTask | None = None,
-        runtime: TaskLifecycleRuntime | None = None,
-    ):
-        super().__init__(allocate_task_id=allocate_task_id, runtime=runtime)
-        self.task = task
-        self.user_task = user_task
+    def set_data(self, runtime: TaskLifecycleRuntime) -> None:
+        self._runtime = runtime
+        self.current_assistant_message_id = None
+        task = self._runtime.next_task
+        if task is None:
+            raise TaskLifecycleError("Task lifecycle runtime has no next task")
+        if task.kind != "todo":
+            raise TaskLifecycleError("Active lifecycle task is not a todo task")
+        self.task = cast(TodoTask, task)
+        self.user_task = None
+
+    def clear_data(self) -> None:
+        super().clear_data()
+        self.task = None
+        self.user_task = None
 
     def instruction_text(self) -> str:
-        if _count_tool_calls(self.task.children) > 10:
+        task = self._require_todo_task_data()
+        if _count_tool_calls(task.children) > 10:
             return (
                 "Runtime instruction for this turn:\n"
                 "- More than 10 tool calls have run for the active todo.\n"
@@ -721,29 +731,44 @@ class TodoTaskLifecycle(BaseTaskLifecycle):
             )
         return (
             "Runtime instruction for this turn:\n"
-            f"- Focus on the active todo: {self.task.title}\n"
+            f"- Focus on the active todo: {task.title}\n"
             "- Use tools only for work needed by this todo.\n"
             "- Call finish_todo immediately when it is complete."
         )
 
     def finish_task(self, *, result: str | None = None) -> TodoTask:
-        self.task.status = "done"
-        self.task.result = result
-        self.task.end_message_id = self.current_assistant_message_id
-        self.task.touch()
-        self.set_next_task(self.user_task)
-        return self.task
+        task = self._require_todo_task_data()
+        task.status = "done"
+        task.result = result
+        task.end_message_id = self.current_assistant_message_id
+        task.touch()
+        self._set_parent_as_next_task()
+        return task
 
     def error_task(self, *, error: str, end_message_id: int | None = None) -> TodoTask:
-        self.task.status = "error"
-        self.task.error = error
-        self.task.end_message_id = (
+        task = self._require_todo_task_data()
+        task.status = "error"
+        task.error = error
+        task.end_message_id = (
             end_message_id
             if end_message_id is not None
             else self.current_assistant_message_id
         )
-        self.task.touch()
-        self.set_next_task(self.user_task)
+        task.touch()
+        self._set_parent_as_next_task()
+        return task
+
+    def _set_parent_as_next_task(self) -> None:
+        if self.user_task is not None:
+            self.set_next_task(self.user_task)
+            return
+        task = self._require_todo_task_data()
+        self._runtime.next_task_id_to_run = task.parent_id
+        self._runtime.next_task = None
+
+    def _require_todo_task_data(self) -> TodoTask:
+        if self.task is None:
+            raise TaskLifecycleError("Task lifecycle has no todo task data")
         return self.task
 
     def create_tools(self) -> list[AgentTool]:
@@ -753,8 +778,9 @@ class TodoTaskLifecycle(BaseTaskLifecycle):
         ]
 
     def sync(self, database: Any, session: Any) -> None:
-        database.upsert_managed_task(self.task, session=session)
-        for child in sorted(self.task.children, key=lambda item: item.id or 0):
+        task = self._require_todo_task_data()
+        database.upsert_managed_task(task, session=session)
+        for child in sorted(task.children, key=lambda item: item.id or 0):
             database.upsert_managed_task(child, session=session)
 
     def create_finish_todo_tool(self) -> AgentTool:
@@ -774,13 +800,13 @@ class TodoTaskLifecycle(BaseTaskLifecycle):
         )
 
         async def execute(tool_call_id, params, cancel_event=None, on_update=None):
-            self.finish_task(
+            task = self.finish_task(
                 result=params.get("result"),
             )
             text = (
                 todo_status_text(self.user_task)
                 if self.user_task is not None
-                else f"Todo finished: {self.task.result or self.task.title}"
+                else f"Todo finished: {task.result or task.title}"
             )
             return AgentToolResult(content=[TextContent(text=text)])
 
@@ -804,13 +830,13 @@ class TodoTaskLifecycle(BaseTaskLifecycle):
         )
 
         async def execute(tool_call_id, params, cancel_event=None, on_update=None):
-            self.error_task(
+            task = self.error_task(
                 error=params["error"],
             )
             text = (
                 todo_status_text(self.user_task)
                 if self.user_task is not None
-                else f"Todo errored: {self.task.error or self.task.title}"
+                else f"Todo errored: {task.error or task.title}"
             )
             return AgentToolResult(content=[TextContent(text=text)])
 

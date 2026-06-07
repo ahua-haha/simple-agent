@@ -14,7 +14,7 @@ from simple_agent.message_store import MessageEntry
 from simple_agent.run_log import runtime_logger
 from simple_agent.session.runner import SessionRunner
 from simple_agent.task_manager import TaskManager
-from simple_agent.task_manager.lifecycle import TaskLifecycleError, UserTaskLifecycle
+from simple_agent.task_manager.lifecycle import TaskLifecycleError
 from simple_agent.task_manager.models import ToolCallTask
 
 
@@ -367,11 +367,8 @@ def _seed_runner_user_lifecycle(runner: SessionRunner, user_task) -> None:
         runner._load_runtime(session=session)
     runner._user_task = user_task
     runner._active_user_task_id = user_task.id
-    runner._active_lifecycle = UserTaskLifecycle(
-        user_task,
-        allocate_task_id=runner.allocate_task_id,
-        runtime=runner._runtime,
-    )
+    runner._runtime.next_task_id_to_run = user_task.id
+    runner._runtime.next_task = user_task
 
 
 @pytest.mark.asyncio
@@ -780,7 +777,7 @@ async def test_lifecycle_run_sets_current_assistant_message_id_for_task_tools(tm
     assert next_action == "normal_run"
     assert todo.start_message_id == 1
     assert runner._runtime.next_task is todo
-    assert runner._active_lifecycle.current_assistant_message_id is None
+    assert runner._lifecycles["user_task"].current_assistant_message_id is None
 
 
 @pytest.mark.asyncio

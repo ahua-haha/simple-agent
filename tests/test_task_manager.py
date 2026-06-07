@@ -9,7 +9,7 @@ from pi.ai.types import AssistantMessage, TextContent, ToolResultMessage
 
 from simple_agent.db.db import Database
 from simple_agent.task_manager import TaskManager
-from simple_agent.task_manager.lifecycle import TodoTaskLifecycle, UserTaskLifecycle
+from simple_agent.task_manager.lifecycle import TaskLifecycleRuntime, TodoTaskLifecycle, UserTaskLifecycle
 from simple_agent.task_manager.models import TodoTask, ToolCallTask, UserTask
 
 
@@ -37,6 +37,20 @@ def _save(manager: TaskManager) -> None:
     with manager._db.create_session() as session:
         manager.save(session=session)
         session.commit()
+
+
+def _user_lifecycle(user_task):
+    runtime = TaskLifecycleRuntime(messages=[], next_task=user_task, next_task_id_to_run=user_task.id)
+    lifecycle = UserTaskLifecycle()
+    lifecycle.set_data(runtime)
+    return lifecycle
+
+
+def _todo_lifecycle(todo):
+    runtime = TaskLifecycleRuntime(messages=[], next_task=todo, next_task_id_to_run=todo.id)
+    lifecycle = TodoTaskLifecycle()
+    lifecycle.set_data(runtime)
+    return lifecycle
 
 
 def _create_todo(
@@ -155,7 +169,7 @@ def test_managed_task_roundtrip_preserves_message_boundaries():
 def test_user_task_sync_persists_task_and_direct_children_only():
     db = _make_db()
     user_task = UserTask(id=1, title="Build feature")
-    user_lifecycle = UserTaskLifecycle(user_task)
+    user_lifecycle = _user_lifecycle(user_task)
     todo = user_lifecycle.create_todo_task(task_id=2, title="Inspect files")
     todo.children.append(
         ToolCallTask(id=3, parent_id=todo.id, title="Tool call 7", status="done", tool_call_log_id=7)
@@ -181,7 +195,7 @@ def test_user_task_sync_persists_task_and_direct_children_only():
 def test_todo_task_sync_persists_task_and_direct_tool_calls():
     db = _make_db()
     todo = TodoTask(id=2, parent_id=1, title="Inspect files")
-    lifecycle = TodoTaskLifecycle(todo)
+    lifecycle = _todo_lifecycle(todo)
     tool_call = ToolCallTask(id=3, parent_id=todo.id, title="Tool call 7", status="done", tool_call_log_id=7)
     todo.children.append(tool_call)
 
