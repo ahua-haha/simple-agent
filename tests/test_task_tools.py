@@ -37,7 +37,7 @@ def test_create_todo_tool_creates_active_todo():
     manager = TaskManager(db)
     _load(manager, None)
     manager.create_user_task("Build feature")
-    tool = {tool.name: tool for tool in manager.create_tools()}["create_todo"]
+    tool = {tool.name: tool for tool in manager.active_lifecycle_for_tools().create_tools()}["create_todo"]
 
     async def run():
         return await tool.execute("call_1", {"title": "Inspect files"})
@@ -57,7 +57,7 @@ def test_finish_todo_tool_finishes_active_todo():
     _load(manager, None)
     user_task = manager.create_user_task("Build feature")
     todo = _create_todo(manager, "Inspect files")
-    tool = {tool.name: tool for tool in manager.create_tools()}["finish_todo"]
+    tool = {tool.name: tool for tool in manager.active_lifecycle_for_tools().create_tools()}["finish_todo"]
 
     async def run():
         return await tool.execute("call_1", {"result": "Inspected files"})
@@ -81,7 +81,7 @@ def test_error_todo_tool_returns_latest_todo_status():
     _load(manager, None)
     user_task = manager.create_user_task("Build feature")
     todo = _create_todo(manager, "Inspect files")
-    tool = {tool.name: tool for tool in manager.create_tools()}["error_todo"]
+    tool = {tool.name: tool for tool in manager.active_lifecycle_for_tools().create_tools()}["error_todo"]
 
     async def run():
         return await tool.execute("call_1", {"error": "Missing dependency"})
@@ -123,7 +123,8 @@ def test_user_task_tools_include_create_todo_and_finish_user_task():
 
     tools = [tool.name for tool in lifecycle.create_tools()]
 
-    assert tools == ["create_todo", "finish_user_task"]
+    assert tools[:2] == ["create_todo", "finish_user_task"]
+    assert "read" in tools
 
 
 def test_active_todo_tools_include_todo_lifecycle_tools():
@@ -135,29 +136,6 @@ def test_active_todo_tools_include_todo_lifecycle_tools():
     lifecycle = TodoTaskLifecycle(todo, user_task=user_task)
 
     tools = [tool.name for tool in lifecycle.create_tools()]
-
-    assert tools == ["finish_todo", "error_todo"]
-
-
-def test_task_manager_create_tools_delegates_to_active_user_task():
-    db = _make_db()
-    manager = TaskManager(db)
-    _load(manager, None)
-    manager.create_user_task("Build feature")
-
-    tools = [tool.name for tool in manager.create_tools()]
-
-    assert tools == ["create_todo", "finish_user_task"]
-
-
-def test_task_manager_create_tools_delegates_to_active_todo():
-    db = _make_db()
-    manager = TaskManager(db)
-    _load(manager, None)
-    manager.create_user_task("Build feature")
-    _create_todo(manager, "Inspect files")
-
-    tools = [tool.name for tool in manager.create_tools()]
 
     assert tools == ["finish_todo", "error_todo"]
 

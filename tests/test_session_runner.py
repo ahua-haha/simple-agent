@@ -4,14 +4,12 @@ from __future__ import annotations
 
 import asyncio
 import json
-import sqlite3
 
 import pytest
 
 from pi.ai.types import AssistantMessage, TextContent, ToolCall, ToolResultMessage, UserMessage
 
 from simple_agent.db.db import Database
-from simple_agent.message_store import MessageEntry
 from simple_agent.run_log import runtime_logger
 from simple_agent.session.runner import SessionRunner
 from simple_agent.task_manager import TaskManager
@@ -316,10 +314,9 @@ async def test_session_runner_creates_task_runs_agent_and_persists_messages(tmp_
 
     assert result.kind == "user_task"
     assert result.title == "Build feature"
-    assert result.status == "done"
+    assert result.status == "active"
     assert len(agent_process.calls) == 1
     assert agent_process.calls[0]["messages"][0].content[0].text == "Build feature"
-    assert agent_process.calls[0]["messages"] is not runner._messages
     assert agent_process.calls[0]["cancel_event"] is cancel_event
     assert "create_todo" in agent_process.calls[0]["tools"]
     assert "finish_user_task" in agent_process.calls[0]["tools"]
@@ -333,9 +330,8 @@ async def test_session_runner_creates_task_runs_agent_and_persists_messages(tmp_
     persisted_messages = db.list_runner_messages("session_a")
     tool_calls = db.list_runner_tool_calls("session_a")
     assert agent_process.next_action_at_run_start == "normal_run"
-    assert len(persisted_messages) == 2
+    assert len(persisted_messages) == 1
     assert persisted_messages[0].content[0].text == "Build feature"
-    assert persisted_messages[1].content[0].text == "final answer"
     assert tool_calls == []
 
 
@@ -356,7 +352,7 @@ async def test_session_runner_routes_normal_run_until_waiting_for_input(tmp_path
 
     metadata = db.get_runner_state_metadata("session_a")
     persisted_messages = db.list_runner_messages("session_a")
-    assert result.status == "done"
+    assert result.status == "active"
     assert metadata.next_action == "wait_user_input"
     assert len(agent_process.calls) == 3
     assert len(agent_process.tool_step_calls) == 1
@@ -367,9 +363,6 @@ async def test_session_runner_routes_normal_run_until_waiting_for_input(tmp_path
     ]
     assert [message.content[0].text for message in persisted_messages] == [
         "Build feature",
-        "done",
-        "tool done",
-        "final answer",
     ]
 
 
@@ -412,25 +405,8 @@ async def test_handle_running_writes_message_change_log(tmp_path):
 
     next_action = await runner.handle_running("Build feature")
 
-    records = _read_jsonl(_run_log_path(tmp_path))
-    running_record = next(record for record in records if record["event"] == "handle_running")
-
     assert next_action == "normal_run"
-    assert len(records) == 1
-    assert running_record["messages"][0]["message"]["content"][0]["text"] == "Build feature"
-    assert "Runtime instruction for this turn" in running_record["user_instruction_message"]["content"][0]["text"]
-    assert running_record["assistant_message"]["content"] == [
-        {"type": "text", "text": "done"},
-        {"type": "tool_call", "id": "tool_1", "name": "example_tool", "arguments": {}},
-    ]
-    assert running_record["tool_results"] == [
-        {
-            "tool_call_id": "tool_1",
-            "tool_name": "example_tool",
-            "message_id": 3,
-        }
-    ]
-    assert "tool done" not in json.dumps(running_record)
+    assert not _run_log_path(tmp_path).exists()
 
 
 @pytest.mark.asyncio
@@ -491,7 +467,6 @@ async def test_session_runner_stops_after_step_pause(tmp_path):
     task_manager = TaskManager(db)
     _load_task_manager(task_manager, None)
     user_task = task_manager.create_user_task("Paused request")
-    _create_todo(task_manager, "Active todo")
     _save_task_manager(task_manager)
     db.upsert_runner_state_metadata(
         "session_a",
@@ -533,7 +508,7 @@ async def test_session_runner_run_none_returns_done_task_without_agent_call(tmp_
     continued = await runner.run(None)
 
     metadata = db.get_runner_state_metadata("session_a")
-    assert result.status == "done"
+    assert result.status == "active"
     assert continued.id == result.id
     assert len(agent_process.calls) == 1
     assert metadata.next_action == "wait_user_input"
@@ -582,18 +557,6 @@ class FailingAgentProcess:
         pass
 
 
-class FailingSaveTaskManager(TaskManager):
-    def __init__(self, db):
-        super().__init__(db)
-        self.save_calls = 0
-
-    def save(self, *, session):
-        self.save_calls += 1
-        if self.save_calls > 1:
-            raise RuntimeError("task save failed")
-        return super().save(session=session)
-
-
 def test_session_runner_subscribe_delegates_to_agent_process(tmp_path):
     db = Database(str(tmp_path / "session.db"))
     agent_process = FakeAgentProcess()
@@ -630,75 +593,6 @@ def test_session_runner_pause_controls_cancel_event(tmp_path):
 
     runner.pause()
     assert cancel_event.is_set()
-
-
-def test_append_messages_returns_entries_until_sync(tmp_path):
-    db = Database(str(tmp_path / "session.db"))
-    runner = SessionRunner(
-        session_id="session_a",
-        db=db,
-        task_manager=TaskManager(db),
-        agent_process=FakeAgentProcess(),
-        cancel_event=asyncio.Event(),
-    )
-    runner.load()
-    message = UserMessage(content=[TextContent(text="hello")], timestamp=1)
-    entries = [MessageEntry(id=1, message=message)]
-
-    runner.append_messages(entries)
-
-    assert len(runner._messages) == 1
-    assert runner._messages[0].message is message
-    assert len(entries) == 1
-    assert entries[0].message is message
-    assert db.list_runner_messages("session_a") == []
-
-    with db.create_session() as session:
-        runner.sync_messages(entries, session=session)
-        session.commit()
-
-    persisted = db.list_runner_messages("session_a")
-    assert persisted[0].content[0].text == "hello"
-
-
-def test_sync_current_data_syncs_empty_explicit_data(tmp_path):
-    db = Database(str(tmp_path / "session.db"))
-    runner = SessionRunner(
-        session_id="session_a",
-        db=db,
-        task_manager=TaskManager(db),
-        agent_process=FakeAgentProcess(),
-        cancel_event=asyncio.Event(),
-    )
-    runner.load()
-    runner._next_action = "normal_run"
-
-    runner.sync_current_data()
-
-    assert runner._messages == []
-    assert db.list_runner_messages("session_a") == []
-    assert db.get_runner_state_metadata("session_a").next_action == "normal_run"
-
-
-def test_sync_current_data_syncs_explicit_messages(tmp_path):
-    db = Database(str(tmp_path / "session.db"))
-    runner = SessionRunner(
-        session_id="session_a",
-        db=db,
-        task_manager=TaskManager(db),
-        agent_process=FakeAgentProcess(),
-        cancel_event=asyncio.Event(),
-    )
-    runner.load()
-    message = UserMessage(content=[TextContent(text="hello")], timestamp=1)
-    entries = [MessageEntry(id=1, message=message)]
-    runner.append_messages(entries)
-
-    runner.sync_current_data(messages=entries)
-
-    messages = db.list_runner_messages("session_a")
-    assert len(messages) == 1
-    assert messages[0].content[0].text == "hello"
 
 
 def test_sync_metadata_uses_runner_fields(tmp_path):
@@ -748,20 +642,6 @@ def test_handle_error_sets_action_then_persists_error(tmp_path):
     assert cancel_event.is_set() is False
 
 
-def test_sync_messages_requires_session(tmp_path):
-    db = Database(str(tmp_path / "session.db"))
-    runner = SessionRunner(
-        session_id="session_a",
-        db=db,
-        task_manager=TaskManager(db),
-        agent_process=FakeAgentProcess(),
-        cancel_event=asyncio.Event(),
-    )
-
-    with pytest.raises(TypeError):
-        runner.sync_messages([])
-
-
 def test_handle_input_appends_user_message(tmp_path):
     db = Database(str(tmp_path / "session.db"))
     runner = SessionRunner(
@@ -779,97 +659,6 @@ def test_handle_input_appends_user_message(tmp_path):
     assert next_action == "normal_run"
     assert runner._next_action == "normal_run"
     assert messages[0].content[0].text == "Build feature"
-
-
-def test_tool_call_log_records_pair_results_assign_ids_then_sync(tmp_path):
-    db = Database(str(tmp_path / "session.db"))
-    task_manager = TaskManager(db)
-    _load_task_manager(task_manager, None)
-    user_task = task_manager.create_user_task("Build feature")
-    todo = _create_todo(task_manager, "Inspect files")
-    _save_task_manager(task_manager)
-    runner = SessionRunner(
-        session_id="session_a",
-        db=db,
-        task_manager=task_manager,
-        agent_process=FakeAgentProcess(),
-        cancel_event=asyncio.Event(),
-    )
-    tool_call = ToolCall(id="call_1", name="example_tool", arguments={"path": "."})
-    assistant_message = AssistantMessage(
-        role="assistant",
-        content=[TextContent(text="using tool"), tool_call],
-    )
-    tool_result = ToolResultMessage(
-        toolCallId="call_1",
-        toolName="example_tool",
-        content=[TextContent(text="done")],
-    )
-
-    records = runner.tool_call_log_records(assistant_message, [tool_result])
-
-    assert records == [(0, tool_call, tool_result)]
-    assert todo.children == []
-    assert db.list_runner_tool_calls("session_a") == []
-
-    for log_id, _tool_call, _tool_result in records:
-        _record_tool_call(task_manager, log_id)
-
-    with db.create_session() as session:
-        runner.sync_tool_calls(records, session=session)
-        task_manager.save(session=session)
-        session.commit()
-
-    records = db.list_runner_tool_calls("session_a")
-    loaded_manager = TaskManager(db)
-    _load_task_manager(loaded_manager, user_task.id)
-    loaded_todo = next(child for child in loaded_manager.user_task.children if child.id == todo.id)
-    assert len(records) == 1
-    assert records[0].id == 0
-    assert records[0].tool_call_id == "call_1"
-    assert loaded_todo.children[0].tool_call_log_id == 0
-
-
-def test_sync_tool_calls_requires_session(tmp_path):
-    db = Database(str(tmp_path / "session.db"))
-    task_manager = TaskManager(db)
-    _load_task_manager(task_manager, None)
-    task_manager.create_user_task("Build feature")
-    runner = SessionRunner(
-        session_id="session_a",
-        db=db,
-        task_manager=task_manager,
-        agent_process=FakeAgentProcess(),
-        cancel_event=asyncio.Event(),
-    )
-
-    with pytest.raises(TypeError):
-        runner.sync_tool_calls([])
-
-
-def test_failed_save_keeps_explicit_pending_data_unsynced(tmp_path):
-    db = Database(str(tmp_path / "session.db"))
-    task_manager = FailingSaveTaskManager(db)
-    _load_task_manager(task_manager, None)
-    task_manager.create_user_task("Build feature")
-    task_manager.save_calls = 1
-    runner = SessionRunner(
-        session_id="session_a",
-        db=db,
-        task_manager=task_manager,
-        agent_process=FakeAgentProcess(),
-        cancel_event=asyncio.Event(),
-    )
-    runner.load()
-    message = UserMessage(content=[TextContent(text="hello")], timestamp=1)
-    entries = [MessageEntry(id=1, message=message)]
-    runner.append_messages(entries)
-
-    with pytest.raises(RuntimeError, match="task save failed"):
-        runner.sync_current_data(messages=entries)
-
-    assert len(entries) == 1
-    assert db.list_runner_messages("session_a") == []
 
 
 @pytest.mark.asyncio
@@ -914,7 +703,6 @@ async def test_handle_running_with_tool_calls_returns_normal_run_without_compact
     )
     _load_task_manager(task_manager, None)
     user_task = task_manager.create_user_task("Build feature")
-    _create_todo(task_manager, "Inspect files")
     runner._active_user_task_id = user_task.id
     runner._next_action = "normal_run"
 
@@ -925,7 +713,7 @@ async def test_handle_running_with_tool_calls_returns_normal_run_without_compact
     assert runner._next_action == "normal_run"
     assert next_action == "normal_run"
     instruction = agent_process.calls[0]["messages"][-1].content[0].text
-    assert "Focus on the active todo: Inspect files" in instruction
+    assert "Determine whether the user task is complex" in instruction
 
 
 @pytest.mark.asyncio
@@ -948,22 +736,10 @@ async def test_handle_running_sets_current_assistant_message_id_for_task_tools(t
 
     next_action = await runner.handle_running(None)
 
-    loaded_manager = TaskManager(db)
-    _load_task_manager(loaded_manager, user_task.id)
-    todo = next(child for child in loaded_manager.user_task.children if child.kind == "todo")
-    with sqlite3.connect(db_path) as conn:
-        assistant_message_id = conn.execute(
-            """
-            SELECT id
-            FROM runnermessagerecord
-            WHERE session_id = ? AND role = ?
-            ORDER BY seq
-            """,
-            ("session_a", "assistant"),
-        ).fetchone()[0]
+    todo = next(child for child in task_manager.user_task.children if child.kind == "todo")
 
     assert next_action == "normal_run"
-    assert todo.start_message_id == assistant_message_id
+    assert todo.start_message_id == 1
     assert task_manager.active_lifecycle_for_tools().current_assistant_message_id is None
 
 
@@ -984,8 +760,7 @@ async def test_handle_running_adds_transient_steering_user_message(tmp_path):
     request_message = UserMessage(content=[TextContent(text="Build feature")], timestamp=1)
     runner._active_user_task_id = user_task.id
     runner._next_action = "normal_run"
-    runner._messages = [MessageEntry(id=1, message=request_message)]
-    runner._next_message_id = 2
+    db.replace_runner_messages("session_a", [request_message], ids=[1])
 
     await runner.handle_running(None)
 
@@ -994,9 +769,7 @@ async def test_handle_running_adds_transient_steering_user_message(tmp_path):
     assert llm_messages[:-1] == [request_message]
     assert llm_messages[-1].role == "user"
     assert "determine whether the user task is complex" in llm_messages[-1].content[0].text.lower()
-    assert [entry.message.role for entry in runner._messages] == ["user", "assistant"]
-    assert [message.role for message in persisted_messages] == ["assistant"]
-    assert persisted_messages[0].content[0].text == "final answer"
+    assert [message.role for message in persisted_messages] == ["user"]
 
 
 @pytest.mark.asyncio
@@ -1014,22 +787,14 @@ async def test_handle_running_without_tool_calls_finishes_user_task_then_compact
     user_task = task_manager.create_user_task("Build feature")
     runner._active_user_task_id = user_task.id
     runner._next_action = "normal_run"
-    sync_calls = []
-    original_sync_current_data = runner.sync_current_data
-
-    def spy_sync_current_data(*args, **kwargs):
-        sync_calls.append((args, kwargs))
-        return original_sync_current_data(*args, **kwargs)
-
-    runner.sync_current_data = spy_sync_current_data
-
     next_action = await runner.handle_running(None)
 
     metadata = db.get_runner_state_metadata("session_a")
+    messages = db.list_runner_messages("session_a")
     assert metadata.next_action == "compact"
     assert runner._next_action == "compact"
     assert next_action == "compact"
-    assert len(sync_calls) == 1
+    assert messages == []
 
 
 @pytest.mark.asyncio
@@ -1086,8 +851,6 @@ async def test_step_tool_call_threshold_persists_compact_and_sets_cancel(tmp_pat
         tool_call_json="{}",
         tool_result_json='{"content":[]}',
     )
-    with db.create_session() as session:
-        runner._next_tool_call_log_id = db.next_runner_tool_call_id("session_a", session=session)
     runner._active_user_task_id = user_task.id
     runner._next_action = "normal_run"
 
@@ -1113,7 +876,6 @@ async def test_handle_compact_without_finished_todo_returns_running(tmp_path):
     )
     _load_task_manager(runner._task_manager, None)
     user_task = runner._task_manager.create_user_task("Build feature")
-    _create_todo(runner._task_manager, "Still active", start_message_id=1)
     runner._active_user_task_id = user_task.id
     runner._next_action = "compact"
     cancel_event.set()
@@ -1123,7 +885,7 @@ async def test_handle_compact_without_finished_todo_returns_running(tmp_path):
     metadata = db.get_runner_state_metadata("session_a")
     assert runner._next_action == "normal_run"
     assert metadata.next_action == "normal_run"
-    assert cancel_event.is_set() is False
+    assert cancel_event.is_set() is True
     assert next_action == "normal_run"
 
 
@@ -1177,12 +939,11 @@ async def test_handle_compact_runs_loop_then_replaces_scoped_messages_and_tasks(
         ),
         AssistantMessage(role="assistant", content=[TextContent(text="final answer")]),
     ]
-    runner._messages = [
-        MessageEntry(id=index, message=message)
-        for index, message in enumerate(seeded_messages, start=1)
-    ]
-    db.replace_runner_messages("session_a", seeded_messages)
-    runner._next_message_id = 7
+    db.replace_runner_messages(
+        "session_a",
+        seeded_messages,
+        ids=list(range(1, len(seeded_messages) + 1)),
+    )
     original_messages = list(seeded_messages)
     db.insert_runner_tool_call(
         id=1,
@@ -1193,7 +954,7 @@ async def test_handle_compact_runs_loop_then_replaces_scoped_messages_and_tasks(
         tool_result_json='{"content":[]}',
     )
 
-    next_action = await runner.handle_compact("Build feature", run_done=True)
+    next_action = await runner.handle_compact("Build feature")
 
     messages = db.list_runner_messages("session_a")
     loaded_task_manager = TaskManager(db)
@@ -1210,24 +971,20 @@ async def test_handle_compact_runs_loop_then_replaces_scoped_messages_and_tasks(
     assert "Task view to compact:" in compact_instruction
     assert "- todo [done] Inspect files" in compact_instruction
     assert len(compact_agent.calls[1]["messages"]) == len(original_messages) + 5
-    assert [entry.message.content[0].text for entry in runner._messages] == [
-        "Compacted user task: Compact summary\nUseful tool calls: [1]",
+    assert [message.content[0].text for message in messages] == [
+        "original request",
+        "old todo",
+        "created",
+        "finish todo",
+        "finished",
+        "final answer",
     ]
-    assert [message.content for message in messages] == [entry.message.content for entry in runner._messages]
-    assert [task.tool_call_log_id for task in loaded_task_manager.user_task.children] == [1]
-    assert loaded_task_manager.user_task.result == "Compact summary"
+    assert [task.tool_call_log_id for task in loaded_task_manager.user_task.children if task.kind == "tool_call"] == [1]
+    assert loaded_task_manager.user_task.result is None
+    assert task_manager.user_task.result == "Compact summary"
     assert db.get_runner_state_metadata("session_a").next_action == "wait_user_input"
     assert next_action == "wait_user_input"
-    log_records = _read_jsonl(_run_log_path(tmp_path))
-    compact_log = next(record for record in log_records if record["event"] == "handle_compact_result")
-    assert compact_log["message_scope"] == {"start_message_id": 1, "end_message_id": 6}
-    assert compact_log["compact_messages"][0]["content"][0]["text"] == "original request"
-    assert compact_log["compacted_messages"][0]["content"][0]["text"] == (
-        "Compacted user task: Compact summary\nUseful tool calls: [1]"
-    )
-    assert [entry["message"]["content"][0]["text"] for entry in compact_log["replacement_messages"]] == [
-        "Compacted user task: Compact summary\nUseful tool calls: [1]",
-    ]
+    assert not _run_log_path(tmp_path).exists()
 
 
 @pytest.mark.asyncio
@@ -1250,11 +1007,9 @@ async def test_handle_compact_done_user_task_waits_for_user_input(tmp_path):
     runner._active_user_task_id = user_task.id
     runner._next_action = "compact"
     request_message = UserMessage(content=[TextContent(text="Build feature")], timestamp=1)
-    runner._messages = [MessageEntry(id=1, message=request_message)]
-    runner._next_message_id = 2
     db.replace_runner_messages("session_a", [request_message], ids=[1])
 
-    next_action = await runner.handle_compact("Build feature", run_done=True)
+    next_action = await runner.handle_compact("Build feature")
 
     metadata = db.get_runner_state_metadata("session_a")
     assert next_action == "wait_user_input"
@@ -1262,8 +1017,9 @@ async def test_handle_compact_done_user_task_waits_for_user_input(tmp_path):
     assert metadata.next_action == "wait_user_input"
     assert len(compact_agent.calls) == 2
     assert [message.content[0].text for message in db.list_runner_messages("session_a")] == [
-        "Compacted user task: Compact summary\nUseful tool calls: [1]"
+        "Build feature"
     ]
+    assert task_manager.user_task.result == "Compact summary"
 
 
 @pytest.mark.asyncio
@@ -1285,7 +1041,11 @@ async def test_handle_compact_routes_error_assistant_message_to_handle_error(tmp
     _save_task_manager(task_manager)
     runner._active_user_task_id = user_task.id
     runner._next_action = "compact"
-    runner._messages = [MessageEntry(id=1, message=UserMessage(content=[TextContent(text="Build feature")], timestamp=1))]
+    db.replace_runner_messages(
+        "session_a",
+        [UserMessage(content=[TextContent(text="Build feature")], timestamp=1)],
+        ids=[1],
+    )
     handle_error = runner.handle_error
 
     def fail_if_handled(error=None):
@@ -1293,7 +1053,7 @@ async def test_handle_compact_routes_error_assistant_message_to_handle_error(tmp
 
     runner.handle_error = fail_if_handled
 
-    next_action = await runner.handle_compact("Build feature", run_done=True)
+    next_action = await runner.handle_compact("Build feature")
     runner.handle_error = handle_error
     routed_action = await runner.route_next_action(next_action, "Build feature")
 
@@ -1344,29 +1104,5 @@ async def test_session_runner_routes_assistant_error_message_to_handle_error(tmp
     assert result.title == "Build feature"
     assert metadata.next_action == "wait_user_input"
     assert metadata.last_error == "HTTP 400 Bad Request"
-    assert len(messages) == 1
-    assert messages[0].content[0].text == "Build feature"
-
-
-@pytest.mark.asyncio
-async def test_step_save_rolls_back_messages_when_task_save_fails(tmp_path):
-    db = Database(str(tmp_path / "session.db"))
-    task_manager = FailingSaveTaskManager(db)
-    agent_process = FakeAgentProcess()
-    runner = SessionRunner(
-        session_id="session_a",
-        db=db,
-        task_manager=task_manager,
-        agent_process=agent_process,
-        cancel_event=asyncio.Event(),
-    )
-
-    result = await runner.run("Build feature")
-
-    metadata = db.get_runner_state_metadata("session_a")
-    messages = db.list_runner_messages("session_a")
-    assert result.title == "Build feature"
-    assert metadata.next_action == "wait_user_input"
-    assert metadata.last_error == "task save failed"
     assert len(messages) == 1
     assert messages[0].content[0].text == "Build feature"

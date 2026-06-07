@@ -2,24 +2,30 @@
 
 from __future__ import annotations
 
-import json
-from typing import TYPE_CHECKING, Mapping, cast
+import time
+from dataclasses import dataclass
+from typing import TYPE_CHECKING, Literal, cast
 
-from pi.agent import AgentTool
+from pi.ai.types import AssistantMessage, TextContent, UserMessage
 
-from simple_agent.task_manager.lifecycle import BaseTaskLifecycle, TodoTaskLifecycle, UserTaskLifecycle, todo_status_text
-from simple_agent.task_manager.models import ManagedTask, TodoTask, ToolCallTask, UserTask
-from simple_agent.task_manager.review import (
-    TaskTreeReview,
-    TaskTreeReviewFormat,
-    TaskTreeReviewRenderer,
-    ToolCallReview,
-)
+from simple_agent.message_store import MessageEntry
+from simple_agent.task_manager.lifecycle import BaseTaskLifecycle, TodoTaskLifecycle, UserTaskLifecycle
+from simple_agent.task_manager.models import ManagedTask, TodoTask, UserTask
 
 if TYPE_CHECKING:
+    import asyncio
+
     from simple_agent.db.db import Database
-    from pi.agent.types import AgentMessage
+    from simple_agent.process.agent_process import AgentProcess
     from sqlmodel import Session
+
+TaskManagerAction = Literal["normal_run", "compact", "handle_error", "wait_user_input"]
+
+
+@dataclass(frozen=True)
+class TaskManagerRunResult:
+    next_action: TaskManagerAction
+    error: Exception | AssistantMessage | str | None = None
 
 
 class TaskManagerError(RuntimeError):
@@ -80,12 +86,25 @@ class TaskManager:
         self._active_lifecycle = self._create_user_task_lifecycle(task)
         return task
 
+    def start_user_task(self, *, session_id: str, user_input: str) -> UserTask:
+        user_task = self.create_user_task(user_input)
+        lifecycle = self._require_user_task_lifecycle()
+        self._load_lifecycle_runtime(lifecycle, session_id)
+        user_message = UserMessage(
+            content=[TextContent(text=user_input)],
+            timestamp=int(time.time() * 1000),
+        )
+        message_entry = lifecycle.append_message(user_message)
+        user_task.start_message_id = message_entry.id
+        with self._db.create_session() as session:
+            lifecycle.sync_messages(session_id, self._db, [message_entry], session=session)
+            self.save(session=session)
+            session.commit()
+        return user_task
+
     @property
     def user_task(self) -> UserTask | None:
         return self._user_task
-
-    def active_task_for_tools(self) -> ManagedTask:
-        return self.active_lifecycle_for_tools().task
 
     def active_lifecycle_for_tools(self) -> BaseTaskLifecycle:
         if self._active_lifecycle is None:
@@ -95,8 +114,28 @@ class TaskManager:
     def allocate_task_id(self) -> int:
         return self._allocate_task_id()
 
-    def create_tools(self) -> list[AgentTool]:
-        return self.active_lifecycle_for_tools().create_tools()
+    async def run(
+        self,
+        *,
+        session_id: str,
+        agent_process: AgentProcess,
+        cancel_event: asyncio.Event,
+        context_token_threshold: int,
+        tool_call_threshold: int,
+    ) -> TaskManagerRunResult:
+        lifecycle = self._run_lifecycle()
+        if not isinstance(lifecycle, UserTaskLifecycle):
+            raise TaskManagerError("Only user task lifecycle run is implemented")
+        if not lifecycle.messages:
+            self._load_lifecycle_runtime(lifecycle, session_id)
+        result = await lifecycle.run(
+            agent_process=agent_process,
+            cancel_event=cancel_event,
+            context_token_threshold=context_token_threshold,
+            tool_call_threshold=tool_call_threshold,
+        )
+        self._set_active_task(result.next_task)
+        return TaskManagerRunResult(result.next_action, result.error)
 
     def finish_user_task(self, result: str | None = None, end_message_id: int | None = None) -> ManagedTask:
         user_task = self._require_user_task()
@@ -123,64 +162,20 @@ class TaskManager:
         self.active_task_id = task.id if task is not None else None
         self._active_lifecycle = self._lifecycle_for_task(task) if task is not None else None
 
-    def todo_status_text(self) -> str:
-        return todo_status_text(self._require_user_task())
+    def _run_lifecycle(self) -> BaseTaskLifecycle:
+        if self._active_lifecycle is not None:
+            return self._active_lifecycle
+        return self._lifecycle_for_task(self._require_loaded_user_task())
 
-    def user_instruction_text(self) -> str:
-        if self._user_task is None:
-            return (
-                "Runtime instruction for this turn:\n"
-                "- Wait for the user to provide a task before creating todos or doing tool work."
-            )
-
-        return self.active_lifecycle_for_tools().instruction_text()
-
-    # ------------------------------------------------------------------
-    # Compact phase
-    # ------------------------------------------------------------------
-
-    def begin_compact(self, *, run_done: bool) -> bool:
-        if not run_done:
-            return False
-        lifecycle = self._lifecycle_for_user_task_compaction()
-        if not lifecycle.begin_compaction():
-            return False
-        self.active_task_id = lifecycle.task.id
-        self._active_lifecycle = lifecycle
-        return True
-
-    def compact_instruction_text(
-        self,
-        *,
-        session_id: str,
-    ) -> str:
-        return self._lifecycle_for_user_task_compaction().compaction_instruction_text(
-            tool_calls=self._load_tool_call_reviews(session_id),
-        )
-
-    def compacted_messages(self) -> tuple[int, int, list["AgentMessage"]]:
-        return self._lifecycle_for_user_task_compaction().compaction_result()
-
-    def create_compact_tools(self) -> list[AgentTool]:
-        return self._lifecycle_for_user_task_compaction().create_compact_tools()
-
-    def sync_compaction(self, *, session: Session) -> ManagedTask:
-        return self._lifecycle_for_user_task_compaction().sync_compaction(self._db, session)
+    def _require_user_task_lifecycle(self) -> UserTaskLifecycle:
+        lifecycle = self.active_lifecycle_for_tools()
+        if not isinstance(lifecycle, UserTaskLifecycle):
+            raise TaskManagerError("Active lifecycle is not a user task lifecycle")
+        return lifecycle
 
     # ------------------------------------------------------------------
     # Task tree and helper utilities
     # ------------------------------------------------------------------
-
-    def review_task_tree(
-        self,
-        *,
-        format: TaskTreeReviewFormat = "tree",
-        depth: int | None = None,
-        tool_calls: Mapping[int, ToolCallReview] | None = None,
-    ) -> TaskTreeReview:
-        user_task = self._require_user_task()
-        renderer = TaskTreeReviewRenderer(format=format, depth=depth, tool_calls=tool_calls or {})
-        return renderer.render(user_task)
 
     def build_task_tree(self, root_task_id: int, *, session: Session) -> ManagedTask | None:
         root = self._db.get_managed_task(root_task_id, session=session)
@@ -246,13 +241,6 @@ class TaskManager:
             raise TaskManagerError("No loaded user task")
         return self._user_task
 
-    def _lifecycle_for_user_task_compaction(self) -> UserTaskLifecycle:
-        user_task = self._require_loaded_user_task()
-        lifecycle = self._lifecycle_for_task(user_task)
-        if not isinstance(lifecycle, UserTaskLifecycle):
-            raise TaskManagerError("User task compaction requires a user task lifecycle")
-        return lifecycle
-
     def _walk_tasks(self) -> list[ManagedTask]:
         if self._user_task is None:
             return []
@@ -267,22 +255,15 @@ class TaskManager:
             stack.extend(reversed(task.children))
         return tasks
 
-    def _load_tool_call_reviews(self, session_id: str) -> dict[int, ToolCallReview]:
-        records = self._db.list_runner_tool_calls(session_id)
-        return {
-            record.id: ToolCallReview(
-                name=record.tool_name,
-                arguments=self._tool_call_arguments(record.tool_call_json),
+    def _load_lifecycle_runtime(self, lifecycle: BaseTaskLifecycle, session_id: str) -> None:
+        with self._db.create_session() as session:
+            lifecycle.load_messages(
+                [
+                    MessageEntry(id=message_id, message=message)
+                    for message_id, message in self._db.list_runner_message_entries(session_id, session=session)
+                ],
+                next_message_id=self._db.next_runner_message_id(session=session),
             )
-            for record in records
-            if record.id is not None
-        }
-
-    def _tool_call_arguments(self, tool_call_json: str) -> object | None:
-        try:
-            payload = json.loads(tool_call_json)
-        except json.JSONDecodeError:
-            return None
-        if not isinstance(payload, dict):
-            return None
-        return payload.get("arguments")
+            lifecycle.load_tool_call_log_id(
+                self._db.next_runner_tool_call_id(session_id, session=session)
+            )
