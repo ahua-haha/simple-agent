@@ -8,7 +8,6 @@ import sqlite3
 from pi.ai.types import AssistantMessage, TextContent
 
 from simple_agent.db.db import Database
-from simple_agent.task_manager import TaskManager
 from simple_agent.task_manager.models import TodoTask, UserTask
 
 
@@ -140,11 +139,8 @@ def test_replace_managed_task_tree_deletes_all_tasks_after_root_id(tmp_path):
 
     db.replace_managed_task_tree(user_task)
 
-    loaded = TaskManager(db)
-    with db.create_session() as session:
-        loaded.load(user_task.id, session=session)
     assert db.get_managed_task(stale_orphan.id) is None
-    assert [child.title for child in loaded.user_task.children] == ["New child"]
+    assert [child.title for child in db.list_managed_task_children(user_task.id)] == ["New child"]
 
 
 def test_runner_tool_call_roundtrip_success(tmp_path):

@@ -24,9 +24,6 @@ if TYPE_CHECKING:
 
 RunnerAction = Literal["normal_run", "compact", "wait_user_input"]
 
-DEFAULT_CONTEXT_TOKEN_THRESHOLD = 120_000
-DEFAULT_TOOL_CALL_THRESHOLD = 200
-
 class SessionRunner:
     """Persisted runner for one Session.run invocation at a time."""
 
@@ -35,13 +32,10 @@ class SessionRunner:
     _agent_process: AgentProcess
     _cancel_event: asyncio.Event
     _next_action: RunnerAction
-    _active_user_task_id: int | None
     _last_error: str | None
     _user_task: UserTask | None
     _lifecycles: dict[str, BaseTaskLifecycle]
     _runtime: TaskLifecycleRuntime
-    _context_token_threshold: int
-    _tool_call_threshold: int
     _user_paused: bool
 
     def __init__(
@@ -51,21 +45,16 @@ class SessionRunner:
         db: Database,
         agent_process: AgentProcess,
         cancel_event: asyncio.Event,
-        context_token_threshold: int = DEFAULT_CONTEXT_TOKEN_THRESHOLD,
-        tool_call_threshold: int = DEFAULT_TOOL_CALL_THRESHOLD,
     ):
         self._session_id = session_id
         self._db = db
         self._agent_process = agent_process
         self._cancel_event = cancel_event
         self._next_action = "wait_user_input"
-        self._active_user_task_id = None
         self._last_error = None
         self._user_task = None
         self._lifecycles = {}
         self._runtime = TaskLifecycleRuntime(messages=[])
-        self._context_token_threshold = context_token_threshold
-        self._tool_call_threshold = tool_call_threshold
         self._user_paused = False
 
     def subscribe(self, callback: Callable) -> None:
@@ -86,11 +75,9 @@ class SessionRunner:
             metadata = self._db.get_runner_state_metadata(self._session_id, session=session)
             if metadata is None:
                 self._next_action = "wait_user_input"
-                self._active_user_task_id = None
                 self._last_error = None
                 return
             self._next_action = metadata.next_action
-            self._active_user_task_id = metadata.active_user_task_id
             self._last_error = metadata.last_error
             # TODO: reconstruct the task tree and active lifecycle from the
             # stored runner state.
@@ -99,7 +86,7 @@ class SessionRunner:
         self._db.upsert_runner_state_metadata(
             self._session_id,
             next_action=self._next_action,
-            active_user_task_id=self._active_user_task_id,
+            active_user_task_id=self._current_active_user_task_id(),
             last_error=self._last_error,
             session=session,
         )
@@ -121,11 +108,6 @@ class SessionRunner:
             self._next_action = result.next_action
             if self._runtime.next_task is None:
                 self._next_action = "wait_user_input"
-            self._active_user_task_id = (
-                self._user_task.id
-                if self._user_task is not None and self._user_task.status == "active"
-                else None
-            )
             with self._db.create_session() as session:
                 self.sync_metadata(session=session)
                 session.commit()
@@ -138,7 +120,6 @@ class SessionRunner:
 
         self.finish_previous_user_task()
         user_task = self.start_user_task(user_input)
-        self._active_user_task_id = user_task.id
         self._next_action = "normal_run"
         self._last_error = None
         self._cancel_event.clear()
@@ -150,7 +131,6 @@ class SessionRunner:
     def finish_previous_user_task(self) -> None:
         # TODO: finish or interrupt the previous user task through its lifecycle
         # before starting a new user task.
-        self._active_user_task_id = None
         self._user_task = None
 
     def _raise_lifecycle_error(self, error: Exception | object | str) -> None:
@@ -193,7 +173,6 @@ class SessionRunner:
             raise RuntimeError("Cannot create a second active user task")
         task = UserTask(id=self.allocate_task_id(), title=user_input, start_message_id=start_message_id)
         self._user_task = task
-        self._active_user_task_id = task.id
         self._runtime.next_task_id_to_run = task.id
         self._runtime.next_task = task
         return task
@@ -208,8 +187,6 @@ class SessionRunner:
             result = await lifecycle.run(
                 agent_process=self._agent_process,
                 cancel_event=self._cancel_event,
-                context_token_threshold=self._context_token_threshold,
-                tool_call_threshold=self._tool_call_threshold,
             )
         finally:
             lifecycle.clear_data()
@@ -282,3 +259,8 @@ class SessionRunner:
     @property
     def user_task(self) -> UserTask | None:
         return self._user_task
+
+    def _current_active_user_task_id(self) -> int | None:
+        if self._user_task is not None and self._user_task.status == "active":
+            return self._user_task.id
+        return None

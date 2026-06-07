@@ -40,6 +40,9 @@ USER_TASK_COMPACT_SYSTEM_PROMPT = """Compact the finished user task into one com
 Use only the compact tools. Set the compacted user task result, record useful
 tool-call log IDs, then finish the compacted user task."""
 
+USER_TASK_CONTEXT_TOKEN_THRESHOLD = 120_000
+USER_TASK_TOOL_CALL_THRESHOLD = 200
+
 
 @dataclass(frozen=True)
 class TaskLifecycleRunResult:
@@ -105,8 +108,6 @@ class BaseTaskLifecycle:
         *,
         agent_process: AgentProcess,
         cancel_event: asyncio.Event | None = None,
-        context_token_threshold: int,
-        tool_call_threshold: int,
     ) -> TaskLifecycleRunResult:
         raise NotImplementedError(f"{type(self).__name__}.run is not implemented")
 
@@ -314,8 +315,6 @@ class UserTaskLifecycle(BaseTaskLifecycle):
         *,
         agent_process: AgentProcess,
         cancel_event: asyncio.Event | None = None,
-        context_token_threshold: int,
-        tool_call_threshold: int,
     ) -> TaskLifecycleRunResult:
         if self.task.status == "done":
             return await self.handle_compact(
@@ -326,8 +325,6 @@ class UserTaskLifecycle(BaseTaskLifecycle):
         return await self.run_one_turn(
             agent_process=agent_process,
             cancel_event=cancel_event,
-            context_token_threshold=context_token_threshold,
-            tool_call_threshold=tool_call_threshold,
         )
 
     def _next_task_after_turn(self, task: UserTask) -> ManagedTask | None:
@@ -343,15 +340,13 @@ class UserTaskLifecycle(BaseTaskLifecycle):
         self,
         *,
         task: UserTask,
-        context_token_threshold: int,
-        tool_call_threshold: int,
         cancel_event: asyncio.Event | None,
     ) -> TaskLifecycleAction:
         context_tokens = estimate_messages_tokens(self.message_values())
         tool_calls = _count_task_tree_tool_calls(task)
         if (
-            context_tokens <= context_token_threshold
-            and tool_calls <= tool_call_threshold
+            context_tokens <= USER_TASK_CONTEXT_TOKEN_THRESHOLD
+            and tool_calls <= USER_TASK_TOOL_CALL_THRESHOLD
         ):
             return "normal_run"
         if cancel_event is not None:
@@ -363,8 +358,6 @@ class UserTaskLifecycle(BaseTaskLifecycle):
         *,
         agent_process: AgentProcess,
         cancel_event: asyncio.Event | None = None,
-        context_token_threshold: int,
-        tool_call_threshold: int,
     ) -> TaskLifecycleRunResult:
         task = self.task
         tools = self.create_tools()
@@ -432,8 +425,6 @@ class UserTaskLifecycle(BaseTaskLifecycle):
         else:
             next_action = self._next_action_after_thresholds(
                 task=task,
-                context_token_threshold=context_token_threshold,
-                tool_call_threshold=tool_call_threshold,
                 cancel_event=cancel_event,
             )
             next_task = self._next_task_after_turn(task)

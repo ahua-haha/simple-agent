@@ -389,8 +389,6 @@ async def test_user_task_lifecycle_run_calls_llm_appends_message_and_returns_nex
 
     result = await lifecycle.run(
         agent_process=agent_process,
-        context_token_threshold=1000,
-        tool_call_threshold=100,
     )
 
     assert agent_process.llm_calls[0]["system_prompt"] == USER_TASK_SYSTEM_PROMPT
@@ -437,8 +435,6 @@ async def test_user_task_lifecycle_run_executes_tools_and_returns_current_task(t
     agent_process = FakeAgentProcess(assistant_message, [tool_result])
     result = await lifecycle.run(
         agent_process=agent_process,
-        context_token_threshold=1000,
-        tool_call_threshold=100,
     )
 
     assert agent_process.llm_calls[0]["system_prompt"] == USER_TASK_SYSTEM_PROMPT
