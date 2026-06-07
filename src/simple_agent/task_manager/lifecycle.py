@@ -9,7 +9,7 @@ from __future__ import annotations
 import asyncio
 import time
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Any, Literal, Mapping, cast
+from typing import TYPE_CHECKING, Any, Mapping, cast
 
 from pi.agent import AgentTool, AgentToolResult
 from pi.agent.types import AgentMessage
@@ -29,8 +29,6 @@ class TaskLifecycleError(RuntimeError):
     """Raised when a task lifecycle cannot complete an operation."""
 
 
-TaskLifecycleAction = Literal["normal_run", "compact", "handle_error", "wait_user_input"]
-
 USER_TASK_SYSTEM_PROMPT = """You are a helpful coding agent.
 
 Be concise, practical, and honest about uncertainty. Use available tools
@@ -43,15 +41,6 @@ tool-call log IDs, then finish the compacted user task."""
 
 USER_TASK_CONTEXT_TOKEN_THRESHOLD = 120_000
 USER_TASK_TOOL_CALL_THRESHOLD = 200
-
-
-@dataclass(frozen=True)
-class TaskLifecycleRunResult:
-    next_action: TaskLifecycleAction
-    next_task: ManagedTask | None
-    error: Exception | AssistantMessage | str | None = None
-    new_messages: list[MessageEntry] | None = None
-    tool_call_records: list[tuple[int, ToolCall | None, ToolResultMessage]] | None = None
 
 
 @dataclass
@@ -189,7 +178,7 @@ class BaseTaskLifecycle:
         *,
         agent_process: AgentProcess,
         cancel_event: asyncio.Event | None = None,
-    ) -> TaskLifecycleRunResult:
+    ) -> SessionState:
         raise NotImplementedError(f"{type(self).__name__}.run is not implemented")
 
     def load_messages(self, messages: list[MessageEntry], *, next_message_id: int) -> None:
@@ -396,7 +385,7 @@ class UserTaskLifecycle(BaseTaskLifecycle):
         *,
         agent_process: AgentProcess,
         cancel_event: asyncio.Event | None = None,
-    ) -> TaskLifecycleRunResult:
+    ) -> SessionState:
         if self.task.status == "done":
             return await self.handle_compact(
                 agent_process=agent_process,
@@ -417,29 +406,28 @@ class UserTaskLifecycle(BaseTaskLifecycle):
             return task
         return None
 
-    def _next_action_after_thresholds(
+    def _check_thresholds(
         self,
         *,
         task: UserTask,
         cancel_event: asyncio.Event | None,
-    ) -> TaskLifecycleAction:
+    ) -> None:
         context_tokens = estimate_messages_tokens(self._session_state.message_values())
         tool_calls = _count_task_tree_tool_calls(task)
         if (
             context_tokens <= USER_TASK_CONTEXT_TOKEN_THRESHOLD
             and tool_calls <= USER_TASK_TOOL_CALL_THRESHOLD
         ):
-            return "normal_run"
+            return
         if cancel_event is not None:
             cancel_event.set()
-        return "compact"
 
     async def run_one_turn(
         self,
         *,
         agent_process: AgentProcess,
         cancel_event: asyncio.Event | None = None,
-    ) -> TaskLifecycleRunResult:
+    ) -> SessionState:
         task = self.task
         tools = self.create_tools()
         user_instruction_message = UserMessage(
@@ -453,12 +441,8 @@ class UserTaskLifecycle(BaseTaskLifecycle):
             cancel_event=cancel_event,
         )
         if _assistant_is_error(assistant_message):
-            return TaskLifecycleRunResult(
-                next_action="handle_error",
-                next_task=task,
-                error=assistant_message,
-                new_messages=[],
-                tool_call_records=[],
+            raise TaskLifecycleError(
+                assistant_message.error_message or "assistant response stopped with error"
             )
 
         assistant_entry = MessageEntry(
@@ -466,7 +450,6 @@ class UserTaskLifecycle(BaseTaskLifecycle):
             message=assistant_message,
         )
         tool_results: list[ToolResultMessage] = []
-        tool_call_records: list[tuple[int, ToolCall | None, ToolResultMessage]] = []
         if _assistant_has_tool_calls(assistant_message):
             self.current_assistant_message_id = assistant_entry.id
             try:
@@ -477,7 +460,7 @@ class UserTaskLifecycle(BaseTaskLifecycle):
                 )
             finally:
                 self.current_assistant_message_id = None
-            tool_call_records, tool_call_tasks = self._session_state.create_tool_call_record_task_entries(
+            _, tool_call_tasks = self._session_state.create_tool_call_record_task_entries(
                 assistant_message=assistant_message,
                 tool_result_messages=tool_results,
                 parent_task=task,
@@ -493,33 +476,25 @@ class UserTaskLifecycle(BaseTaskLifecycle):
         new_messages = [assistant_entry, *tool_result_entries]
         self._session_state.append_messages(new_messages)
 
-        # TODO: replace this temporary next-action block with the lifecycle-owned
-        # determine-next logic for a completed normal turn.
+        # TODO: replace this temporary block with lifecycle-owned transition
+        # logic for a completed normal turn.
         if task.status == "done":
-            next_action: TaskLifecycleAction = "compact"
-            next_task = task
+            pass
         elif not _assistant_has_tool_calls(assistant_message):
             self.current_assistant_message_id = assistant_entry.id
             try:
                 self.finish_task()
             finally:
                 self.current_assistant_message_id = None
-            next_action = "compact"
-            next_task = task
         else:
-            next_action = self._next_action_after_thresholds(
+            self._check_thresholds(
                 task=task,
                 cancel_event=cancel_event,
             )
-            next_task = self._next_task_after_turn(task)
+            self._next_task_after_turn(task)
 
         # TODO: sync normal run messages, tool calls, and task data to database here.
-        return TaskLifecycleRunResult(
-            next_action=next_action,
-            next_task=next_task,
-            new_messages=new_messages,
-            tool_call_records=tool_call_records,
-        )
+        return self._session_state
 
     def sync(self, database: Any, session: Any) -> None:
         database.upsert_managed_task(self.task, session=session)
@@ -581,12 +556,12 @@ class UserTaskLifecycle(BaseTaskLifecycle):
         *,
         agent_process: AgentProcess,
         cancel_event: asyncio.Event | None = None,
-    ) -> TaskLifecycleRunResult:
+    ) -> SessionState:
         if not self.task.children:
             if cancel_event is not None:
                 cancel_event.clear()
             self._session_state.clear_next_task()
-            return TaskLifecycleRunResult(next_action="wait_user_input", next_task=None)
+            return self._session_state
 
         self._compacted_tool_calls = []
         self._compacted_user_task_finished = False
@@ -634,7 +609,7 @@ class UserTaskLifecycle(BaseTaskLifecycle):
         # TODO: determine next action after compacting.
         # TODO: sync compacted messages and compacted task data to database here.
         self._session_state.clear_next_task()
-        return TaskLifecycleRunResult(next_action="wait_user_input", next_task=None)
+        return self._session_state
 
     def create_compact_tools(self) -> list[AgentTool]:
         create_tool = AgentTool(

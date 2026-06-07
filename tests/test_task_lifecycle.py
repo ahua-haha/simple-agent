@@ -8,6 +8,7 @@ from simple_agent.task_manager.lifecycle import (
     USER_TASK_COMPACT_SYSTEM_PROMPT,
     USER_TASK_SYSTEM_PROMPT,
     SessionState,
+    TaskLifecycleError,
     TodoTaskLifecycle,
     UserTaskLifecycle,
 )
@@ -410,7 +411,7 @@ def test_lifecycle_syncs_explicit_tool_call_records_without_buffer(tmp_path):
 
 
 @pytest.mark.asyncio
-async def test_user_task_lifecycle_run_calls_llm_appends_message_and_returns_next_action(tmp_path):
+async def test_user_task_lifecycle_run_calls_llm_appends_message_and_returns_state(tmp_path):
     db = _make_db(tmp_path)
     user_task = UserTask(id=1, title="Build feature")
     lifecycle = _user_lifecycle(user_task)
@@ -430,14 +431,29 @@ async def test_user_task_lifecycle_run_calls_llm_appends_message_and_returns_nex
     assert agent_process.llm_calls[0]["messages"][:-1] == [seed.message]
     assert "Runtime instruction for this turn" in agent_process.llm_calls[0]["messages"][-1].content[0].text
     assert agent_process.tool_calls == []
-    assert result.new_messages == [MessageEntry(id=2, message=assistant_message)]
-    assert lifecycle.messages == [seed, *result.new_messages]
+    assert result is lifecycle._session_state
+    assert lifecycle.messages == [seed, MessageEntry(id=2, message=assistant_message)]
     assert lifecycle.next_message_id == 3
-    assert result.tool_call_records == []
-    assert result.next_action == "compact"
-    assert result.next_task is user_task
+    assert lifecycle._session_state.next_task is user_task
     assert user_task.status == "done"
     assert db.list_runner_messages("session_a") == []
+
+
+@pytest.mark.asyncio
+async def test_user_task_lifecycle_run_raises_on_assistant_error(tmp_path):
+    _db = _make_db(tmp_path)
+    user_task = UserTask(id=1, title="Build feature")
+    lifecycle = _user_lifecycle(user_task)
+    assistant_message = AssistantMessage(
+        role="assistant",
+        content=[TextContent(text="failed")],
+        stopReason="error",
+        errorMessage="model failed",
+    )
+    agent_process = FakeAgentProcess(assistant_message)
+
+    with pytest.raises(TaskLifecycleError, match="model failed"):
+        await lifecycle.run(agent_process=agent_process)
 
 
 @pytest.mark.asyncio
@@ -474,19 +490,17 @@ async def test_user_task_lifecycle_run_executes_tools_and_returns_current_task(t
     tool_names = [tool.name for tool in agent_process.tool_calls[0]["tools"]]
     assert tool_names[:2] == ["create_todo", "finish_user_task"]
     assert "read" in tool_names
-    assert result.new_messages == [
+    assert result is lifecycle._session_state
+    assert lifecycle.messages == [
         MessageEntry(id=1, message=assistant_message),
         MessageEntry(id=2, message=tool_result),
     ]
-    assert lifecycle.messages == result.new_messages
     assert lifecycle.next_message_id == 3
     assert lifecycle.next_tool_call_log_id == 8
-    assert result.tool_call_records == [(7, assistant_message.content[0], tool_result)]
     assert [child.tool_call_log_id for child in user_task.children] == [7]
     assert user_task.children[0].parent_id == user_task.id
     assert lifecycle.current_assistant_message_id is None
-    assert result.next_action == "normal_run"
-    assert result.next_task is user_task
+    assert lifecycle._session_state.next_task is user_task
     assert db.list_runner_messages("session_a") == []
     assert db.list_runner_tool_calls("session_a") == []
 
@@ -592,7 +606,7 @@ def test_user_task_lifecycle_compaction_requires_finished_compacted_user_task():
 
 
 @pytest.mark.asyncio
-async def test_user_task_lifecycle_handle_compact_runs_loop_and_returns_compaction_result():
+async def test_user_task_lifecycle_handle_compact_runs_loop_and_returns_state():
     user_task = UserTask(
         id=1,
         title="Build feature",
@@ -628,8 +642,9 @@ async def test_user_task_lifecycle_handle_compact_runs_loop_and_returns_compacti
     ]
     assert agent_process.calls[0]["messages"][:-1] == original_messages
     assert "Runtime instruction for compacting phase" in agent_process.calls[0]["messages"][-1].content[0].text
-    assert result.next_action == "wait_user_input"
-    assert result.next_task is None
+    assert result is lifecycle._session_state
+    assert lifecycle._session_state.next_task is None
+    assert lifecycle._session_state.next_task_id_to_run is None
     assert [entry.id for entry in lifecycle.messages] == [4]
     assert lifecycle.messages[0].message == AssistantMessage(
         role="assistant",
