@@ -231,7 +231,7 @@ def test_user_task_lifecycle_uses_owned_allocator():
     user_task = UserTask(id=1, title="Build feature")
     lifecycle = _user_lifecycle(user_task, allocate_task_id=allocate_task_id)
     lifecycle.current_assistant_message_id = 22
-    lifecycle.load_tool_call_log_id(7)
+    lifecycle._session_state.next_tool_call_log_id = 7
     assistant_message = AssistantMessage(
         role="assistant",
         content=[ToolCall(id="call_1", name="ls", arguments={"path": "."})],
@@ -243,9 +243,10 @@ def test_user_task_lifecycle_uses_owned_allocator():
     )
 
     todo = lifecycle.create_todo_task(title="Inspect files")
-    _tool_call_records, tool_call_tasks = lifecycle.create_tool_call_record_task_entries(
+    _tool_call_records, tool_call_tasks = lifecycle._session_state.create_tool_call_record_task_entries(
         assistant_message=assistant_message,
         tool_result_messages=[tool_result],
+        parent_task=user_task,
     )
 
     assert todo.id == 10
@@ -265,7 +266,7 @@ def test_user_task_lifecycle_creates_tool_call_record_task_entries_without_appen
 
     user_task = UserTask(id=1, title="Build feature")
     lifecycle = _user_lifecycle(user_task, allocate_task_id=allocate_task_id)
-    lifecycle.load_tool_call_log_id(7)
+    lifecycle._session_state.next_tool_call_log_id = 7
     assistant_message = AssistantMessage(
         role="assistant",
         content=[ToolCall(id="call_1", name="ls", arguments={"path": "."})],
@@ -276,9 +277,10 @@ def test_user_task_lifecycle_creates_tool_call_record_task_entries_without_appen
         content=[TextContent(text="files")],
     )
 
-    tool_call_records, tool_call_tasks = lifecycle.create_tool_call_record_task_entries(
+    tool_call_records, tool_call_tasks = lifecycle._session_state.create_tool_call_record_task_entries(
         assistant_message=assistant_message,
         tool_result_messages=[tool_result],
+        parent_task=user_task,
     )
 
     assert tool_call_records == [(7, assistant_message.content[0], tool_result)]
@@ -288,7 +290,7 @@ def test_user_task_lifecycle_creates_tool_call_record_task_entries_without_appen
     assert tool_call_task.parent_id == user_task.id
     assert tool_call_task.tool_call_log_id == 7
     assert user_task.children == []
-    assert lifecycle.next_tool_call_log_id == 8
+    assert lifecycle._session_state.next_tool_call_log_id == 8
 
 
 def test_todo_task_lifecycle_uses_owned_message_id_for_finish():
@@ -428,19 +430,21 @@ def test_session_state_appends_tasks_to_database(tmp_path):
 
 def test_lifecycle_appends_messages_in_memory_until_explicit_sync(tmp_path):
     db = _make_db(tmp_path)
-    lifecycle = _user_lifecycle(UserTask(id=1, title="Build feature"))
+    session_state = SessionState(messages=[], database=db, session_id="session_a")
+    _user_lifecycle(UserTask(id=1, title="Build feature"), session_state=session_state)
     seed = MessageEntry(id=1, message=UserMessage(content=[TextContent(text="hello")], timestamp=1))
-    lifecycle.load_messages([seed], next_message_id=2)
+    session_state.messages = [seed]
+    session_state.next_message_id = 2
 
-    entry = lifecycle.append_message(AssistantMessage(role="assistant", content=[TextContent(text="hi")]))
+    entry = session_state.append_message(AssistantMessage(role="assistant", content=[TextContent(text="hi")]))
 
     assert entry.id == 2
-    assert lifecycle.messages == [seed, entry]
-    assert lifecycle.next_message_id == 3
+    assert session_state.messages == [seed, entry]
+    assert session_state.next_message_id == 3
     assert db.list_runner_messages("session_a") == []
 
-    with db.create_session() as session:
-        lifecycle.sync_messages("session_a", db, [entry], session=session)
+    with session_state.create_database_session() as session:
+        session_state.append_messages_to_database(messages=[entry], session=session)
         session.commit()
 
     persisted = db.list_runner_messages("session_a")
@@ -450,16 +454,23 @@ def test_lifecycle_appends_messages_in_memory_until_explicit_sync(tmp_path):
 
 def test_lifecycle_replaces_message_range_and_syncs_explicit_message_list(tmp_path):
     db = _make_db(tmp_path)
-    lifecycle = _user_lifecycle(UserTask(id=1, title="Build feature"))
+    session_state = SessionState(messages=[], database=db, session_id="session_a")
+    _user_lifecycle(UserTask(id=1, title="Build feature"), session_state=session_state)
     first = MessageEntry(id=1, message=UserMessage(content=[TextContent(text="one")], timestamp=1))
     second = MessageEntry(id=2, message=AssistantMessage(role="assistant", content=[TextContent(text="two")]))
     third = MessageEntry(id=3, message=AssistantMessage(role="assistant", content=[TextContent(text="three")]))
-    lifecycle.load_messages([first, second, third], next_message_id=4)
-    with db.create_session() as session:
-        lifecycle.sync_replaced_messages("session_a", db, lifecycle.messages, session=session)
+    session_state.messages = [first, second, third]
+    session_state.next_message_id = 4
+    with session_state.create_database_session() as session:
+        db.replace_runner_messages(
+            "session_a",
+            [entry.message for entry in session_state.messages],
+            ids=[entry.id for entry in session_state.messages],
+            session=session,
+        )
         session.commit()
 
-    replacement = lifecycle.replace_message_range(
+    replacement = session_state.replace_message_range(
         start_message_id=2,
         end_message_id=3,
         replacement_messages=[
@@ -468,10 +479,15 @@ def test_lifecycle_replaces_message_range_and_syncs_explicit_message_list(tmp_pa
     )
 
     assert [entry.id for entry in replacement] == [4]
-    assert [entry.message.content[0].text for entry in lifecycle.messages] == ["one", "compact"]
+    assert [entry.message.content[0].text for entry in session_state.messages] == ["one", "compact"]
 
-    with db.create_session() as session:
-        lifecycle.sync_replaced_messages("session_a", db, lifecycle.messages, session=session)
+    with session_state.create_database_session() as session:
+        db.replace_runner_messages(
+            "session_a",
+            [entry.message for entry in session_state.messages],
+            ids=[entry.id for entry in session_state.messages],
+            session=session,
+        )
         session.commit()
 
     assert [message.content[0].text for message in db.list_runner_messages("session_a")] == ["one", "compact"]
@@ -479,7 +495,8 @@ def test_lifecycle_replaces_message_range_and_syncs_explicit_message_list(tmp_pa
 
 def test_lifecycle_syncs_explicit_tool_call_records_without_buffer(tmp_path):
     db = _make_db(tmp_path)
-    lifecycle = _user_lifecycle(UserTask(id=1, title="Build feature"))
+    session_state = SessionState(messages=[], database=db, session_id="session_a")
+    _user_lifecycle(UserTask(id=1, title="Build feature"), session_state=session_state)
     tool_call = ToolCall(id="call_1", name="ls", arguments={"path": "."})
     tool_result = ToolResultMessage(
         toolCallId="call_1",
@@ -487,8 +504,8 @@ def test_lifecycle_syncs_explicit_tool_call_records_without_buffer(tmp_path):
         content=[TextContent(text="files")],
     )
 
-    with db.create_session() as session:
-        lifecycle.sync_tool_calls("session_a", db, [(3, tool_call, tool_result)], session=session)
+    with session_state.create_database_session() as session:
+        session_state.append_tool_calls_to_database(tool_calls=[(3, tool_call, tool_result)], session=session)
         session.commit()
 
     records = db.list_runner_tool_calls("session_a")
@@ -512,13 +529,11 @@ async def test_user_task_lifecycle_run_calls_llm_appends_message_and_returns_sta
     )
     lifecycle = _user_lifecycle(user_task, session_state=session_state)
     seed = MessageEntry(id=1, message=UserMessage(content=[TextContent(text="Build feature")], timestamp=1))
-    lifecycle.load_messages([seed], next_message_id=2)
     assistant_message = AssistantMessage(role="assistant", content=[TextContent(text="Done")])
     agent_process = FakeAgentProcess(assistant_message)
-
-    result = await lifecycle.run(
-        agent_process=agent_process,
-    )
+    lifecycle._session_state.messages = [seed]
+    lifecycle._session_state.next_message_id = 2
+    result = await lifecycle.run(agent_process=agent_process)
 
     assert agent_process.llm_calls[0]["system_prompt"] == USER_TASK_SYSTEM_PROMPT
     tool_names = [tool.name for tool in agent_process.llm_calls[0]["tools"]]
@@ -528,8 +543,8 @@ async def test_user_task_lifecycle_run_calls_llm_appends_message_and_returns_sta
     assert "Runtime instruction for this turn" in agent_process.llm_calls[0]["messages"][-1].content[0].text
     assert agent_process.tool_calls == []
     assert result is lifecycle._session_state
-    assert lifecycle.messages == [seed, MessageEntry(id=2, message=assistant_message)]
-    assert lifecycle.next_message_id == 3
+    assert lifecycle._session_state.messages == [seed, MessageEntry(id=2, message=assistant_message)]
+    assert lifecycle._session_state.next_message_id == 3
     assert lifecycle._session_state.next_task is None
     assert lifecycle._session_state.next_task_id_to_run is None
     assert user_task.status == "done"
@@ -589,8 +604,9 @@ async def test_user_task_lifecycle_run_executes_tools_and_returns_current_task(t
         next_task_id_to_allocate=10,
     )
     lifecycle = _user_lifecycle(user_task, session_state=session_state)
-    lifecycle.load_messages([], next_message_id=1)
-    lifecycle.load_tool_call_log_id(7)
+    lifecycle._session_state.messages = []
+    lifecycle._session_state.next_message_id = 1
+    lifecycle._session_state.next_tool_call_log_id = 7
     assistant_message = AssistantMessage(
         role="assistant",
         content=[ToolCall(id="call_1", name="ls", arguments={"path": "."})],
@@ -611,12 +627,12 @@ async def test_user_task_lifecycle_run_executes_tools_and_returns_current_task(t
     assert tool_names[:2] == ["create_todo", "finish_user_task"]
     assert "read" in tool_names
     assert result is lifecycle._session_state
-    assert lifecycle.messages == [
+    assert lifecycle._session_state.messages == [
         MessageEntry(id=1, message=assistant_message),
         MessageEntry(id=2, message=tool_result),
     ]
-    assert lifecycle.next_message_id == 3
-    assert lifecycle.next_tool_call_log_id == 8
+    assert lifecycle._session_state.next_message_id == 3
+    assert lifecycle._session_state.next_tool_call_log_id == 8
     assert [child.tool_call_log_id for child in user_task.children] == [7]
     assert user_task.children[0].parent_id == user_task.id
     assert lifecycle.current_assistant_message_id is None
@@ -775,10 +791,11 @@ async def test_user_task_lifecycle_handle_compact_runs_loop_and_returns_state():
         AssistantMessage(role="assistant", content=[TextContent(text="work")]),
         AssistantMessage(role="assistant", content=[TextContent(text="done")]),
     ]
-    lifecycle.load_messages([
+    lifecycle._session_state.messages = [
         MessageEntry(id=index + 1, message=message)
         for index, message in enumerate(original_messages)
-    ], next_message_id=4)
+    ]
+    lifecycle._session_state.next_message_id = 4
 
     result = await lifecycle.handle_compact(
         agent_process=agent_process,
@@ -798,8 +815,8 @@ async def test_user_task_lifecycle_handle_compact_runs_loop_and_returns_state():
     assert result is lifecycle._session_state
     assert lifecycle._session_state.next_task is None
     assert lifecycle._session_state.next_task_id_to_run is None
-    assert [entry.id for entry in lifecycle.messages] == [4]
-    assert lifecycle.messages[0].message == AssistantMessage(
+    assert [entry.id for entry in lifecycle._session_state.messages] == [4]
+    assert lifecycle._session_state.messages[0].message == AssistantMessage(
         role="assistant",
         content=[TextContent(text="Compacted user task: Summarized work\nUseful tool calls: [7]")],
     )

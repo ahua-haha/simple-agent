@@ -89,6 +89,28 @@ class SessionState:
             entries.append(entry)
         return entries
 
+    def replace_message_range(
+        self,
+        *,
+        start_message_id: int,
+        end_message_id: int,
+        replacement_messages: list[AgentMessage],
+    ) -> list[MessageEntry]:
+        start_index = self._message_index(start_message_id)
+        end_index = self._message_index(end_message_id)
+        if end_index < start_index:
+            raise RuntimeError("Compact end message is before compact start message")
+        replacement_entries = [
+            MessageEntry(id=self.allocate_message_id(), message=message)
+            for message in replacement_messages
+        ]
+        self.messages = [
+            *self.messages[:start_index],
+            *replacement_entries,
+            *self.messages[end_index + 1:],
+        ]
+        return replacement_entries
+
     def create_tool_call_record_task_entries(
         self,
         *,
@@ -200,37 +222,6 @@ class BaseTaskLifecycle:
         self.current_assistant_message_id: int | None = None
         raise NotImplementedError(f"{type(self).__name__}.set_data is not implemented")
 
-    @property
-    def messages(self) -> list[MessageEntry]:
-        return self._session_state.messages
-
-    @messages.setter
-    def messages(self, value: list[MessageEntry]) -> None:
-        self._session_state.messages = value
-
-    @property
-    def next_message_id(self) -> int:
-        return self._session_state.next_message_id
-
-    @next_message_id.setter
-    def next_message_id(self, value: int) -> None:
-        self._session_state.next_message_id = value
-
-    @property
-    def next_tool_call_log_id(self) -> int:
-        return self._session_state.next_tool_call_log_id
-
-    @next_tool_call_log_id.setter
-    def next_tool_call_log_id(self, value: int) -> None:
-        self._session_state.next_tool_call_log_id = value
-
-    def allocate_task_id(self) -> int:
-        if self._session_state.next_task_id_to_allocate is not None:
-            task_id = self._session_state.next_task_id_to_allocate
-            self._session_state.next_task_id_to_allocate += 1
-            return task_id
-        raise TaskLifecycleError("Session state is missing task allocation state")
-
     async def run(
         self,
         *,
@@ -238,137 +229,6 @@ class BaseTaskLifecycle:
         cancel_event: asyncio.Event | None = None,
     ) -> SessionState:
         raise NotImplementedError(f"{type(self).__name__}.run is not implemented")
-
-    def load_messages(self, messages: list[MessageEntry], *, next_message_id: int) -> None:
-        self.messages = list(messages)
-        self.next_message_id = next_message_id
-
-    def load_tool_call_log_id(self, next_tool_call_log_id: int) -> None:
-        self.next_tool_call_log_id = next_tool_call_log_id
-
-    def allocate_message_id(self) -> int:
-        message_id = self.next_message_id
-        self.next_message_id += 1
-        return message_id
-
-    def allocate_tool_call_log_id(self) -> int:
-        tool_call_log_id = self.next_tool_call_log_id
-        self.next_tool_call_log_id += 1
-        return tool_call_log_id
-
-    def set_next_task(self, task: ManagedTask | None, *, task_instance: bool = False) -> None:
-        self._session_state.next_task_id_to_run = task.id if task is not None else None
-        self._session_state.next_task = task if task_instance else None
-
-    def message_values(self) -> list[Any]:
-        return [entry.message for entry in self.messages]
-
-    def append_message(self, message: Any) -> MessageEntry:
-        entry = MessageEntry(id=self.allocate_message_id(), message=message)
-        self.messages.append(entry)
-        return entry
-
-    def append_messages(self, messages: list[MessageEntry]) -> None:
-        self.messages.extend(messages)
-
-    def replace_message_range(
-        self,
-        *,
-        start_message_id: int,
-        end_message_id: int,
-        replacement_messages: list[Any],
-    ) -> list[MessageEntry]:
-        start_index = self._message_index(start_message_id)
-        end_index = self._message_index(end_message_id)
-        if end_index < start_index:
-            raise RuntimeError("Compact end message is before compact start message")
-        replacement_entries = [
-            MessageEntry(id=self.allocate_message_id(), message=message)
-            for message in replacement_messages
-        ]
-        self.messages = [
-            *self.messages[:start_index],
-            *replacement_entries,
-            *self.messages[end_index + 1:],
-        ]
-        return replacement_entries
-
-    def sync_messages(self, session_id: str, database: Any, messages: list[MessageEntry], *, session: Any) -> None:
-        for pending in messages:
-            database.insert_runner_message(
-                session_id,
-                pending.message,
-                id=pending.id,
-                session=session,
-            )
-
-    def sync_replaced_messages(
-        self,
-        session_id: str,
-        database: Any,
-        messages: list[MessageEntry],
-        *,
-        session: Any,
-    ) -> None:
-        database.replace_runner_messages(
-            session_id,
-            [entry.message for entry in messages],
-            ids=[entry.id for entry in messages],
-            session=session,
-        )
-
-    def sync_tool_calls(
-        self,
-        session_id: str,
-        database: Any,
-        tool_calls: list[tuple[int, ToolCall | None, ToolResultMessage]],
-        *,
-        session: Any,
-    ) -> None:
-        for log_id, tool_call, tool_result in tool_calls:
-            database.insert_runner_tool_call(
-                id=log_id,
-                session_id=session_id,
-                tool_call_id=tool_result.tool_call_id,
-                tool_name=tool_result.tool_name,
-                tool_call_json=tool_call.model_dump_json() if tool_call is not None else "null",
-                tool_result_json=tool_result.model_dump_json(),
-                session=session,
-            )
-
-    def create_tool_call_record_task_entries(
-        self,
-        *,
-        assistant_message: AssistantMessage,
-        tool_result_messages: list[ToolResultMessage],
-        parent_task: ManagedTask | None = None,
-    ) -> tuple[list[tuple[int, ToolCall | None, ToolResultMessage]], list[ToolCallTask]]:
-        task = parent_task or self.task
-        tool_call_records = []
-        tool_call_tasks = []
-        for tool_result_message in tool_result_messages:
-            log_id = self.allocate_tool_call_log_id()
-            tool_call = _tool_call_for_result(
-                assistant_message=assistant_message,
-                tool_result_message=tool_result_message,
-            )
-            tool_call_records.append((log_id, tool_call, tool_result_message))
-            tool_call_tasks.append(
-                ToolCallTask(
-                    id=self.allocate_task_id(),
-                    title=f"Tool call {log_id}",
-                    status="done",
-                    parent_id=task.id,
-                    tool_call_log_id=log_id,
-                )
-            )
-        return tool_call_records, tool_call_tasks
-
-    def _message_index(self, message_id: int) -> int:
-        for index, entry in enumerate(self.messages):
-            if entry.id == message_id:
-                return index
-        raise RuntimeError(f"Could not find message id {message_id}")
 
 
 class UserTaskLifecycle(BaseTaskLifecycle):
@@ -653,7 +513,7 @@ class UserTaskLifecycle(BaseTaskLifecycle):
             compact_messages.extend(tool_results)
 
         start_message_id, end_message_id, compacted_messages = self.compaction_result()
-        self.replace_message_range(
+        self._session_state.replace_message_range(
             start_message_id=start_message_id,
             end_message_id=end_message_id,
             replacement_messages=compacted_messages,
@@ -866,7 +726,7 @@ class TodoTaskLifecycle(BaseTaskLifecycle):
 
     def _set_parent_as_next_task(self) -> None:
         if self.user_task is not None:
-            self.set_next_task(self.user_task)
+            self._session_state.set_next_task(self.user_task)
             return
         task = self._require_todo_task_data()
         self._session_state.next_task_id_to_run = task.parent_id
