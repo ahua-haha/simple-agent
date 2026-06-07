@@ -41,6 +41,55 @@ class FakeAgentProcess:
         return self.tool_results
 
 
+class FakeCompactAgentProcess:
+    def __init__(self):
+        self.calls = []
+
+    async def call_llm_step(self, system_prompt, messages, tools, cancel_event=None):
+        self.calls.append(
+            {
+                "system_prompt": system_prompt,
+                "messages": list(messages),
+                "tools": [tool.name for tool in tools],
+                "cancel_event": cancel_event,
+            }
+        )
+        if len(self.calls) == 1:
+            return AssistantMessage(
+                role="assistant",
+                content=[
+                    ToolCall(
+                        id="compact_create",
+                        name="create_compacted_user_task",
+                        arguments={"description": "Summarized work"},
+                    ),
+                    ToolCall(
+                        id="compact_record",
+                        name="record_compacted_tool_call",
+                        arguments={"tool_call_log_id": 7},
+                    ),
+                    ToolCall(id="compact_finish", name="finish_compacted_user_task", arguments={}),
+                ],
+            )
+        return AssistantMessage(role="assistant", content=[TextContent(text="compact done")])
+
+    async def run_tool_calls_step(self, tools, assistant_message, cancel_event=None):
+        tools_by_name = {tool.name: tool for tool in tools}
+        results = []
+        for content in assistant_message.content:
+            if not isinstance(content, ToolCall):
+                continue
+            result = await tools_by_name[content.name].execute(content.id, content.arguments)
+            results.append(
+                ToolResultMessage(
+                    toolCallId=content.id,
+                    toolName=content.name,
+                    content=result.content,
+                )
+            )
+        return results
+
+
 def test_user_task_instruction_asks_for_complexity_check_when_tool_count_is_small():
     task = UserTask(title="Build feature")
     lifecycle = UserTaskLifecycle(task)
@@ -437,3 +486,48 @@ def test_user_task_lifecycle_compaction_requires_finished_compacted_user_task():
 
     with pytest.raises(RuntimeError, match="No compacted user task result"):
         lifecycle.compaction_result()
+
+
+@pytest.mark.asyncio
+async def test_user_task_lifecycle_handle_compact_runs_loop_and_returns_compaction_result():
+    user_task = UserTask(
+        id=1,
+        title="Build feature",
+        status="done",
+        start_message_id=1,
+        end_message_id=3,
+        children=[ToolCallTask(id=2, parent_id=1, title="Tool call 7", status="done", tool_call_log_id=7)],
+    )
+    lifecycle = UserTaskLifecycle(user_task, allocate_task_id=lambda: 10)
+    assert lifecycle.begin_compaction() is True
+    agent_process = FakeCompactAgentProcess()
+    original_messages = [
+        UserMessage(content=[TextContent(text="Build feature")], timestamp=1),
+    ]
+    lifecycle.load_messages([
+        MessageEntry(id=index + 1, message=message)
+        for index, message in enumerate(original_messages)
+    ], next_message_id=2)
+
+    result = await lifecycle.handle_compact(
+        agent_process=agent_process,
+        system_prompt="compact system",
+    )
+
+    assert [call["system_prompt"] for call in agent_process.calls] == ["compact system", "compact system"]
+    assert agent_process.calls[0]["tools"] == [
+        "create_compacted_user_task",
+        "record_compacted_tool_call",
+        "finish_compacted_user_task",
+    ]
+    assert agent_process.calls[0]["messages"][:-1] == original_messages
+    assert "Runtime instruction for compacting phase" in agent_process.calls[0]["messages"][-1].content[0].text
+    assert len(result.compact_messages) == 7
+    assert result.start_message_id == 1
+    assert result.end_message_id == 3
+    assert result.compacted_messages == [
+        AssistantMessage(
+            role="assistant",
+            content=[TextContent(text="Compacted user task: Summarized work\nUseful tool calls: [7]")],
+        )
+    ]

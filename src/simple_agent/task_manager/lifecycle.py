@@ -34,6 +34,14 @@ class UserTaskRunTurnResult:
     tool_call_records: list[tuple[int, ToolCall | None, ToolResultMessage]]
 
 
+@dataclass(frozen=True)
+class UserTaskCompactRunResult:
+    compact_messages: list[Any]
+    start_message_id: int
+    end_message_id: int
+    compacted_messages: list[Any]
+
+
 class BaseTaskLifecycle:
     def __init__(self, *, allocate_task_id: Callable[[], int] | None = None):
         self._allocate_task_id = allocate_task_id
@@ -402,6 +410,51 @@ class UserTaskLifecycle(BaseTaskLifecycle):
             "\n"
             "Task view to compact:\n"
             f"{task_view.text}"
+        )
+
+    async def handle_compact(
+        self,
+        *,
+        agent_process: AgentProcess,
+        system_prompt: str,
+        cancel_event: asyncio.Event | None = None,
+    ) -> UserTaskCompactRunResult:
+        compact_instruction = self.compaction_instruction_text(tool_calls={})
+        compact_messages = [
+            *self.message_values(),
+            UserMessage(
+                content=[TextContent(text=compact_instruction)],
+                timestamp=int(time.time() * 1000),
+            ),
+        ]
+        compact_tools = self.create_compact_tools()
+        while True:
+            assistant_message = await agent_process.call_llm_step(
+                system_prompt=system_prompt,
+                messages=compact_messages,
+                tools=compact_tools,
+                cancel_event=cancel_event,
+            )
+            compact_messages.append(assistant_message)
+            if _assistant_is_error(assistant_message):
+                raise TaskLifecycleError(
+                    assistant_message.error_message or "assistant response stopped with error"
+                )
+            if not _assistant_has_tool_calls(assistant_message):
+                break
+            tool_results = await agent_process.run_tool_calls_step(
+                tools=compact_tools,
+                assistant_message=assistant_message,
+                cancel_event=cancel_event,
+            )
+            compact_messages.extend(tool_results)
+
+        start_message_id, end_message_id, compacted_messages = self.compaction_result()
+        return UserTaskCompactRunResult(
+            compact_messages=compact_messages,
+            start_message_id=start_message_id,
+            end_message_id=end_message_id,
+            compacted_messages=compacted_messages,
         )
 
     def create_compact_tools(self) -> list[AgentTool]:
