@@ -9,7 +9,12 @@ from typing import TYPE_CHECKING, Literal, cast
 from pi.ai.types import AssistantMessage, TextContent, UserMessage
 
 from simple_agent.message_store import MessageEntry
-from simple_agent.task_manager.lifecycle import BaseTaskLifecycle, TodoTaskLifecycle, UserTaskLifecycle
+from simple_agent.task_manager.lifecycle import (
+    BaseTaskLifecycle,
+    TaskLifecycleRuntime,
+    TodoTaskLifecycle,
+    UserTaskLifecycle,
+)
 from simple_agent.task_manager.models import ManagedTask, TodoTask, UserTask
 
 if TYPE_CHECKING:
@@ -39,20 +44,23 @@ class TaskManager:
     active_task_id: int | None
     _user_task: UserTask | None
     _active_lifecycle: UserTaskLifecycle | TodoTaskLifecycle | None
-    _next_task_id: int | None
+    _runtime: TaskLifecycleRuntime
 
     def __init__(self, db: Database):
         self._db = db
         self.active_task_id: int | None = None
         self._user_task: UserTask | None = None
         self._active_lifecycle: UserTaskLifecycle | TodoTaskLifecycle | None = None
-        self._next_task_id: int | None = None
+        self._runtime = TaskLifecycleRuntime(messages=[])
 
     def load(self, user_task_id: int | None, *, session: Session) -> None:
         self._user_task = None
         self._active_lifecycle = None
         self.active_task_id = None
-        self._next_task_id = self._db.next_managed_task_id(session=session)
+        self._runtime = TaskLifecycleRuntime(
+            messages=[],
+            next_task_id_to_allocate=self._db.next_managed_task_id(session=session),
+        )
         if user_task_id is None:
             return
         self._user_task = self.build_task_tree(user_task_id, session=session)
@@ -152,7 +160,7 @@ class TaskManager:
         current_lifecycle = self._active_lifecycle
         current_task = current_lifecycle.task if current_lifecycle is not None else None
         next_task = (
-            self._find_task(current_lifecycle._runtime.next_task_id)
+            self._find_task(current_lifecycle._runtime.next_task_id_to_run)
             if current_lifecycle is not None
             else None
         )
@@ -195,10 +203,10 @@ class TaskManager:
         return root
 
     def _create_user_task_lifecycle(self, task: UserTask) -> UserTaskLifecycle:
-        return UserTaskLifecycle(task, allocate_task_id=self.allocate_task_id)
+        return UserTaskLifecycle(task, runtime=self._runtime)
 
     def _create_todo_task_lifecycle(self, task: TodoTask) -> TodoTaskLifecycle:
-        return TodoTaskLifecycle(task, allocate_task_id=self.allocate_task_id, user_task=self._user_task)
+        return TodoTaskLifecycle(task, user_task=self._user_task, runtime=self._runtime)
 
     def _lifecycle_for_task(self, task: ManagedTask) -> UserTaskLifecycle | TodoTaskLifecycle:
         if self._active_lifecycle is not None and task.id == self._active_lifecycle.task.id:
@@ -227,10 +235,10 @@ class TaskManager:
         return self._user_task
 
     def _allocate_task_id(self) -> int:
-        if self._next_task_id is None:
+        if self._runtime.next_task_id_to_allocate is None:
             raise TaskManagerError("Task manager must be loaded before creating tasks")
-        task_id = self._next_task_id
-        self._next_task_id += 1
+        task_id = self._runtime.next_task_id_to_allocate
+        self._runtime.next_task_id_to_allocate += 1
         return task_id
 
     def _require_user_task(self) -> UserTask:

@@ -55,7 +55,8 @@ class TaskLifecycleRuntime:
     messages: list[MessageEntry]
     next_message_id: int = 1
     next_tool_call_log_id: int = 0
-    next_task_id: int | None = None
+    next_task_id_to_allocate: int | None = None
+    next_task_id_to_run: int | None = None
     next_task: ManagedTask | None = None
 
 
@@ -95,6 +96,10 @@ class BaseTaskLifecycle:
         self._runtime.next_tool_call_log_id = value
 
     def allocate_task_id(self) -> int:
+        if self._runtime.next_task_id_to_allocate is not None:
+            task_id = self._runtime.next_task_id_to_allocate
+            self._runtime.next_task_id_to_allocate += 1
+            return task_id
         if self._allocate_task_id is None:
             raise TaskLifecycleError("Task lifecycle needs an ID allocator")
         return self._allocate_task_id()
@@ -127,7 +132,7 @@ class BaseTaskLifecycle:
         return tool_call_log_id
 
     def set_next_task(self, task: ManagedTask | None, *, task_instance: bool = False) -> None:
-        self._runtime.next_task_id = task.id if task is not None else None
+        self._runtime.next_task_id_to_run = task.id if task is not None else None
         self._runtime.next_task = task if task_instance else None
 
     def message_values(self) -> list[Any]:
@@ -325,7 +330,7 @@ class UserTaskLifecycle(BaseTaskLifecycle):
         )
 
     def _next_task_after_turn(self) -> ManagedTask | None:
-        next_task = _find_task(self.task, self._runtime.next_task_id)
+        next_task = _find_task(self.task, self._runtime.next_task_id_to_run)
         if next_task is not None:
             return next_task
         if self.task.status == "active":

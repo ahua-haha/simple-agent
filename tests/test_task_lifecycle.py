@@ -7,6 +7,7 @@ from simple_agent.message_store import MessageEntry
 from simple_agent.task_manager.lifecycle import (
     USER_TASK_COMPACT_SYSTEM_PROMPT,
     USER_TASK_SYSTEM_PROMPT,
+    TaskLifecycleRuntime,
     TodoTaskLifecycle,
     UserTaskLifecycle,
 )
@@ -249,14 +250,25 @@ def test_lifecycle_tracks_next_task_transition():
 
     todo = user_lifecycle.create_todo_task(title="Inspect files")
 
-    assert user_lifecycle._runtime.next_task_id == todo.id
+    assert user_lifecycle._runtime.next_task_id_to_run == todo.id
     assert user_lifecycle._runtime.next_task is todo
 
     todo_lifecycle = TodoTaskLifecycle(todo, user_task=user_task)
     todo_lifecycle.finish_task(result="Done")
 
-    assert todo_lifecycle._runtime.next_task_id == user_task.id
+    assert todo_lifecycle._runtime.next_task_id_to_run == user_task.id
     assert todo_lifecycle._runtime.next_task is None
+
+
+def test_lifecycle_allocates_task_id_from_runtime_context():
+    runtime = TaskLifecycleRuntime(messages=[], next_task_id_to_allocate=7)
+    user_task = UserTask(id=1, title="Build feature")
+    lifecycle = UserTaskLifecycle(user_task, runtime=runtime)
+
+    todo = lifecycle.create_todo_task(title="Inspect files")
+
+    assert todo.id == 7
+    assert runtime.next_task_id_to_allocate == 8
 
 
 def test_lifecycle_appends_messages_in_memory_until_explicit_sync(tmp_path):

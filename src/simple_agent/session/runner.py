@@ -40,7 +40,6 @@ class SessionRunner:
     _user_task: UserTask | None
     _active_lifecycle: BaseTaskLifecycle | None
     _runtime: TaskLifecycleRuntime
-    _next_task_id: int
     _context_token_threshold: int
     _tool_call_threshold: int
     _user_paused: bool
@@ -65,7 +64,6 @@ class SessionRunner:
         self._user_task = None
         self._active_lifecycle = None
         self._runtime = TaskLifecycleRuntime(messages=[])
-        self._next_task_id = 1
         self._context_token_threshold = context_token_threshold
         self._tool_call_threshold = tool_call_threshold
         self._user_paused = False
@@ -200,7 +198,7 @@ class SessionRunner:
 
     async def run_active_lifecycle(self):
         lifecycle = self._require_active_lifecycle()
-        self._runtime.next_task_id = None
+        self._runtime.next_task_id_to_run = None
         self._runtime.next_task = None
         result = await lifecycle.run(
             agent_process=self._agent_process,
@@ -212,7 +210,7 @@ class SessionRunner:
         return result
 
     def _create_next_lifecycle(self) -> BaseTaskLifecycle | None:
-        next_task_id = self._runtime.next_task_id
+        next_task_id = self._runtime.next_task_id_to_run
         if next_task_id is None:
             self._runtime.next_task = None
             return None
@@ -265,12 +263,14 @@ class SessionRunner:
             ],
             next_message_id=self._db.next_runner_message_id(session=session),
             next_tool_call_log_id=self._db.next_runner_tool_call_id(self._session_id, session=session),
+            next_task_id_to_allocate=self._db.next_managed_task_id(session=session),
         )
-        self._next_task_id = self._db.next_managed_task_id(session=session)
 
     def allocate_task_id(self) -> int:
-        task_id = self._next_task_id
-        self._next_task_id += 1
+        if self._runtime.next_task_id_to_allocate is None:
+            raise RuntimeError("Task lifecycle runtime is missing allocation state")
+        task_id = self._runtime.next_task_id_to_allocate
+        self._runtime.next_task_id_to_allocate += 1
         return task_id
 
     def _require_active_lifecycle(self) -> BaseTaskLifecycle:
