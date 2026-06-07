@@ -12,6 +12,7 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, Literal, Mapping, cast
 
 from pi.agent import AgentTool, AgentToolResult
+from pi.agent.types import AgentMessage
 from pi.ai.types import AssistantMessage, TextContent, ToolCall, ToolResultMessage, UserMessage
 
 from simple_agent.message_store import MessageEntry
@@ -62,8 +63,61 @@ class SessionState:
     next_task_id_to_run: int | None = None
     next_task: ManagedTask | None = None
 
+    def allocate_message_id(self) -> int:
+        message_id = self.next_message_id
+        self.next_message_id += 1
+        return message_id
+
+    def allocate_task_id(self) -> int:
+        if self.next_task_id_to_allocate is None:
+            raise TaskLifecycleError("Session state is missing task allocation state")
+        task_id = self.next_task_id_to_allocate
+        self.next_task_id_to_allocate += 1
+        return task_id
+
+    def allocate_tool_call_log_id(self) -> int:
+        tool_call_log_id = self.next_tool_call_log_id
+        self.next_tool_call_log_id += 1
+        return tool_call_log_id
+
+    def message_values(self) -> list[AgentMessage]:
+        return [entry.message for entry in self.messages]
+
+    def append_message(self, message: AgentMessage) -> MessageEntry:
+        entry = MessageEntry(id=self.allocate_message_id(), message=message)
+        self.messages.append(entry)
+        return entry
+
+    def append_messages(self, messages: list[AgentMessage | MessageEntry]) -> list[MessageEntry]:
+        entries: list[MessageEntry] = []
+        for message in messages:
+            if isinstance(message, MessageEntry):
+                entry = message
+                self.messages.append(entry)
+                self.next_message_id = max(self.next_message_id, entry.id + 1)
+            else:
+                entry = self.append_message(message)
+            entries.append(entry)
+        return entries
+
+    def set_next_task(self, task: ManagedTask | None, *, keep_instance: bool = False) -> None:
+        self.next_task_id_to_run = task.id if task is not None else None
+        self.next_task = task if task is not None and keep_instance else None
+
+    def clear_next_task(self) -> None:
+        self.set_next_task(None)
+
+    def _message_index(self, message_id: int) -> int:
+        for index, entry in enumerate(self.messages):
+            if entry.id == message_id:
+                return index
+        raise RuntimeError(f"Could not find message id {message_id}")
+
 
 class BaseTaskLifecycle:
+    _session_state: SessionState
+    current_assistant_message_id: int | None
+
     def clear_data(self) -> None:
         self.current_assistant_message_id = None
 
