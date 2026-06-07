@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import time
-from typing import TYPE_CHECKING, Callable, Literal, cast
+from typing import TYPE_CHECKING, Callable, cast
 
 from pi.ai.types import TextContent, UserMessage
 
@@ -22,7 +22,6 @@ if TYPE_CHECKING:
     from simple_agent.process.agent_process import AgentProcess
     from sqlmodel import Session
 
-RunnerAction = Literal["normal_run", "compact", "wait_user_input"]
 
 class SessionRunner:
     """Persisted runner for one Session.run invocation at a time."""
@@ -31,7 +30,6 @@ class SessionRunner:
     _db: Database
     _agent_process: AgentProcess
     _cancel_event: asyncio.Event
-    _next_action: RunnerAction
     _last_error: str | None
     _user_task: UserTask | None
     _lifecycles: dict[str, BaseTaskLifecycle]
@@ -50,7 +48,6 @@ class SessionRunner:
         self._db = db
         self._agent_process = agent_process
         self._cancel_event = cancel_event
-        self._next_action = "wait_user_input"
         self._last_error = None
         self._user_task = None
         self._lifecycles = {}
@@ -74,10 +71,8 @@ class SessionRunner:
             self._lifecycles = {}
             metadata = self._db.get_runner_state_metadata(self._session_id, session=session)
             if metadata is None:
-                self._next_action = "wait_user_input"
                 self._last_error = None
                 return
-            self._next_action = metadata.next_action
             self._last_error = metadata.last_error
             # TODO: reconstruct the task tree and active lifecycle from the
             # stored runner state.
@@ -85,7 +80,7 @@ class SessionRunner:
     def sync_metadata(self, *, session: Session) -> None:
         self._db.upsert_runner_state_metadata(
             self._session_id,
-            next_action=self._next_action,
+            next_action="wait_user_input",
             active_user_task_id=self._current_active_user_task_id(),
             last_error=self._last_error,
             session=session,
@@ -95,87 +90,55 @@ class SessionRunner:
         self._user_paused = False
         self._cancel_event.clear()
         self.load()
-        self.handle_input(user_input)
+        self.run_input_transition(user_input)
 
         while self._runtime.next_task is not None:
             if self._user_paused:
                 break
-            result = await self.run_active_lifecycle()
-
-            if result.error is not None:
-                self._raise_lifecycle_error(result.error)
-
-            self._next_action = result.next_action
-            if self._runtime.next_task is None:
-                self._next_action = "wait_user_input"
+            await self.run_active_lifecycle()
             with self._db.create_session() as session:
                 self.sync_metadata(session=session)
                 session.commit()
 
         return self._current_user_task_from_database()
 
-    def handle_input(self, user_input: str | None) -> RunnerAction:
+    def run_input_transition(self, user_input: str | None) -> None:
         if user_input is None:
-            return self._next_action
+            return
+        if self._runtime.next_task_id_to_run is not None or self._runtime.next_task is not None:
+            # TODO: finish or interrupt existing active tasks before accepting
+            # a new user task.
+            return
 
-        self.finish_previous_user_task()
-        user_task = self.start_user_task(user_input)
-        self._next_action = "normal_run"
+        user_message = UserMessage(
+            content=[TextContent(text=user_input)],
+            timestamp=int(time.time() * 1000),
+        )
+        message_entry = MessageEntry(
+            id=self._runtime.next_message_id,
+            message=user_message,
+        )
+        self._runtime.next_message_id += 1
+        self._runtime.messages.append(message_entry)
+
+        task = UserTask(
+            id=self.allocate_task_id(),
+            title=user_input,
+            start_message_id=message_entry.id,
+        )
+        self._user_task = task
+        self._runtime.next_task_id_to_run = task.id
+        self._runtime.next_task = task
         self._last_error = None
-        self._cancel_event.clear()
-        with self._db.create_session() as session:
-            self.sync_metadata(session=session)
-            session.commit()
-        return self._next_action
 
-    def finish_previous_user_task(self) -> None:
-        # TODO: finish or interrupt the previous user task through its lifecycle
-        # before starting a new user task.
-        self._user_task = None
-
-    def _raise_lifecycle_error(self, error: Exception | object | str) -> None:
-        if isinstance(error, Exception):
-            raise error
-        error_message = getattr(error, "error_message", None)
-        if error_message:
-            raise RuntimeError(error_message)
-        raise RuntimeError(str(error))
+        # TODO: sync the user input transition data to the session database
+        # when lifecycle-owned persistence is wired back in.
 
     def _current_user_task_from_database(self) -> ManagedTask | None:
         if self._user_task is None:
             return None
         with self._db.create_session() as session:
             return self._db.get_managed_task(self._user_task.id, session=session)
-
-    def start_user_task(self, user_input: str) -> UserTask:
-        task = self.create_user_task(user_input)
-        lifecycle = self._lifecycle_for_task(task)
-        self._runtime.next_task_id_to_run = task.id
-        self._runtime.next_task = task
-        lifecycle.set_data(self._runtime)
-        user_message = UserMessage(
-            content=[TextContent(text=user_input)],
-            timestamp=int(time.time() * 1000),
-        )
-        try:
-            message_entry = lifecycle.append_message(user_message)
-            task.start_message_id = message_entry.id
-            with self._db.create_session() as session:
-                lifecycle.sync_messages(self._session_id, self._db, [message_entry], session=session)
-                lifecycle.sync(self._db, session)
-                session.commit()
-        finally:
-            lifecycle.clear_data()
-        return task
-
-    def create_user_task(self, user_input: str, start_message_id: int | None = None) -> UserTask:
-        if self._user_task is not None and self._user_task.status == "active":
-            raise RuntimeError("Cannot create a second active user task")
-        task = UserTask(id=self.allocate_task_id(), title=user_input, start_message_id=start_message_id)
-        self._user_task = task
-        self._runtime.next_task_id_to_run = task.id
-        self._runtime.next_task = task
-        return task
 
     async def run_active_lifecycle(self):
         task = self._resolve_next_task()

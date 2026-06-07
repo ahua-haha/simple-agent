@@ -117,62 +117,37 @@ def test_session_initializes_runner_without_task_manager(tmp_path):
     assert session._runner is not None
 
 
-@pytest.mark.asyncio
-async def test_session_run_creates_queue_and_runs_agent_once(tmp_path, monkeypatch):
+def test_session_runner_input_transition_creates_user_task_in_memory(tmp_path):
     from simple_agent.session.session import Session
-
-    calls = []
-
-    async def fake_call_llm_step(self, system_prompt, messages, tools, cancel_event=None):
-        from pi.ai.types import AssistantMessage, TextContent, ToolCall
-        calls.append(
-            {
-                "system_prompt": system_prompt,
-                "messages": messages,
-                "tools": [tool.name for tool in tools],
-                "cancel_event": cancel_event,
-            }
-        )
-        if len(calls) > 1:
-            return AssistantMessage(
-                role="assistant",
-                content=[TextContent(text="final answer")],
-            )
-        return AssistantMessage(
-            role="assistant",
-            content=[
-                TextContent(text="done"),
-                ToolCall(id="tool_1", name="example_tool", arguments={}),
-            ],
-        )
-
-    async def fake_run_tool_calls_step(self, tools, assistant_message, cancel_event=None):
-        from pi.ai.types import TextContent, ToolResultMessage
-        return [
-            ToolResultMessage(
-                toolCallId="tool_1",
-                toolName="example_tool",
-                content=[TextContent(text="tool done")],
-            )
-        ]
-
-    monkeypatch.setattr("simple_agent.process.agent_process.AgentProcess.call_llm_step", fake_call_llm_step)
-    monkeypatch.setattr("simple_agent.process.agent_process.AgentProcess.run_tool_calls_step", fake_run_tool_calls_step)
+    from pi.ai.types import UserMessage
+    from simple_agent.task_manager.models import UserTask
 
     session = Session(base_dir=str(tmp_path))
-    queue = session.run("Build feature")
-    assert isinstance(queue, __import__("asyncio").Queue)
+    runner = session._runner
+    runner.load()
 
-    await queue.get()
+    runner.run_input_transition("Build feature")
 
-    assert len(calls) == 3
-    assert "create_todo" in calls[0]["tools"]
-    assert "finish_user_task" in calls[0]["tools"]
-    assert "finish_todo" not in calls[0]["tools"]
-    assert "error_todo" not in calls[0]["tools"]
-    assert calls[2]["tools"] == [
-        "create_compacted_user_task",
-        "record_compacted_tool_call",
-        "finish_compacted_user_task",
-    ]
-    assert calls[0]["cancel_event"] is session._runner._cancel_event
+    task = runner._runtime.next_task
+    assert isinstance(task, UserTask)
+    assert runner.user_task is task
+    assert task.id == 1
+    assert task.title == "Build feature"
+    assert task.start_message_id == 1
+    assert runner._runtime.next_task_id_to_run == task.id
+    assert runner._runtime.next_task_id_to_allocate == 2
+
+    assert len(runner._runtime.messages) == 1
+    message_entry = runner._runtime.messages[0]
+    assert message_entry.id == 1
+    assert isinstance(message_entry.message, UserMessage)
+    assert message_entry.message.content[0].text == "Build feature"
+    assert runner._runtime.next_message_id == 2
+
+    runner.run_input_transition("Second task")
+
+    assert runner._runtime.next_task is task
+    assert runner._runtime.next_task_id_to_run == task.id
+    assert [entry.message.content[0].text for entry in runner._runtime.messages] == ["Build feature"]
+    assert session._db.list_runner_messages(session.id) == []
+    assert session._db.get_managed_task(task.id) is None
