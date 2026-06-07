@@ -372,7 +372,6 @@ def _seed_runner_user_lifecycle(runner: SessionRunner, user_task) -> None:
         allocate_task_id=runner.allocate_task_id,
         runtime=runner._runtime,
     )
-    runner._pending_lifecycles = []
 
 
 @pytest.mark.asyncio
@@ -780,6 +779,7 @@ async def test_lifecycle_run_sets_current_assistant_message_id_for_task_tools(tm
 
     assert next_action == "normal_run"
     assert todo.start_message_id == 1
+    assert runner._runtime.next_task is todo
     assert runner._active_lifecycle.current_assistant_message_id is None
 
 

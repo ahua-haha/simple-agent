@@ -151,7 +151,11 @@ class TaskManager:
     def refresh_active_task(self) -> None:
         current_lifecycle = self._active_lifecycle
         current_task = current_lifecycle.task if current_lifecycle is not None else None
-        next_task = current_lifecycle.consume_next_task() if current_lifecycle is not None else None
+        next_task = (
+            self._find_task(current_lifecycle._runtime.next_task_id)
+            if current_lifecycle is not None
+            else None
+        )
         if next_task is None:
             next_task = self._current_or_root_task(current_task)
         self._set_active_task(next_task)
@@ -243,6 +247,14 @@ class TaskManager:
         if self._user_task is None:
             return []
         return self._flatten_task_tree(self._user_task)
+
+    def _find_task(self, task_id: int | None) -> ManagedTask | None:
+        if task_id is None or self._user_task is None:
+            return None
+        for task in self._walk_tasks():
+            if task.id == task_id:
+                return task
+        return None
 
     def _flatten_task_tree(self, task: ManagedTask) -> list[ManagedTask]:
         tasks: list[ManagedTask] = []

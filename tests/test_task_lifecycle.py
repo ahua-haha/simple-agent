@@ -249,13 +249,14 @@ def test_lifecycle_tracks_next_task_transition():
 
     todo = user_lifecycle.create_todo_task(title="Inspect files")
 
-    assert user_lifecycle.consume_next_task() is todo
-    assert user_lifecycle.consume_next_task() is None
+    assert user_lifecycle._runtime.next_task_id == todo.id
+    assert user_lifecycle._runtime.next_task is todo
 
     todo_lifecycle = TodoTaskLifecycle(todo, user_task=user_task)
     todo_lifecycle.finish_task(result="Done")
 
-    assert todo_lifecycle.consume_next_task() is user_task
+    assert todo_lifecycle._runtime.next_task_id == user_task.id
+    assert todo_lifecycle._runtime.next_task is None
 
 
 def test_lifecycle_appends_messages_in_memory_until_explicit_sync(tmp_path):

@@ -39,7 +39,6 @@ class SessionRunner:
     _last_error: str | None
     _user_task: UserTask | None
     _active_lifecycle: BaseTaskLifecycle | None
-    _pending_lifecycles: list[BaseTaskLifecycle]
     _runtime: TaskLifecycleRuntime
     _next_task_id: int
     _context_token_threshold: int
@@ -65,7 +64,6 @@ class SessionRunner:
         self._last_error = None
         self._user_task = None
         self._active_lifecycle = None
-        self._pending_lifecycles = []
         self._runtime = TaskLifecycleRuntime(messages=[])
         self._next_task_id = 1
         self._context_token_threshold = context_token_threshold
@@ -87,7 +85,6 @@ class SessionRunner:
             self._load_runtime(session=session)
             self._user_task = None
             self._active_lifecycle = None
-            self._pending_lifecycles = []
             metadata = self._db.get_runner_state_metadata(self._session_id, session=session)
             if metadata is None:
                 self._next_action = "wait_user_input"
@@ -97,8 +94,8 @@ class SessionRunner:
             self._next_action = metadata.next_action
             self._active_user_task_id = metadata.active_user_task_id
             self._last_error = metadata.last_error
-            # TODO: reconstruct the task tree, pending lifecycles, and active
-            # lifecycle from the stored runner state.
+            # TODO: reconstruct the task tree and active lifecycle from the
+            # stored runner state.
 
     def sync_metadata(self, *, session: Session) -> None:
         self._db.upsert_runner_state_metadata(
@@ -158,7 +155,6 @@ class SessionRunner:
         self._active_user_task_id = None
         self._user_task = None
         self._active_lifecycle = None
-        self._pending_lifecycles = []
 
     def _raise_lifecycle_error(self, error: Exception | object | str) -> None:
         if isinstance(error, Exception):
@@ -204,33 +200,33 @@ class SessionRunner:
 
     async def run_active_lifecycle(self):
         lifecycle = self._require_active_lifecycle()
+        self._runtime.next_task_id = None
+        self._runtime.next_task = None
         result = await lifecycle.run(
             agent_process=self._agent_process,
             cancel_event=self._cancel_event,
             context_token_threshold=self._context_token_threshold,
             tool_call_threshold=self._tool_call_threshold,
         )
-        current_lifecycle = self._active_lifecycle
-        next_task = result.next_task
-        if next_task is None:
-            self._active_lifecycle = None
-            return result
-        if current_lifecycle is not None and next_task.id == current_lifecycle.task.id:
-            self._active_lifecycle = current_lifecycle
-            return result
-        if current_lifecycle is not None:
-            self._pending_lifecycles.append(current_lifecycle)
-        self._active_lifecycle = self._create_lifecycle(next_task)
+        self._active_lifecycle = self._create_next_lifecycle()
         return result
 
+    def _create_next_lifecycle(self) -> BaseTaskLifecycle | None:
+        next_task_id = self._runtime.next_task_id
+        if next_task_id is None:
+            self._runtime.next_task = None
+            return None
+        task = self._runtime.next_task
+        if task is None:
+            task = self.build_tree(next_task_id)
+        if task is None:
+            raise RuntimeError(f"Next task {next_task_id} is missing")
+        self._runtime.next_task = task
+        return self._create_lifecycle(task)
+
     def _create_lifecycle(self, task: ManagedTask) -> BaseTaskLifecycle:
-        if self._active_lifecycle is not None and task.id == self._active_lifecycle.task.id:
-            return self._active_lifecycle
-        for lifecycle in self._pending_lifecycles:
-            if task.id == lifecycle.task.id:
-                self._pending_lifecycles.remove(lifecycle)
-                return lifecycle
         if task.kind == "user_task":
+            self._user_task = cast(UserTask, task)
             return UserTaskLifecycle(
                 cast(UserTask, task),
                 allocate_task_id=self.allocate_task_id,
@@ -244,6 +240,22 @@ class SessionRunner:
                 runtime=self._runtime,
             )
         raise RuntimeError("Tool-call tasks do not have a lifecycle")
+
+    def build_tree(self, task_id: int) -> ManagedTask | None:
+        with self._db.create_session() as session:
+            root = self._db.get_managed_task(task_id, session=session)
+            if root is None or root.id is None:
+                return None
+
+            def attach_children(task: ManagedTask) -> None:
+                task.children = []
+                for child in self._db.list_managed_task_children(task.id, session=session):
+                    if child.id is not None:
+                        attach_children(child)
+                        task.children.append(child)
+
+            attach_children(root)
+            return root
 
     def _load_runtime(self, *, session: Session) -> None:
         self._runtime = TaskLifecycleRuntime(

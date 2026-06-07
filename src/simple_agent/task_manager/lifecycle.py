@@ -55,6 +55,8 @@ class TaskLifecycleRuntime:
     messages: list[MessageEntry]
     next_message_id: int = 1
     next_tool_call_log_id: int = 0
+    next_task_id: int | None = None
+    next_task: ManagedTask | None = None
 
 
 class BaseTaskLifecycle:
@@ -66,7 +68,6 @@ class BaseTaskLifecycle:
     ):
         self._allocate_task_id = allocate_task_id
         self.current_assistant_message_id: int | None = None
-        self.next_task: ManagedTask | None = None
         self._runtime = runtime or TaskLifecycleRuntime(messages=[])
 
     @property
@@ -98,11 +99,6 @@ class BaseTaskLifecycle:
             raise TaskLifecycleError("Task lifecycle needs an ID allocator")
         return self._allocate_task_id()
 
-    def consume_next_task(self) -> ManagedTask | None:
-        next_task = self.next_task
-        self.next_task = None
-        return next_task
-
     async def run(
         self,
         *,
@@ -129,6 +125,10 @@ class BaseTaskLifecycle:
         tool_call_log_id = self.next_tool_call_log_id
         self.next_tool_call_log_id += 1
         return tool_call_log_id
+
+    def set_next_task(self, task: ManagedTask | None, *, task_instance: bool = False) -> None:
+        self._runtime.next_task_id = task.id if task is not None else None
+        self._runtime.next_task = task if task_instance else None
 
     def message_values(self) -> list[Any]:
         return [entry.message for entry in self.messages]
@@ -282,7 +282,7 @@ class UserTaskLifecycle(BaseTaskLifecycle):
         )
         self.task.children.append(todo)
         self.task.touch()
-        self.next_task = todo
+        self.set_next_task(todo, task_instance=True)
         return todo
 
     def finish_task(self, *, result: str | None = None) -> UserTask:
@@ -290,7 +290,7 @@ class UserTaskLifecycle(BaseTaskLifecycle):
         self.task.result = result
         self.task.end_message_id = self.current_assistant_message_id
         self.task.touch()
-        self.next_task = None
+        self.set_next_task(self.task, task_instance=True)
         return self.task
 
     def todo_status_text(self) -> str:
@@ -325,10 +325,11 @@ class UserTaskLifecycle(BaseTaskLifecycle):
         )
 
     def _next_task_after_turn(self) -> ManagedTask | None:
-        next_task = self.consume_next_task()
+        next_task = _find_task(self.task, self._runtime.next_task_id)
         if next_task is not None:
             return next_task
         if self.task.status == "active":
+            self.set_next_task(self.task, task_instance=True)
             return self.task
         return None
 
@@ -499,6 +500,7 @@ class UserTaskLifecycle(BaseTaskLifecycle):
         if not self.task.children:
             if cancel_event is not None:
                 cancel_event.clear()
+            self.set_next_task(None)
             return TaskLifecycleRunResult(next_action="wait_user_input", next_task=None)
 
         self._compacted_tool_calls = []
@@ -546,6 +548,7 @@ class UserTaskLifecycle(BaseTaskLifecycle):
 
         # TODO: determine next action after compacting.
         # TODO: sync compacted messages and compacted task data to database here.
+        self.set_next_task(None)
         return TaskLifecycleRunResult(next_action="wait_user_input", next_task=None)
 
     def create_compact_tools(self) -> list[AgentTool]:
@@ -723,7 +726,7 @@ class TodoTaskLifecycle(BaseTaskLifecycle):
         self.task.result = result
         self.task.end_message_id = self.current_assistant_message_id
         self.task.touch()
-        self.next_task = self.user_task
+        self.set_next_task(self.user_task)
         return self.task
 
     def error_task(self, *, error: str, end_message_id: int | None = None) -> TodoTask:
@@ -735,7 +738,7 @@ class TodoTaskLifecycle(BaseTaskLifecycle):
             else self.current_assistant_message_id
         )
         self.task.touch()
-        self.next_task = self.user_task
+        self.set_next_task(self.user_task)
         return self.task
 
     def create_tools(self) -> list[AgentTool]:
@@ -843,6 +846,18 @@ def _count_task_tree_tool_calls(task: ManagedTask) -> int:
     for child in task.children:
         total += _count_task_tree_tool_calls(child)
     return total
+
+
+def _find_task(task: ManagedTask, task_id: int | None) -> ManagedTask | None:
+    if task_id is None:
+        return None
+    if task.id == task_id:
+        return task
+    for child in task.children:
+        found = _find_task(child, task_id)
+        if found is not None:
+            return found
+    return None
 
 
 def _assistant_has_tool_calls(message: AssistantMessage) -> bool:
