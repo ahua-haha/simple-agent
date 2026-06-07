@@ -108,12 +108,12 @@ def test_session_pause_delegates_to_runner(tmp_path):
     assert session._runner._cancel_event.is_set()
 
 
-def test_session_initializes_task_manager(tmp_path):
+def test_session_initializes_runner_without_task_manager(tmp_path):
     from simple_agent.session.session import Session
 
     session = Session(base_dir=str(tmp_path))
 
-    assert session._task_manager is not None
+    assert not hasattr(session, "_task_manager")
     assert session._runner is not None
 
 

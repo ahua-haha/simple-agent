@@ -360,7 +360,7 @@ async def test_user_task_lifecycle_run_calls_llm_appends_message_and_returns_nex
     assert lifecycle.next_message_id == 3
     assert result.tool_call_records == []
     assert result.next_action == "compact"
-    assert result.next_task is None
+    assert result.next_task is user_task
     assert user_task.status == "done"
     assert db.list_runner_messages("session_a") == []
 

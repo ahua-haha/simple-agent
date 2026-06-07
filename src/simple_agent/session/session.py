@@ -12,7 +12,6 @@ from pi.ai import get_model
 from simple_agent.log import logged
 from simple_agent.process.agent_process import AgentProcess
 from simple_agent.session.runner import SessionRunner
-from simple_agent.task_manager import TaskManager
 from simple_agent.db.db import Database
 from simple_agent.models import register_custom_models
 
@@ -40,13 +39,11 @@ class Session:
         self._base_dir = base_dir
         self._db_path = os.path.join(base_dir, f"{self._id}.db")
         self._db = Database(self._db_path)
-        self._task_manager = TaskManager(self._db)
         register_custom_models()
         self._agent_process = AgentProcess(get_model("deepseek", "deepseek-v4-pro"))
         self._runner = SessionRunner(
             session_id=self._id,
             db=self._db,
-            task_manager=self._task_manager,
             agent_process=self._agent_process,
             cancel_event=asyncio.Event(),
         )

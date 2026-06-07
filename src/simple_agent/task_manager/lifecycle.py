@@ -50,14 +50,48 @@ class TaskLifecycleRunResult:
     tool_call_records: list[tuple[int, ToolCall | None, ToolResultMessage]] | None = None
 
 
+@dataclass
+class TaskLifecycleRuntime:
+    messages: list[MessageEntry]
+    next_message_id: int = 1
+    next_tool_call_log_id: int = 0
+
+
 class BaseTaskLifecycle:
-    def __init__(self, *, allocate_task_id: Callable[[], int] | None = None):
+    def __init__(
+        self,
+        *,
+        allocate_task_id: Callable[[], int] | None = None,
+        runtime: TaskLifecycleRuntime | None = None,
+    ):
         self._allocate_task_id = allocate_task_id
         self.current_assistant_message_id: int | None = None
         self.next_task: ManagedTask | None = None
-        self.messages: list[MessageEntry] = []
-        self.next_message_id: int = 1
-        self.next_tool_call_log_id: int = 0
+        self._runtime = runtime or TaskLifecycleRuntime(messages=[])
+
+    @property
+    def messages(self) -> list[MessageEntry]:
+        return self._runtime.messages
+
+    @messages.setter
+    def messages(self, value: list[MessageEntry]) -> None:
+        self._runtime.messages = value
+
+    @property
+    def next_message_id(self) -> int:
+        return self._runtime.next_message_id
+
+    @next_message_id.setter
+    def next_message_id(self, value: int) -> None:
+        self._runtime.next_message_id = value
+
+    @property
+    def next_tool_call_log_id(self) -> int:
+        return self._runtime.next_tool_call_log_id
+
+    @next_tool_call_log_id.setter
+    def next_tool_call_log_id(self, value: int) -> None:
+        self._runtime.next_tool_call_log_id = value
 
     def allocate_task_id(self) -> int:
         if self._allocate_task_id is None:
@@ -207,8 +241,14 @@ class BaseTaskLifecycle:
 
 
 class UserTaskLifecycle(BaseTaskLifecycle):
-    def __init__(self, task: UserTask, *, allocate_task_id: Callable[[], int] | None = None):
-        super().__init__(allocate_task_id=allocate_task_id)
+    def __init__(
+        self,
+        task: UserTask,
+        *,
+        allocate_task_id: Callable[[], int] | None = None,
+        runtime: TaskLifecycleRuntime | None = None,
+    ):
+        super().__init__(allocate_task_id=allocate_task_id, runtime=runtime)
         self.task = task
         self._compacted_tool_calls: list[ToolCallTask] = []
         self._compacted_user_task_finished = False
@@ -370,7 +410,7 @@ class UserTaskLifecycle(BaseTaskLifecycle):
         # determine-next logic for a completed normal turn.
         if self.task.status == "done":
             next_action: TaskLifecycleAction = "compact"
-            next_task = None
+            next_task = self.task
         elif not _assistant_has_tool_calls(assistant_message):
             self.current_assistant_message_id = assistant_entry.id
             try:
@@ -378,7 +418,7 @@ class UserTaskLifecycle(BaseTaskLifecycle):
             finally:
                 self.current_assistant_message_id = None
             next_action = "compact"
-            next_task = None
+            next_task = self.task
         else:
             next_action = self._next_action_after_thresholds(
                 context_token_threshold=context_token_threshold,
@@ -656,8 +696,9 @@ class TodoTaskLifecycle(BaseTaskLifecycle):
         *,
         allocate_task_id: Callable[[], int] | None = None,
         user_task: UserTask | None = None,
+        runtime: TaskLifecycleRuntime | None = None,
     ):
-        super().__init__(allocate_task_id=allocate_task_id)
+        super().__init__(allocate_task_id=allocate_task_id, runtime=runtime)
         self.task = task
         self.user_task = user_task
 

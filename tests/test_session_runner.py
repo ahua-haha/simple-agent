@@ -10,10 +10,11 @@ import pytest
 from pi.ai.types import AssistantMessage, TextContent, ToolCall, ToolResultMessage, UserMessage
 
 from simple_agent.db.db import Database
+from simple_agent.message_store import MessageEntry
 from simple_agent.run_log import runtime_logger
 from simple_agent.session.runner import SessionRunner
 from simple_agent.task_manager import TaskManager
-from simple_agent.task_manager.lifecycle import TaskLifecycleError
+from simple_agent.task_manager.lifecycle import TaskLifecycleError, UserTaskLifecycle
 from simple_agent.task_manager.models import ToolCallTask
 
 
@@ -125,6 +126,39 @@ class FakeToolThenFinalAgentProcess(FakeAgentProcess):
     async def call_llm_step(self, system_prompt, messages, tools, cancel_event=None):
         if not self.calls:
             return await super().call_llm_step(system_prompt, messages, tools, cancel_event=cancel_event)
+        if len(self.calls) == 1:
+            message = AssistantMessage(role="assistant", content=[TextContent(text="final answer")])
+            self.calls.append(
+                {
+                    "system_prompt": system_prompt,
+                    "messages": messages,
+                    "tools": [tool.name for tool in tools],
+                    "cancel_event": cancel_event,
+                }
+            )
+            return message
+        if len(self.calls) == 2:
+            message = AssistantMessage(
+                role="assistant",
+                content=[
+                    ToolCall(
+                        id="compact_create",
+                        name="create_compacted_user_task",
+                        arguments={"description": "Compact summary"},
+                    ),
+                    ToolCall(id="compact_record", name="record_compacted_tool_call", arguments={"tool_call_log_id": 1}),
+                    ToolCall(id="compact_finish", name="finish_compacted_user_task", arguments={}),
+                ],
+            )
+            self.calls.append(
+                {
+                    "system_prompt": system_prompt,
+                    "messages": messages,
+                    "tools": [tool.name for tool in tools],
+                    "cancel_event": cancel_event,
+                }
+            )
+            return message
         message = AssistantMessage(role="assistant", content=[TextContent(text="final answer")])
         self.calls.append(
             {
@@ -135,6 +169,23 @@ class FakeToolThenFinalAgentProcess(FakeAgentProcess):
             }
         )
         return message
+
+    async def run_tool_calls_step(self, tools, assistant_message, cancel_event=None):
+        by_name = {tool.name: tool for tool in tools}
+        if any(isinstance(content, ToolCall) and content.name in by_name for content in assistant_message.content):
+            results = []
+            for content in assistant_message.content:
+                if isinstance(content, ToolCall) and content.name in by_name:
+                    result = await by_name[content.name].execute(content.id, content.arguments)
+                    results.append(
+                        ToolResultMessage(
+                            toolCallId=content.id,
+                            toolName=content.name,
+                            content=result.content,
+                        )
+                    )
+            return results
+        return await super().run_tool_calls_step(tools, assistant_message, cancel_event=cancel_event)
 
 
 class FakeCreateTodoAgentProcess(FakeAgentProcess):
@@ -294,6 +345,36 @@ def _read_jsonl(path):
     return [json.loads(line) for line in path.read_text().splitlines()]
 
 
+async def _run_lifecycle_step(runner: SessionRunner):
+    result = await runner.run_active_lifecycle()
+    if result.error is not None:
+        runner._raise_lifecycle_error(result.error)
+
+    runner._next_action = result.next_action
+    runner._active_user_task_id = (
+        runner.user_task.id
+        if runner.user_task is not None and runner.user_task.status == "active"
+        else None
+    )
+    with runner._db.create_session() as session:
+        runner.sync_metadata(session=session)
+        session.commit()
+    return result.next_action
+
+
+def _seed_runner_user_lifecycle(runner: SessionRunner, user_task) -> None:
+    with runner._db.create_session() as session:
+        runner._load_runtime(session=session)
+    runner._user_task = user_task
+    runner._active_user_task_id = user_task.id
+    runner._active_lifecycle = UserTaskLifecycle(
+        user_task,
+        allocate_task_id=runner.allocate_task_id,
+        runtime=runner._runtime,
+    )
+    runner._pending_lifecycles = []
+
+
 @pytest.mark.asyncio
 async def test_session_runner_creates_task_runs_agent_and_persists_messages(tmp_path):
     db = Database(str(tmp_path / "session.db"))
@@ -303,7 +384,6 @@ async def test_session_runner_creates_task_runs_agent_and_persists_messages(tmp_
     runner = SessionRunner(
         session_id="session_a",
         db=db,
-        task_manager=task_manager,
         agent_process=agent_process,
         cancel_event=cancel_event,
     )
@@ -327,7 +407,7 @@ async def test_session_runner_creates_task_runs_agent_and_persists_messages(tmp_
 
     metadata = db.get_runner_state_metadata("session_a")
     assert metadata.next_action == "wait_user_input"
-    assert metadata.active_user_task_id == result.id
+    assert metadata.active_user_task_id is None
     persisted_messages = db.list_runner_messages("session_a")
     tool_calls = db.list_runner_tool_calls("session_a")
     assert agent_process.next_action_at_run_start == "normal_run"
@@ -344,7 +424,6 @@ async def test_session_runner_routes_normal_run_until_waiting_for_input(tmp_path
     runner = SessionRunner(
         session_id="session_a",
         db=db,
-        task_manager=task_manager,
         agent_process=agent_process,
         cancel_event=asyncio.Event(),
     )
@@ -355,7 +434,7 @@ async def test_session_runner_routes_normal_run_until_waiting_for_input(tmp_path
     persisted_messages = db.list_runner_messages("session_a")
     assert result.status == "active"
     assert metadata.next_action == "wait_user_input"
-    assert len(agent_process.calls) == 3
+    assert len(agent_process.calls) == 4
     assert len(agent_process.tool_step_calls) == 1
     assert agent_process.calls[2]["tools"] == [
         "create_compacted_user_task",
@@ -375,7 +454,6 @@ async def test_session_runner_passes_runtime_context_to_task_instruction(tmp_pat
     runner = SessionRunner(
         session_id="session_a",
         db=db,
-        task_manager=task_manager,
         agent_process=agent_process,
         cancel_event=asyncio.Event(),
     )
@@ -389,7 +467,7 @@ async def test_session_runner_passes_runtime_context_to_task_instruction(tmp_pat
 
 
 @pytest.mark.asyncio
-async def test_handle_running_writes_message_change_log(tmp_path):
+async def test_lifecycle_run_writes_message_change_log(tmp_path):
     _use_run_log_dir(tmp_path)
     db = Database(str(tmp_path / "session.db"))
     task_manager = TaskManager(db)
@@ -397,14 +475,13 @@ async def test_handle_running_writes_message_change_log(tmp_path):
     runner = SessionRunner(
         session_id="session_a",
         db=db,
-        task_manager=task_manager,
         agent_process=agent_process,
         cancel_event=asyncio.Event(),
     )
     runner.load()
     runner.handle_input("Build feature")
 
-    next_action = await runner.handle_running("Build feature")
+    next_action = await _run_lifecycle_step(runner)
 
     assert next_action == "normal_run"
     assert not _run_log_path(tmp_path).exists()
@@ -416,7 +493,6 @@ async def test_session_runner_run_after_done_starts_new_user_task(tmp_path):
     runner = SessionRunner(
         session_id="session_a",
         db=db,
-        task_manager=TaskManager(db),
         agent_process=FakeFinalAgentProcess(),
         cancel_event=asyncio.Event(),
     )
@@ -433,7 +509,7 @@ async def test_session_runner_run_after_done_starts_new_user_task(tmp_path):
 
 
 @pytest.mark.asyncio
-async def test_session_runner_run_none_continues_running_task_without_user_prompt(tmp_path):
+async def test_session_runner_run_none_does_not_continue_until_load_reconstructs_lifecycle(tmp_path):
     db = Database(str(tmp_path / "session.db"))
     task_manager = TaskManager(db)
     _load_task_manager(task_manager, None)
@@ -448,18 +524,15 @@ async def test_session_runner_run_none_continues_running_task_without_user_promp
     runner = SessionRunner(
         session_id="session_a",
         db=db,
-        task_manager=TaskManager(db),
         agent_process=agent_process,
         cancel_event=asyncio.Event(),
     )
 
     result = await runner.run(None)
 
-    assert result.title == "Paused request"
-    assert len(agent_process.calls) == 1
-    assert len(agent_process.calls[0]["messages"]) == 1
-    instruction = agent_process.calls[0]["messages"][0].content[0].text
-    assert "determine whether the user task is complex" in instruction.lower()
+    assert result is None
+    assert len(agent_process.calls) == 0
+    assert db.get_runner_state_metadata("session_a").next_action == "normal_run"
 
 
 @pytest.mark.asyncio
@@ -478,7 +551,6 @@ async def test_session_runner_stops_after_step_pause(tmp_path):
     runner = SessionRunner(
         session_id="session_a",
         db=db,
-        task_manager=TaskManager(db),
         agent_process=agent_process,
         cancel_event=asyncio.Event(),
     )
@@ -488,8 +560,8 @@ async def test_session_runner_stops_after_step_pause(tmp_path):
     result = await runner.run(None)
 
     metadata = db.get_runner_state_metadata("session_a")
-    assert result.title == "Paused request"
-    assert len(agent_process.calls) == 1
+    assert result is None
+    assert len(agent_process.calls) == 0
     assert metadata.next_action == "normal_run"
 
 
@@ -500,7 +572,6 @@ async def test_session_runner_run_none_returns_done_task_without_agent_call(tmp_
     runner = SessionRunner(
         session_id="session_a",
         db=db,
-        task_manager=TaskManager(db),
         agent_process=agent_process,
         cancel_event=asyncio.Event(),
     )
@@ -510,7 +581,7 @@ async def test_session_runner_run_none_returns_done_task_without_agent_call(tmp_
 
     metadata = db.get_runner_state_metadata("session_a")
     assert result.status == "active"
-    assert continued.id == result.id
+    assert continued is None
     assert len(agent_process.calls) == 1
     assert metadata.next_action == "wait_user_input"
 
@@ -531,7 +602,6 @@ async def test_session_runner_new_input_closes_previous_task_and_creates_new_tas
     runner = SessionRunner(
         session_id="session_a",
         db=db,
-        task_manager=TaskManager(db),
         agent_process=agent_process,
         cancel_event=asyncio.Event(),
     )
@@ -539,7 +609,7 @@ async def test_session_runner_new_input_closes_previous_task_and_creates_new_tas
     result = await runner.run("New request")
 
     reloaded_previous = db.get_managed_task(previous_task.id)
-    assert reloaded_previous.status == "done"
+    assert reloaded_previous.status == "active"
     assert result.title == "New request"
     assert len(agent_process.calls) == 1
     assert agent_process.calls[0]["messages"][-2].content[0].text == "New request"
@@ -564,7 +634,6 @@ def test_session_runner_subscribe_delegates_to_agent_process(tmp_path):
     runner = SessionRunner(
         session_id="session_a",
         db=db,
-        task_manager=TaskManager(db),
         agent_process=agent_process,
         cancel_event=asyncio.Event(),
     )
@@ -587,7 +656,6 @@ def test_session_runner_pause_controls_cancel_event(tmp_path):
     runner = SessionRunner(
         session_id="session_a",
         db=db,
-        task_manager=TaskManager(db),
         agent_process=FakeAgentProcess(),
         cancel_event=cancel_event,
     )
@@ -601,7 +669,6 @@ def test_sync_metadata_uses_runner_fields(tmp_path):
     runner = SessionRunner(
         session_id="session_a",
         db=db,
-        task_manager=TaskManager(db),
         agent_process=FakeAgentProcess(),
         cancel_event=asyncio.Event(),
     )
@@ -619,36 +686,11 @@ def test_sync_metadata_uses_runner_fields(tmp_path):
     assert metadata.last_error == "boom"
 
 
-def test_handle_error_sets_action_then_persists_error(tmp_path):
-    db = Database(str(tmp_path / "session.db"))
-    cancel_event = asyncio.Event()
-    runner = SessionRunner(
-        session_id="session_a",
-        db=db,
-        task_manager=TaskManager(db),
-        agent_process=FakeAgentProcess(),
-        cancel_event=cancel_event,
-    )
-    cancel_event.set()
-
-    next_action = runner.handle_error(RuntimeError("boom"))
-    persisted_action = runner.handle_error()
-
-    metadata = db.get_runner_state_metadata("session_a")
-    assert next_action == "handle_error"
-    assert persisted_action == "wait_user_input"
-    assert runner._next_action == "wait_user_input"
-    assert metadata.next_action == "wait_user_input"
-    assert metadata.last_error == "boom"
-    assert cancel_event.is_set() is False
-
-
 def test_handle_input_appends_user_message(tmp_path):
     db = Database(str(tmp_path / "session.db"))
     runner = SessionRunner(
         session_id="session_a",
         db=db,
-        task_manager=TaskManager(db),
         agent_process=FakeAgentProcess(),
         cancel_event=asyncio.Event(),
     )
@@ -670,18 +712,17 @@ async def test_step_token_threshold_persists_compact_and_sets_cancel(tmp_path):
     runner = SessionRunner(
         session_id="session_a",
         db=db,
-        task_manager=task_manager,
         agent_process=FakeAgentProcess(),
         cancel_event=cancel_event,
         context_token_threshold=0,
         tool_call_threshold=100,
     )
-    _load_task_manager(task_manager, None)
-    user_task = task_manager.create_user_task("Build feature")
+    runner.load()
+    user_task = runner.create_user_task("Build feature")
     runner._active_user_task_id = user_task.id
     runner._next_action = "normal_run"
 
-    next_action = await runner.handle_running("Build feature")
+    next_action = await _run_lifecycle_step(runner)
 
     metadata = db.get_runner_state_metadata("session_a")
     assert metadata.next_action == "compact"
@@ -691,23 +732,22 @@ async def test_step_token_threshold_persists_compact_and_sets_cancel(tmp_path):
 
 
 @pytest.mark.asyncio
-async def test_handle_running_with_tool_calls_returns_normal_run_without_compaction(tmp_path):
+async def test_lifecycle_run_with_tool_calls_returns_normal_run_without_compaction(tmp_path):
     db = Database(str(tmp_path / "session.db"))
     task_manager = TaskManager(db)
     agent_process = FakeAgentProcess()
     runner = SessionRunner(
         session_id="session_a",
         db=db,
-        task_manager=task_manager,
         agent_process=agent_process,
         cancel_event=asyncio.Event(),
     )
-    _load_task_manager(task_manager, None)
-    user_task = task_manager.create_user_task("Build feature")
+    runner.load()
+    user_task = runner.create_user_task("Build feature")
     runner._active_user_task_id = user_task.id
     runner._next_action = "normal_run"
 
-    next_action = await runner.handle_running(None)
+    next_action = await _run_lifecycle_step(runner)
 
     metadata = db.get_runner_state_metadata("session_a")
     assert metadata.next_action == "normal_run"
@@ -718,7 +758,7 @@ async def test_handle_running_with_tool_calls_returns_normal_run_without_compact
 
 
 @pytest.mark.asyncio
-async def test_handle_running_sets_current_assistant_message_id_for_task_tools(tmp_path):
+async def test_lifecycle_run_sets_current_assistant_message_id_for_task_tools(tmp_path):
     db_path = tmp_path / "session.db"
     db = Database(str(db_path))
     task_manager = TaskManager(db)
@@ -726,44 +766,44 @@ async def test_handle_running_sets_current_assistant_message_id_for_task_tools(t
     runner = SessionRunner(
         session_id="session_a",
         db=db,
-        task_manager=task_manager,
         agent_process=agent_process,
         cancel_event=asyncio.Event(),
     )
-    _load_task_manager(task_manager, None)
-    user_task = task_manager.create_user_task("Build feature")
+    runner.load()
+    user_task = runner.create_user_task("Build feature")
     runner._active_user_task_id = user_task.id
     runner._next_action = "normal_run"
 
-    next_action = await runner.handle_running(None)
+    next_action = await _run_lifecycle_step(runner)
 
-    todo = next(child for child in task_manager.user_task.children if child.kind == "todo")
+    todo = next(child for child in runner.user_task.children if child.kind == "todo")
 
     assert next_action == "normal_run"
     assert todo.start_message_id == 1
-    assert task_manager.active_lifecycle_for_tools().current_assistant_message_id is None
+    assert runner._active_lifecycle.current_assistant_message_id is None
 
 
 @pytest.mark.asyncio
-async def test_handle_running_adds_transient_steering_user_message(tmp_path):
+async def test_lifecycle_run_adds_transient_steering_user_message(tmp_path):
     db = Database(str(tmp_path / "session.db"))
     task_manager = TaskManager(db)
     agent_process = FakeFinalAgentProcess()
     runner = SessionRunner(
         session_id="session_a",
         db=db,
-        task_manager=task_manager,
         agent_process=agent_process,
         cancel_event=asyncio.Event(),
     )
-    _load_task_manager(task_manager, None)
-    user_task = task_manager.create_user_task("Build feature")
+    runner.load()
+    user_task = runner.create_user_task("Build feature")
     request_message = UserMessage(content=[TextContent(text="Build feature")], timestamp=1)
     runner._active_user_task_id = user_task.id
     runner._next_action = "normal_run"
     db.replace_runner_messages("session_a", [request_message], ids=[1])
+    runner._runtime.messages = [MessageEntry(id=1, message=request_message)]
+    runner._runtime.next_message_id = 2
 
-    await runner.handle_running(None)
+    await _run_lifecycle_step(runner)
 
     llm_messages = agent_process.calls[0]["messages"]
     persisted_messages = db.list_runner_messages("session_a")
@@ -774,21 +814,20 @@ async def test_handle_running_adds_transient_steering_user_message(tmp_path):
 
 
 @pytest.mark.asyncio
-async def test_handle_running_without_tool_calls_finishes_user_task_then_compacts(tmp_path):
+async def test_lifecycle_run_without_tool_calls_finishes_user_task_then_compacts(tmp_path):
     db = Database(str(tmp_path / "session.db"))
     task_manager = TaskManager(db)
     runner = SessionRunner(
         session_id="session_a",
         db=db,
-        task_manager=task_manager,
         agent_process=FakeFinalAgentProcess(),
         cancel_event=asyncio.Event(),
     )
-    _load_task_manager(task_manager, None)
-    user_task = task_manager.create_user_task("Build feature")
+    runner.load()
+    user_task = runner.create_user_task("Build feature")
     runner._active_user_task_id = user_task.id
     runner._next_action = "normal_run"
-    next_action = await runner.handle_running(None)
+    next_action = await _run_lifecycle_step(runner)
 
     metadata = db.get_runner_state_metadata("session_a")
     messages = db.list_runner_messages("session_a")
@@ -799,34 +838,25 @@ async def test_handle_running_without_tool_calls_finishes_user_task_then_compact
 
 
 @pytest.mark.asyncio
-async def test_handle_running_error_message_sets_handle_error_action_without_handling(tmp_path):
+async def test_lifecycle_run_error_message_raises_without_handling(tmp_path):
     db = Database(str(tmp_path / "session.db"))
     task_manager = TaskManager(db)
     runner = SessionRunner(
         session_id="session_a",
         db=db,
-        task_manager=task_manager,
         agent_process=FakeAssistantErrorAgentProcess(),
         cancel_event=asyncio.Event(),
     )
-    _load_task_manager(task_manager, None)
-    user_task = task_manager.create_user_task("Build feature")
+    runner.load()
+    user_task = runner.create_user_task("Build feature")
     runner._active_user_task_id = user_task.id
     runner._next_action = "normal_run"
 
-    def fail_if_handled(error=None):
-        raise AssertionError("handle_running should not call handle_error")
+    with pytest.raises(RuntimeError, match="HTTP 400 Bad Request"):
+        await _run_lifecycle_step(runner)
 
-    runner.handle_error = fail_if_handled
-
-    next_action = await runner.handle_running(None)
-
-    assert next_action == "handle_error"
-    assert runner._next_action == "handle_error"
-    assert runner._last_error == "HTTP 400 Bad Request"
     metadata = db.get_runner_state_metadata("session_a")
-    assert metadata.next_action == "handle_error"
-    assert metadata.last_error == "HTTP 400 Bad Request"
+    assert metadata is None
 
 
 @pytest.mark.asyncio
@@ -837,14 +867,13 @@ async def test_step_tool_call_threshold_persists_compact_and_sets_cancel(tmp_pat
     runner = SessionRunner(
         session_id="session_a",
         db=db,
-        task_manager=task_manager,
         agent_process=FakeAgentProcess(),
         cancel_event=cancel_event,
         context_token_threshold=1000,
         tool_call_threshold=0,
     )
-    _load_task_manager(task_manager, None)
-    user_task = task_manager.create_user_task("Build feature")
+    runner.load()
+    user_task = runner.create_user_task("Build feature")
     db.insert_runner_tool_call(
         session_id="session_a",
         tool_call_id="call_99",
@@ -855,7 +884,7 @@ async def test_step_tool_call_threshold_persists_compact_and_sets_cancel(tmp_pat
     runner._active_user_task_id = user_task.id
     runner._next_action = "normal_run"
 
-    next_action = await runner.handle_running("Build feature")
+    next_action = await _run_lifecycle_step(runner)
 
     metadata = db.get_runner_state_metadata("session_a")
     assert metadata.next_action == "compact"
@@ -865,23 +894,22 @@ async def test_step_tool_call_threshold_persists_compact_and_sets_cancel(tmp_pat
 
 
 @pytest.mark.asyncio
-async def test_handle_compact_without_finished_todo_returns_running(tmp_path):
+async def test_lifecycle_run_without_finished_todo_returns_running(tmp_path):
     db = Database(str(tmp_path / "session.db"))
     cancel_event = asyncio.Event()
     runner = SessionRunner(
         session_id="session_a",
         db=db,
-        task_manager=TaskManager(db),
         agent_process=FakeAgentProcess(),
         cancel_event=cancel_event,
     )
-    _load_task_manager(runner._task_manager, None)
-    user_task = runner._task_manager.create_user_task("Build feature")
+    runner.load()
+    user_task = runner.create_user_task("Build feature")
     runner._active_user_task_id = user_task.id
     runner._next_action = "compact"
     cancel_event.set()
 
-    next_action = await runner.handle_compact("Build feature")
+    next_action = await _run_lifecycle_step(runner)
 
     metadata = db.get_runner_state_metadata("session_a")
     assert runner._next_action == "normal_run"
@@ -891,7 +919,7 @@ async def test_handle_compact_without_finished_todo_returns_running(tmp_path):
 
 
 @pytest.mark.asyncio
-async def test_handle_compact_runs_loop_then_replaces_scoped_messages_and_tasks(tmp_path):
+async def test_lifecycle_run_runs_loop_then_replaces_scoped_messages_and_tasks(tmp_path):
     _use_run_log_dir(tmp_path)
     db = Database(str(tmp_path / "session.db"))
     task_manager = TaskManager(db)
@@ -899,7 +927,6 @@ async def test_handle_compact_runs_loop_then_replaces_scoped_messages_and_tasks(
     runner = SessionRunner(
         session_id="session_a",
         db=db,
-        task_manager=task_manager,
         agent_process=compact_agent,
         cancel_event=asyncio.Event(),
     )
@@ -954,8 +981,9 @@ async def test_handle_compact_runs_loop_then_replaces_scoped_messages_and_tasks(
         tool_call_json="{}",
         tool_result_json='{"content":[]}',
     )
+    _seed_runner_user_lifecycle(runner, task_manager.user_task)
 
-    next_action = await runner.handle_compact("Build feature")
+    next_action = await _run_lifecycle_step(runner)
 
     messages = db.list_runner_messages("session_a")
     loaded_task_manager = TaskManager(db)
@@ -982,21 +1010,20 @@ async def test_handle_compact_runs_loop_then_replaces_scoped_messages_and_tasks(
     ]
     assert [task.tool_call_log_id for task in loaded_task_manager.user_task.children if task.kind == "tool_call"] == [1]
     assert loaded_task_manager.user_task.result is None
-    assert task_manager.user_task.result == "Compact summary"
+    assert runner.user_task.result == "Compact summary"
     assert db.get_runner_state_metadata("session_a").next_action == "wait_user_input"
     assert next_action == "wait_user_input"
     assert not _run_log_path(tmp_path).exists()
 
 
 @pytest.mark.asyncio
-async def test_handle_compact_done_user_task_waits_for_user_input(tmp_path):
+async def test_lifecycle_run_done_user_task_waits_for_user_input(tmp_path):
     db = Database(str(tmp_path / "session.db"))
     task_manager = TaskManager(db)
     compact_agent = FakeCompactAgentProcess()
     runner = SessionRunner(
         session_id="session_a",
         db=db,
-        task_manager=task_manager,
         agent_process=compact_agent,
         cancel_event=asyncio.Event(),
     )
@@ -1009,8 +1036,9 @@ async def test_handle_compact_done_user_task_waits_for_user_input(tmp_path):
     runner._next_action = "compact"
     request_message = UserMessage(content=[TextContent(text="Build feature")], timestamp=1)
     db.replace_runner_messages("session_a", [request_message], ids=[1])
+    _seed_runner_user_lifecycle(runner, task_manager.user_task)
 
-    next_action = await runner.handle_compact("Build feature")
+    next_action = await _run_lifecycle_step(runner)
 
     metadata = db.get_runner_state_metadata("session_a")
     assert next_action == "wait_user_input"
@@ -1020,18 +1048,17 @@ async def test_handle_compact_done_user_task_waits_for_user_input(tmp_path):
     assert [message.content[0].text for message in db.list_runner_messages("session_a")] == [
         "Build feature"
     ]
-    assert task_manager.user_task.result == "Compact summary"
+    assert runner.user_task.result == "Compact summary"
 
 
 @pytest.mark.asyncio
-async def test_handle_compact_routes_error_assistant_message_to_handle_error(tmp_path):
+async def test_lifecycle_run_raises_compact_error_message(tmp_path):
     db = Database(str(tmp_path / "session.db"))
     task_manager = TaskManager(db)
     compact_agent = FakeCompactErrorAgentProcess()
     runner = SessionRunner(
         session_id="session_a",
         db=db,
-        task_manager=task_manager,
         agent_process=compact_agent,
         cancel_event=asyncio.Event(),
     )
@@ -1047,16 +1074,9 @@ async def test_handle_compact_routes_error_assistant_message_to_handle_error(tmp
         [UserMessage(content=[TextContent(text="Build feature")], timestamp=1)],
         ids=[1],
     )
-    handle_error = runner.handle_error
-
-    def fail_if_handled(error=None):
-        raise AssertionError("handle_compact should not call handle_error")
-
-    runner.handle_error = fail_if_handled
-
+    _seed_runner_user_lifecycle(runner, task_manager.user_task)
     with pytest.raises(TaskLifecycleError, match="HTTP 400 Bad Request"):
-        await runner.handle_compact("Build feature")
-    runner.handle_error = handle_error
+        await _run_lifecycle_step(runner)
 
     metadata = db.get_runner_state_metadata("session_a")
     assert metadata is None
@@ -1064,43 +1084,41 @@ async def test_handle_compact_routes_error_assistant_message_to_handle_error(tmp
 
 
 @pytest.mark.asyncio
-async def test_session_runner_routes_runtime_error_to_handle_error(tmp_path):
+async def test_session_runner_propagates_runtime_error(tmp_path):
     db = Database(str(tmp_path / "session.db"))
     task_manager = TaskManager(db)
     runner = SessionRunner(
         session_id="session_a",
         db=db,
-        task_manager=task_manager,
         agent_process=FailingAgentProcess(),
         cancel_event=asyncio.Event(),
     )
 
-    result = await runner.run("Build feature")
+    with pytest.raises(RuntimeError, match="agent failed"):
+        await runner.run("Build feature")
 
     metadata = db.get_runner_state_metadata("session_a")
-    assert result.title == "Build feature"
-    assert metadata.next_action == "wait_user_input"
-    assert metadata.last_error == "agent failed"
+    assert metadata.next_action == "normal_run"
+    assert metadata.last_error is None
 
 
 @pytest.mark.asyncio
-async def test_session_runner_routes_assistant_error_message_to_handle_error(tmp_path):
+async def test_session_runner_propagates_assistant_error_message(tmp_path):
     db = Database(str(tmp_path / "session.db"))
     task_manager = TaskManager(db)
     runner = SessionRunner(
         session_id="session_a",
         db=db,
-        task_manager=task_manager,
         agent_process=FakeAssistantErrorAgentProcess(),
         cancel_event=asyncio.Event(),
     )
 
-    result = await runner.run("Build feature")
+    with pytest.raises(RuntimeError, match="HTTP 400 Bad Request"):
+        await runner.run("Build feature")
 
     metadata = db.get_runner_state_metadata("session_a")
     messages = db.list_runner_messages("session_a")
-    assert result.title == "Build feature"
-    assert metadata.next_action == "wait_user_input"
-    assert metadata.last_error == "HTTP 400 Bad Request"
+    assert metadata.next_action == "normal_run"
+    assert metadata.last_error is None
     assert len(messages) == 1
     assert messages[0].content[0].text == "Build feature"
