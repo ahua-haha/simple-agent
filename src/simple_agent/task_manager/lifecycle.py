@@ -304,7 +304,7 @@ class UserTaskLifecycle(BaseTaskLifecycle):
         agent_process: AgentProcess,
         cancel_event: asyncio.Event | None = None,
     ) -> SessionState:
-        if self.task.status in {"compacting", "done"}:
+        if self.task.status == "done":
             return await self.handle_compact(
                 agent_process=agent_process,
                 cancel_event=cancel_event,
@@ -375,24 +375,21 @@ class UserTaskLifecycle(BaseTaskLifecycle):
         new_messages = [assistant_entry, *tool_result_entries]
         self._session_state.append_messages(new_messages)
 
-        if task.status == "done":
-            self._session_state.set_next_task(task, keep_instance=True)
-        elif not _assistant_has_tool_calls(assistant_message):
+        if not _assistant_has_tool_calls(assistant_message):
             self.current_assistant_message_id = assistant_entry.id
             try:
+                if task.status != "done":
+                    self.finish_task()
                 if self.should_compact_after_turn():
-                    task.status = "compacting"
-                    task.end_message_id = assistant_entry.id
-                    task.touch()
                     self._session_state.set_next_task(task, keep_instance=True)
                 else:
-                    self.finish_task()
                     self._session_state.next_task_id_to_run = task.parent_id
                     self._session_state.next_task = None
             finally:
                 self.current_assistant_message_id = None
         else:
-            if self._session_state.next_task is None and task.status == "active":
+            has_child_task = self._session_state.next_task is not None and self._session_state.next_task is not task
+            if not has_child_task and task.status == "active":
                 self._session_state.set_next_task(task, keep_instance=True)
 
         tasks_to_sync: list[ManagedTask] = [task, *task.children]

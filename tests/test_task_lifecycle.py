@@ -553,7 +553,7 @@ async def test_user_task_lifecycle_run_calls_llm_appends_message_and_returns_sta
 
 
 @pytest.mark.asyncio
-async def test_user_task_lifecycle_run_enters_compacting_when_needed(tmp_path):
+async def test_user_task_lifecycle_run_keeps_done_task_for_compaction_when_needed(tmp_path):
     db = _make_db(tmp_path)
     user_task = UserTask(id=1, title="Build feature")
     session_state = SessionState(
@@ -570,10 +570,10 @@ async def test_user_task_lifecycle_run_enters_compacting_when_needed(tmp_path):
     result = await lifecycle.run(agent_process=agent_process)
 
     assert result is lifecycle._session_state
-    assert user_task.status == "compacting"
+    assert user_task.status == "done"
     assert lifecycle._session_state.next_task is user_task
     assert lifecycle._session_state.next_task_id_to_run == user_task.id
-    assert db.get_managed_task(user_task.id).status == "compacting"
+    assert db.get_managed_task(user_task.id).status == "done"
 
 
 @pytest.mark.asyncio
@@ -672,6 +672,7 @@ async def test_user_task_lifecycle_run_syncs_created_todo_task(tmp_path):
     assert todos[0].start_message_id == 1
     assert len(tool_calls) == 1
     assert lifecycle._session_state.next_task_id_to_run == todos[0].id
+    assert lifecycle._session_state.next_task is user_task.children[0]
 
 
 def test_user_task_lifecycle_compact_tools_do_not_require_begin_step():
