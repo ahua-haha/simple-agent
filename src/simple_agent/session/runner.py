@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import time
-from typing import TYPE_CHECKING, Callable, cast
+from typing import TYPE_CHECKING, Callable
 
 from pi.ai.types import TextContent, UserMessage
 
@@ -50,7 +50,10 @@ class SessionRunner:
         self._cancel_event = cancel_event
         self._last_error = None
         self._user_task = None
-        self._lifecycles = {}
+        self._lifecycles = {
+            "user_task": UserTaskLifecycle(),
+            "todo": TodoTaskLifecycle(),
+        }
         self._runtime = TaskLifecycleRuntime(messages=[])
         self._user_paused = False
 
@@ -68,7 +71,6 @@ class SessionRunner:
         with self._db.create_session() as session:
             self._load_runtime(session=session)
             self._user_task = None
-            self._lifecycles = {}
             metadata = self._db.get_runner_state_metadata(self._session_id, session=session)
             if metadata is None:
                 self._last_error = None
@@ -144,7 +146,7 @@ class SessionRunner:
         task = self._resolve_next_task()
         if task is None:
             raise RuntimeError("No active task")
-        lifecycle = self._lifecycle_for_task(task)
+        lifecycle = self.get_lifecycle(task)
         lifecycle.set_data(self._runtime)
         try:
             result = await lifecycle.run(
@@ -169,21 +171,11 @@ class SessionRunner:
         self._runtime.next_task = task
         return task
 
-    def _lifecycle_for_task(self, task: ManagedTask) -> BaseTaskLifecycle:
-        if task.kind == "user_task":
-            self._user_task = cast(UserTask, task)
-            lifecycle = self._lifecycles.get("user_task")
-            if lifecycle is None:
-                lifecycle = UserTaskLifecycle()
-                self._lifecycles["user_task"] = lifecycle
-            return lifecycle
-        if task.kind == "todo":
-            lifecycle = self._lifecycles.get("todo")
-            if lifecycle is None:
-                lifecycle = TodoTaskLifecycle()
-                self._lifecycles["todo"] = lifecycle
-            return lifecycle
-        raise RuntimeError("Tool-call tasks do not have a lifecycle")
+    def get_lifecycle(self, task: ManagedTask) -> BaseTaskLifecycle:
+        lifecycle = self._lifecycles.get(task.kind)
+        if lifecycle is None:
+            raise RuntimeError(f"{task.kind} lifecycle is not registered")
+        return lifecycle
 
     def build_tree(self, task_id: int) -> ManagedTask | None:
         with self._db.create_session() as session:
