@@ -303,6 +303,38 @@ def test_lifecycle_allocates_task_id_from_session_state_context():
     assert session_state.next_task_id_to_allocate == 8
 
 
+def test_session_state_creates_tool_call_records_and_tasks():
+    session_state = SessionState(
+        messages=[],
+        next_task_id_to_allocate=10,
+        next_tool_call_log_id=7,
+    )
+    parent_task = UserTask(id=1, title="Build feature")
+    tool_call = ToolCall(id="call_1", name="ls", arguments={"path": "."})
+    assistant_message = AssistantMessage(role="assistant", content=[tool_call])
+    tool_result = ToolResultMessage(
+        toolCallId="call_1",
+        toolName="ls",
+        content=[TextContent(text="files")],
+    )
+
+    records, tasks = session_state.create_tool_call_record_task_entries(
+        assistant_message=assistant_message,
+        tool_result_messages=[tool_result],
+        parent_task=parent_task,
+    )
+
+    assert records == [(7, tool_call, tool_result)]
+    assert len(tasks) == 1
+    assert tasks[0].id == 10
+    assert tasks[0].title == "Tool call 7"
+    assert tasks[0].status == "done"
+    assert tasks[0].parent_id == 1
+    assert tasks[0].tool_call_log_id == 7
+    assert session_state.next_tool_call_log_id == 8
+    assert session_state.next_task_id_to_allocate == 11
+
+
 def test_lifecycle_appends_messages_in_memory_until_explicit_sync(tmp_path):
     db = _make_db(tmp_path)
     lifecycle = _user_lifecycle(UserTask(id=1, title="Build feature"))
