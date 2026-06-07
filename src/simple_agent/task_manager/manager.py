@@ -124,8 +124,6 @@ class TaskManager:
         tool_call_threshold: int,
     ) -> TaskManagerRunResult:
         lifecycle = self._run_lifecycle()
-        if not isinstance(lifecycle, UserTaskLifecycle):
-            raise TaskManagerError("Only user task lifecycle run is implemented")
         if not lifecycle.messages:
             self._load_lifecycle_runtime(lifecycle, session_id)
         result = await lifecycle.run(

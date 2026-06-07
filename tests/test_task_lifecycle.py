@@ -418,16 +418,15 @@ async def test_user_task_lifecycle_run_executes_tools_and_returns_current_task(t
     assert db.list_runner_tool_calls("session_a") == []
 
 
-def test_user_task_lifecycle_begins_compaction_only_when_done():
+def test_user_task_lifecycle_compact_tools_do_not_require_begin_step():
     user_task = UserTask(id=1, title="Build feature", status="active")
     user_task.children.append(TodoTask(id=2, parent_id=1, title="Inspect files", status="done"))
     lifecycle = UserTaskLifecycle(user_task, allocate_task_id=lambda: 3)
 
-    assert lifecycle.begin_compaction() is False
+    result = lifecycle.create_compacted_user_task(description="Summary")
 
-    user_task.status = "done"
-
-    assert lifecycle.begin_compaction() is True
+    assert result is user_task
+    assert user_task.result == "Summary"
 
 
 def test_user_task_lifecycle_compaction_result_uses_user_task_boundaries():
@@ -448,7 +447,6 @@ def test_user_task_lifecycle_compaction_result_uses_user_task_boundaries():
         children=[ToolCallTask(id=2, parent_id=1, title="Tool call 7", status="done", tool_call_log_id=7)],
     )
     lifecycle = UserTaskLifecycle(user_task, allocate_task_id=allocate_task_id)
-    assert lifecycle.begin_compaction() is True
 
     result = lifecycle.create_compacted_user_task(description="Summarized work")
     lifecycle.record_compacted_tool_call(tool_call_log_id=7)
@@ -489,7 +487,6 @@ def test_user_task_lifecycle_compaction_sync_replaces_user_task_children(tmp_pat
         return task_id
 
     lifecycle = UserTaskLifecycle(user_task, allocate_task_id=allocate_task_id)
-    assert lifecycle.begin_compaction() is True
     lifecycle.create_compacted_user_task(description="Whole task summary")
     lifecycle.record_compacted_tool_call(tool_call_log_id=10)
     lifecycle.finish_compacted_user_task()
@@ -516,7 +513,6 @@ def test_user_task_lifecycle_compaction_requires_finished_compacted_user_task():
         children=[ToolCallTask(id=2, parent_id=1, title="Tool call 1", status="done", tool_call_log_id=1)],
     )
     lifecycle = UserTaskLifecycle(user_task, allocate_task_id=lambda: 3)
-    assert lifecycle.begin_compaction() is True
 
     with pytest.raises(RuntimeError, match="No compacted user task result"):
         lifecycle.compaction_result()
@@ -533,15 +529,16 @@ async def test_user_task_lifecycle_handle_compact_runs_loop_and_returns_compacti
         children=[ToolCallTask(id=2, parent_id=1, title="Tool call 7", status="done", tool_call_log_id=7)],
     )
     lifecycle = UserTaskLifecycle(user_task, allocate_task_id=lambda: 10)
-    assert lifecycle.begin_compaction() is True
     agent_process = FakeCompactAgentProcess()
     original_messages = [
         UserMessage(content=[TextContent(text="Build feature")], timestamp=1),
+        AssistantMessage(role="assistant", content=[TextContent(text="work")]),
+        AssistantMessage(role="assistant", content=[TextContent(text="done")]),
     ]
     lifecycle.load_messages([
         MessageEntry(id=index + 1, message=message)
         for index, message in enumerate(original_messages)
-    ], next_message_id=2)
+    ], next_message_id=4)
 
     result = await lifecycle.handle_compact(
         agent_process=agent_process,
@@ -558,12 +555,10 @@ async def test_user_task_lifecycle_handle_compact_runs_loop_and_returns_compacti
     ]
     assert agent_process.calls[0]["messages"][:-1] == original_messages
     assert "Runtime instruction for compacting phase" in agent_process.calls[0]["messages"][-1].content[0].text
-    assert len(result.compact_messages) == 7
-    assert result.start_message_id == 1
-    assert result.end_message_id == 3
-    assert result.compacted_messages == [
-        AssistantMessage(
-            role="assistant",
-            content=[TextContent(text="Compacted user task: Summarized work\nUseful tool calls: [7]")],
-        )
-    ]
+    assert result.next_action == "wait_user_input"
+    assert result.next_task is None
+    assert [entry.id for entry in lifecycle.messages] == [4]
+    assert lifecycle.messages[0].message == AssistantMessage(
+        role="assistant",
+        content=[TextContent(text="Compacted user task: Summarized work\nUseful tool calls: [7]")],
+    )

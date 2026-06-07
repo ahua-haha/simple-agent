@@ -13,6 +13,7 @@ from simple_agent.db.db import Database
 from simple_agent.run_log import runtime_logger
 from simple_agent.session.runner import SessionRunner
 from simple_agent.task_manager import TaskManager
+from simple_agent.task_manager.lifecycle import TaskLifecycleError
 from simple_agent.task_manager.models import ToolCallTask
 
 
@@ -1053,15 +1054,12 @@ async def test_handle_compact_routes_error_assistant_message_to_handle_error(tmp
 
     runner.handle_error = fail_if_handled
 
-    next_action = await runner.handle_compact("Build feature")
+    with pytest.raises(TaskLifecycleError, match="HTTP 400 Bad Request"):
+        await runner.handle_compact("Build feature")
     runner.handle_error = handle_error
-    routed_action = await runner.route_next_action(next_action, "Build feature")
 
     metadata = db.get_runner_state_metadata("session_a")
-    assert next_action == "handle_error"
-    assert routed_action == "wait_user_input"
-    assert metadata.next_action == "wait_user_input"
-    assert metadata.last_error == "HTTP 400 Bad Request"
+    assert metadata is None
     assert len(compact_agent.calls) == 1
 
 
