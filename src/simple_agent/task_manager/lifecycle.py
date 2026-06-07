@@ -186,12 +186,28 @@ class SessionState:
         for task in tasks:
             database.upsert_managed_task(task, session=session)
 
+    def replace_messages_in_database(self, *, session: SqlSession) -> None:
+        database = self._require_database()
+        session_id = self._require_session_id()
+        database.replace_runner_messages(
+            session_id,
+            [entry.message for entry in self.messages],
+            ids=[entry.id for entry in self.messages],
+            session=session,
+        )
+
+    def replace_task_tree_in_database(
+        self,
+        *,
+        task: ManagedTask,
+        session: SqlSession,
+    ) -> None:
+        database = self._require_database()
+        database.replace_managed_task_tree(task, session=session)
+
     def set_next_task(self, task: ManagedTask | None, *, keep_instance: bool = False) -> None:
         self.next_task_id_to_run = task.id if task is not None else None
         self.next_task = task if task is not None and keep_instance else None
-
-    def clear_next_task(self) -> None:
-        self.set_next_task(None)
 
     def _message_index(self, message_id: int) -> int:
         for index, entry in enumerate(self.messages):
@@ -473,7 +489,8 @@ class UserTaskLifecycle(BaseTaskLifecycle):
         if not self.task.children:
             if cancel_event is not None:
                 cancel_event.clear()
-            self._session_state.clear_next_task()
+            self._session_state.next_task_id_to_run = self.task.parent_id
+            self._session_state.next_task = None
             return self._session_state
 
         self._compacted_tool_calls = []
@@ -520,8 +537,14 @@ class UserTaskLifecycle(BaseTaskLifecycle):
             cancel_event.clear()
 
         # TODO: determine next action after compacting.
-        # TODO: sync compacted messages and compacted task data to database here.
-        self._session_state.clear_next_task()
+        self.task.children = list(self._compacted_tool_calls)
+        self.task.touch()
+        self._session_state.next_task_id_to_run = self.task.parent_id
+        self._session_state.next_task = None
+        with self._session_state.create_database_session() as session:
+            self._session_state.replace_messages_in_database(session=session)
+            self._session_state.replace_task_tree_in_database(task=self.task, session=session)
+            session.commit()
         return self._session_state
 
     def create_compact_tools(self) -> list[AgentTool]:
@@ -594,13 +617,17 @@ class UserTaskLifecycle(BaseTaskLifecycle):
         self._compacted_tool_calls.append(tool_call_task)
 
     def finish_compacted_user_task(self) -> UserTask:
-        self._require_compacted_result()
+        if self.task.result is None:
+            raise TaskLifecycleError("No compacted user task result")
         self._compacted_user_task_finished = True
         self.task.touch()
         return self.task
 
     def compaction_result(self) -> tuple[int, int, list[Any]]:
-        self._require_finished_compacted_user_task()
+        if self.task.result is None:
+            raise TaskLifecycleError("No compacted user task result")
+        if not self._compacted_user_task_finished:
+            raise TaskLifecycleError("Compacted user task is not finished")
         if self.task.start_message_id is None or self.task.end_message_id is None:
             raise TaskLifecycleError("Compact scope is missing message boundaries")
         tool_refs = [
@@ -617,27 +644,6 @@ class UserTaskLifecycle(BaseTaskLifecycle):
             self.task.end_message_id,
             [AssistantMessage(role="assistant", content=[TextContent(text=text)])],
         )
-
-    def sync_compaction(self, database: Any, session: Any) -> UserTask:
-        self._require_finished_compacted_user_task()
-        self.task.children = list(self._compacted_tool_calls)
-        self.task.touch()
-        database.replace_managed_task_tree(self.task, session=session)
-        self._clear_compaction()
-        return self.task
-
-    def _require_compacted_result(self) -> None:
-        if self.task.result is None:
-            raise TaskLifecycleError("No compacted user task result")
-
-    def _require_finished_compacted_user_task(self) -> None:
-        self._require_compacted_result()
-        if not self._compacted_user_task_finished:
-            raise TaskLifecycleError("Compacted user task is not finished")
-
-    def _clear_compaction(self) -> None:
-        self._compacted_tool_calls = []
-        self._compacted_user_task_finished = False
 
     def create_finish_user_task_tool(self) -> AgentTool:
         tool = AgentTool(

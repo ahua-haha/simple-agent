@@ -493,6 +493,47 @@ def test_lifecycle_replaces_message_range_and_syncs_explicit_message_list(tmp_pa
     assert [message.content[0].text for message in db.list_runner_messages("session_a")] == ["one", "compact"]
 
 
+def test_session_state_replaces_messages_in_database(tmp_path):
+    db = _make_db(tmp_path)
+    first = MessageEntry(id=1, message=AssistantMessage(role="assistant", content=[TextContent(text="one")]))
+    second = MessageEntry(id=2, message=AssistantMessage(role="assistant", content=[TextContent(text="two")]))
+    db.insert_runner_message("session_a", first.message, id=first.id)
+    db.insert_runner_message("session_a", second.message, id=second.id)
+    session_state = SessionState(
+        messages=[
+            MessageEntry(id=3, message=AssistantMessage(role="assistant", content=[TextContent(text="compact")])),
+        ],
+        database=db,
+        session_id="session_a",
+    )
+
+    with session_state.create_database_session() as session:
+        session_state.replace_messages_in_database(session=session)
+        session.commit()
+
+    entries = db.list_runner_message_entries("session_a")
+    assert [entry_id for entry_id, _message in entries] == [3]
+    assert [message.content[0].text for _entry_id, message in entries] == ["compact"]
+
+
+def test_session_state_replaces_task_tree_in_database(tmp_path):
+    db = _make_db(tmp_path)
+    user_task = UserTask(id=1, title="Build feature")
+    stale_todo = TodoTask(id=2, parent_id=1, title="Old todo")
+    replacement_tool = ToolCallTask(id=3, parent_id=1, title="Tool call 7", status="done", tool_call_log_id=7)
+    user_task.children = [replacement_tool]
+    db.upsert_managed_task(user_task)
+    db.upsert_managed_task(stale_todo)
+    session_state = SessionState(messages=[], database=db, session_id="session_a")
+
+    with session_state.create_database_session() as session:
+        session_state.replace_task_tree_in_database(task=user_task, session=session)
+        session.commit()
+
+    assert db.get_managed_task(stale_todo.id) is None
+    assert [child.tool_call_log_id for child in db.list_managed_task_children(user_task.id)] == [7]
+
+
 def test_lifecycle_syncs_explicit_tool_call_records_without_buffer(tmp_path):
     db = _make_db(tmp_path)
     session_state = SessionState(messages=[], database=db, session_id="session_a")
@@ -723,43 +764,6 @@ def test_user_task_lifecycle_compaction_result_uses_user_task_boundaries():
     ]
 
 
-def test_user_task_lifecycle_compaction_sync_replaces_user_task_children(tmp_path):
-    db = _make_db(tmp_path)
-    user_task = UserTask(id=1, title="Build feature", status="done", start_message_id=1, end_message_id=5)
-    first_tool = ToolCallTask(id=2, parent_id=1, title="Tool call 10", status="done", tool_call_log_id=10)
-    todo = TodoTask(id=3, parent_id=1, title="Inspect files", status="done", result="Done")
-    user_task.children = [first_tool, todo]
-    with db.create_session() as session:
-        db.upsert_managed_task(user_task, session=session)
-        db.upsert_managed_task(first_tool, session=session)
-        db.upsert_managed_task(todo, session=session)
-        session.commit()
-
-    next_id = 20
-
-    def allocate_task_id():
-        nonlocal next_id
-        task_id = next_id
-        next_id += 1
-        return task_id
-
-    lifecycle = _user_lifecycle(user_task, allocate_task_id=allocate_task_id)
-    lifecycle.create_compacted_user_task(description="Whole task summary")
-    lifecycle.record_compacted_tool_call(tool_call_log_id=10)
-    lifecycle.finish_compacted_user_task()
-
-    with db.create_session() as session:
-        compacted = lifecycle.sync_compaction(db, session)
-        session.commit()
-
-    assert compacted is user_task
-    assert db.get_managed_task(20) is not None
-    assert db.get_managed_task(todo.id) is None
-    loaded_children = db.list_managed_task_children(user_task.id)
-    assert [child.tool_call_log_id for child in loaded_children] == [10]
-    assert db.get_managed_task(user_task.id).result == "Whole task summary"
-
-
 def test_user_task_lifecycle_compaction_requires_finished_compacted_user_task():
     user_task = UserTask(
         id=1,
@@ -776,22 +780,39 @@ def test_user_task_lifecycle_compaction_requires_finished_compacted_user_task():
 
 
 @pytest.mark.asyncio
-async def test_user_task_lifecycle_handle_compact_runs_loop_and_returns_state():
+async def test_user_task_lifecycle_handle_compact_runs_loop_and_returns_state(tmp_path):
+    db = _make_db(tmp_path)
     user_task = UserTask(
         id=1,
+        parent_id=99,
         title="Build feature",
         status="done",
         start_message_id=1,
         end_message_id=3,
-        children=[ToolCallTask(id=2, parent_id=1, title="Tool call 7", status="done", tool_call_log_id=7)],
+        children=[
+            ToolCallTask(id=2, parent_id=1, title="Tool call 7", status="done", tool_call_log_id=7),
+            TodoTask(id=3, parent_id=1, title="Old todo", status="done"),
+        ],
     )
-    lifecycle = _user_lifecycle(user_task, allocate_task_id=lambda: 10)
+    session_state = SessionState(
+        messages=[],
+        database=db,
+        session_id="session_a",
+        next_task_id_to_allocate=10,
+    )
+    lifecycle = _user_lifecycle(user_task, session_state=session_state)
     agent_process = FakeCompactAgentProcess()
     original_messages = [
         UserMessage(content=[TextContent(text="Build feature")], timestamp=1),
         AssistantMessage(role="assistant", content=[TextContent(text="work")]),
         AssistantMessage(role="assistant", content=[TextContent(text="done")]),
     ]
+    with db.create_session() as session:
+        db.upsert_managed_task(user_task, session=session)
+        for child in user_task.children:
+            db.upsert_managed_task(child, session=session)
+        db.replace_runner_messages("session_a", original_messages, ids=[1, 2, 3], session=session)
+        session.commit()
     lifecycle._session_state.messages = [
         MessageEntry(id=index + 1, message=message)
         for index, message in enumerate(original_messages)
@@ -815,9 +836,38 @@ async def test_user_task_lifecycle_handle_compact_runs_loop_and_returns_state():
     assert "Runtime instruction for compacting phase" in agent_process.calls[0]["messages"][-1].content[0].text
     assert result is lifecycle._session_state
     assert lifecycle._session_state.next_task is None
-    assert lifecycle._session_state.next_task_id_to_run is None
+    assert lifecycle._session_state.next_task_id_to_run == 99
     assert [entry.id for entry in lifecycle._session_state.messages] == [4]
     assert lifecycle._session_state.messages[0].message == AssistantMessage(
         role="assistant",
         content=[TextContent(text="Compacted user task: Summarized work\nUseful tool calls: [7]")],
     )
+    persisted_messages = db.list_runner_messages("session_a")
+    assert len(persisted_messages) == 1
+    assert persisted_messages[0] == lifecycle._session_state.messages[0].message
+    persisted_user_task = db.get_managed_task(user_task.id)
+    assert persisted_user_task.result == "Summarized work"
+    persisted_children = db.list_managed_task_children(user_task.id)
+    assert [child.tool_call_log_id for child in persisted_children] == [7]
+    assert db.get_managed_task(3) is None
+
+
+@pytest.mark.asyncio
+async def test_user_task_lifecycle_handle_compact_without_children_routes_to_parent():
+    user_task = UserTask(
+        id=1,
+        parent_id=99,
+        title="Build feature",
+        status="done",
+        start_message_id=1,
+        end_message_id=2,
+    )
+    lifecycle = _user_lifecycle(user_task)
+    agent_process = FakeCompactAgentProcess()
+
+    result = await lifecycle.handle_compact(agent_process=agent_process)
+
+    assert result is lifecycle._session_state
+    assert lifecycle._session_state.next_task is None
+    assert lifecycle._session_state.next_task_id_to_run == 99
+    assert agent_process.calls == []
