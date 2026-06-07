@@ -7,7 +7,7 @@ from simple_agent.message_store import MessageEntry
 from simple_agent.task_manager.lifecycle import (
     USER_TASK_COMPACT_SYSTEM_PROMPT,
     USER_TASK_SYSTEM_PROMPT,
-    TaskLifecycleRuntime,
+    SessionState,
     TodoTaskLifecycle,
     UserTaskLifecycle,
 )
@@ -22,15 +22,15 @@ def _user_lifecycle(
     task: UserTask,
     *,
     allocate_task_id=None,
-    runtime: TaskLifecycleRuntime | None = None,
+    session_state: SessionState | None = None,
 ) -> UserTaskLifecycle:
-    runtime = runtime or TaskLifecycleRuntime(messages=[])
-    runtime.next_task = task
-    runtime.next_task_id_to_run = task.id
-    if allocate_task_id is not None and runtime.next_task_id_to_allocate is None:
-        runtime.next_task_id_to_allocate = allocate_task_id()
+    session_state = session_state or SessionState(messages=[])
+    session_state.next_task = task
+    session_state.next_task_id_to_run = task.id
+    if allocate_task_id is not None and session_state.next_task_id_to_allocate is None:
+        session_state.next_task_id_to_allocate = allocate_task_id()
     lifecycle = UserTaskLifecycle()
-    lifecycle.set_data(runtime)
+    lifecycle.set_data(session_state)
     return lifecycle
 
 
@@ -38,15 +38,15 @@ def _todo_lifecycle(
     task: TodoTask,
     *,
     allocate_task_id=None,
-    runtime: TaskLifecycleRuntime | None = None,
+    session_state: SessionState | None = None,
 ) -> TodoTaskLifecycle:
-    runtime = runtime or TaskLifecycleRuntime(messages=[])
-    runtime.next_task = task
-    runtime.next_task_id_to_run = task.id
-    if allocate_task_id is not None and runtime.next_task_id_to_allocate is None:
-        runtime.next_task_id_to_allocate = allocate_task_id()
+    session_state = session_state or SessionState(messages=[])
+    session_state.next_task = task
+    session_state.next_task_id_to_run = task.id
+    if allocate_task_id is not None and session_state.next_task_id_to_allocate is None:
+        session_state.next_task_id_to_allocate = allocate_task_id()
     lifecycle = TodoTaskLifecycle()
-    lifecycle.set_data(runtime)
+    lifecycle.set_data(session_state)
     return lifecycle
 
 
@@ -282,25 +282,25 @@ def test_lifecycle_tracks_next_task_transition():
 
     todo = user_lifecycle.create_todo_task(title="Inspect files")
 
-    assert user_lifecycle._runtime.next_task_id_to_run == todo.id
-    assert user_lifecycle._runtime.next_task is todo
+    assert user_lifecycle._session_state.next_task_id_to_run == todo.id
+    assert user_lifecycle._session_state.next_task is todo
 
     todo_lifecycle = _todo_lifecycle(todo)
     todo_lifecycle.finish_task(result="Done")
 
-    assert todo_lifecycle._runtime.next_task_id_to_run == user_task.id
-    assert todo_lifecycle._runtime.next_task is None
+    assert todo_lifecycle._session_state.next_task_id_to_run == user_task.id
+    assert todo_lifecycle._session_state.next_task is None
 
 
-def test_lifecycle_allocates_task_id_from_runtime_context():
-    runtime = TaskLifecycleRuntime(messages=[], next_task_id_to_allocate=7)
+def test_lifecycle_allocates_task_id_from_session_state_context():
+    session_state = SessionState(messages=[], next_task_id_to_allocate=7)
     user_task = UserTask(id=1, title="Build feature")
-    lifecycle = _user_lifecycle(user_task, runtime=runtime)
+    lifecycle = _user_lifecycle(user_task, session_state=session_state)
 
     todo = lifecycle.create_todo_task(title="Inspect files")
 
     assert todo.id == 7
-    assert runtime.next_task_id_to_allocate == 8
+    assert session_state.next_task_id_to_allocate == 8
 
 
 def test_lifecycle_appends_messages_in_memory_until_explicit_sync(tmp_path):

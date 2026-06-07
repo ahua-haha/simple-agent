@@ -54,7 +54,7 @@ class TaskLifecycleRunResult:
 
 
 @dataclass
-class TaskLifecycleRuntime:
+class SessionState:
     messages: list[MessageEntry]
     next_message_id: int = 1
     next_tool_call_log_id: int = 0
@@ -67,41 +67,41 @@ class BaseTaskLifecycle:
     def clear_data(self) -> None:
         self.current_assistant_message_id = None
 
-    def set_data(self, runtime: TaskLifecycleRuntime) -> None:
-        self._runtime = runtime
+    def set_data(self, session_state: SessionState) -> None:
+        self._session_state = session_state
         self.current_assistant_message_id: int | None = None
         raise NotImplementedError(f"{type(self).__name__}.set_data is not implemented")
 
     @property
     def messages(self) -> list[MessageEntry]:
-        return self._runtime.messages
+        return self._session_state.messages
 
     @messages.setter
     def messages(self, value: list[MessageEntry]) -> None:
-        self._runtime.messages = value
+        self._session_state.messages = value
 
     @property
     def next_message_id(self) -> int:
-        return self._runtime.next_message_id
+        return self._session_state.next_message_id
 
     @next_message_id.setter
     def next_message_id(self, value: int) -> None:
-        self._runtime.next_message_id = value
+        self._session_state.next_message_id = value
 
     @property
     def next_tool_call_log_id(self) -> int:
-        return self._runtime.next_tool_call_log_id
+        return self._session_state.next_tool_call_log_id
 
     @next_tool_call_log_id.setter
     def next_tool_call_log_id(self, value: int) -> None:
-        self._runtime.next_tool_call_log_id = value
+        self._session_state.next_tool_call_log_id = value
 
     def allocate_task_id(self) -> int:
-        if self._runtime.next_task_id_to_allocate is not None:
-            task_id = self._runtime.next_task_id_to_allocate
-            self._runtime.next_task_id_to_allocate += 1
+        if self._session_state.next_task_id_to_allocate is not None:
+            task_id = self._session_state.next_task_id_to_allocate
+            self._session_state.next_task_id_to_allocate += 1
             return task_id
-        raise TaskLifecycleError("Task lifecycle runtime is missing allocation state")
+        raise TaskLifecycleError("Session state is missing task allocation state")
 
     async def run(
         self,
@@ -129,8 +129,8 @@ class BaseTaskLifecycle:
         return tool_call_log_id
 
     def set_next_task(self, task: ManagedTask | None, *, task_instance: bool = False) -> None:
-        self._runtime.next_task_id_to_run = task.id if task is not None else None
-        self._runtime.next_task = task if task_instance else None
+        self._session_state.next_task_id_to_run = task.id if task is not None else None
+        self._session_state.next_task = task if task_instance else None
 
     def message_values(self) -> list[Any]:
         return [entry.message for entry in self.messages]
@@ -244,12 +244,12 @@ class BaseTaskLifecycle:
 
 
 class UserTaskLifecycle(BaseTaskLifecycle):
-    def set_data(self, runtime: TaskLifecycleRuntime) -> None:
-        self._runtime = runtime
+    def set_data(self, session_state: SessionState) -> None:
+        self._session_state = session_state
         self.current_assistant_message_id = None
-        task = self._runtime.next_task
+        task = self._session_state.next_task
         if task is None:
-            raise TaskLifecycleError("Task lifecycle runtime has no next task")
+            raise TaskLifecycleError("Session state has no next task")
         if task.kind != "user_task":
             raise TaskLifecycleError("Active lifecycle task is not a user task")
         self.task = cast(UserTask, task)
@@ -328,7 +328,7 @@ class UserTaskLifecycle(BaseTaskLifecycle):
         )
 
     def _next_task_after_turn(self, task: UserTask) -> ManagedTask | None:
-        next_task = _find_task(task, self._runtime.next_task_id_to_run)
+        next_task = _find_task(task, self._session_state.next_task_id_to_run)
         if next_task is not None:
             return next_task
         if task.status == "active":
@@ -694,12 +694,12 @@ class UserTaskLifecycle(BaseTaskLifecycle):
 
 
 class TodoTaskLifecycle(BaseTaskLifecycle):
-    def set_data(self, runtime: TaskLifecycleRuntime) -> None:
-        self._runtime = runtime
+    def set_data(self, session_state: SessionState) -> None:
+        self._session_state = session_state
         self.current_assistant_message_id = None
-        task = self._runtime.next_task
+        task = self._session_state.next_task
         if task is None:
-            raise TaskLifecycleError("Task lifecycle runtime has no next task")
+            raise TaskLifecycleError("Session state has no next task")
         if task.kind != "todo":
             raise TaskLifecycleError("Active lifecycle task is not a todo task")
         self.task = cast(TodoTask, task)
@@ -754,8 +754,8 @@ class TodoTaskLifecycle(BaseTaskLifecycle):
             self.set_next_task(self.user_task)
             return
         task = self._require_todo_task_data()
-        self._runtime.next_task_id_to_run = task.parent_id
-        self._runtime.next_task = None
+        self._session_state.next_task_id_to_run = task.parent_id
+        self._session_state.next_task = None
 
     def _require_todo_task_data(self) -> TodoTask:
         if self.task is None:

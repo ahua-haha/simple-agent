@@ -11,7 +11,7 @@ from pi.ai.types import TextContent, UserMessage
 from simple_agent.message_store import MessageEntry
 from simple_agent.task_manager.lifecycle import (
     BaseTaskLifecycle,
-    TaskLifecycleRuntime,
+    SessionState,
     TodoTaskLifecycle,
     UserTaskLifecycle,
 )
@@ -33,7 +33,7 @@ class SessionRunner:
     _last_error: str | None
     _user_task: UserTask | None
     _lifecycles: dict[str, BaseTaskLifecycle]
-    _runtime: TaskLifecycleRuntime
+    _session_state: SessionState
     _user_paused: bool
 
     def __init__(
@@ -54,7 +54,7 @@ class SessionRunner:
             "user_task": UserTaskLifecycle(),
             "todo": TodoTaskLifecycle(),
         }
-        self._runtime = TaskLifecycleRuntime(messages=[])
+        self._session_state = SessionState(messages=[])
         self._user_paused = False
 
     def subscribe(self, callback: Callable) -> None:
@@ -69,7 +69,7 @@ class SessionRunner:
 
     def load(self) -> None:
         with self._db.create_session() as session:
-            self._load_runtime(session=session)
+            self._load_session_state(session=session)
             self._user_task = None
             metadata = self._db.get_runner_state_metadata(self._session_id, session=session)
             if metadata is None:
@@ -94,7 +94,7 @@ class SessionRunner:
         self.load()
         self.run_input_transition(user_input)
 
-        while self._runtime.next_task is not None:
+        while self._session_state.next_task is not None:
             if self._user_paused:
                 break
             await self.run_active_lifecycle()
@@ -107,7 +107,7 @@ class SessionRunner:
     def run_input_transition(self, user_input: str | None) -> None:
         if user_input is None:
             return
-        if self._runtime.next_task_id_to_run is not None or self._runtime.next_task is not None:
+        if self._session_state.next_task_id_to_run is not None or self._session_state.next_task is not None:
             # TODO: finish or interrupt existing active tasks before accepting
             # a new user task.
             return
@@ -117,11 +117,11 @@ class SessionRunner:
             timestamp=int(time.time() * 1000),
         )
         message_entry = MessageEntry(
-            id=self._runtime.next_message_id,
+            id=self._session_state.next_message_id,
             message=user_message,
         )
-        self._runtime.next_message_id += 1
-        self._runtime.messages.append(message_entry)
+        self._session_state.next_message_id += 1
+        self._session_state.messages.append(message_entry)
 
         task = UserTask(
             id=self.allocate_task_id(),
@@ -129,8 +129,8 @@ class SessionRunner:
             start_message_id=message_entry.id,
         )
         self._user_task = task
-        self._runtime.next_task_id_to_run = task.id
-        self._runtime.next_task = task
+        self._session_state.next_task_id_to_run = task.id
+        self._session_state.next_task = task
         self._last_error = None
 
         # TODO: sync the user input transition data to the session database
@@ -147,7 +147,7 @@ class SessionRunner:
         if task is None:
             raise RuntimeError("No active task")
         lifecycle = self.get_lifecycle(task)
-        lifecycle.set_data(self._runtime)
+        lifecycle.set_data(self._session_state)
         try:
             result = await lifecycle.run(
                 agent_process=self._agent_process,
@@ -159,16 +159,16 @@ class SessionRunner:
         return result
 
     def _resolve_next_task(self) -> ManagedTask | None:
-        next_task_id = self._runtime.next_task_id_to_run
+        next_task_id = self._session_state.next_task_id_to_run
         if next_task_id is None:
-            self._runtime.next_task = None
+            self._session_state.next_task = None
             return None
-        task = self._runtime.next_task
+        task = self._session_state.next_task
         if task is None or task.id != next_task_id:
             task = self.build_tree(next_task_id)
         if task is None:
             raise RuntimeError(f"Next task {next_task_id} is missing")
-        self._runtime.next_task = task
+        self._session_state.next_task = task
         return task
 
     def get_lifecycle(self, task: ManagedTask) -> BaseTaskLifecycle:
@@ -193,8 +193,8 @@ class SessionRunner:
             attach_children(root)
             return root
 
-    def _load_runtime(self, *, session: Session) -> None:
-        self._runtime = TaskLifecycleRuntime(
+    def _load_session_state(self, *, session: Session) -> None:
+        self._session_state = SessionState(
             messages=[
                 MessageEntry(id=message_id, message=message)
                 for message_id, message in self._db.list_runner_message_entries(self._session_id, session=session)
@@ -205,10 +205,10 @@ class SessionRunner:
         )
 
     def allocate_task_id(self) -> int:
-        if self._runtime.next_task_id_to_allocate is None:
-            raise RuntimeError("Task lifecycle runtime is missing allocation state")
-        task_id = self._runtime.next_task_id_to_allocate
-        self._runtime.next_task_id_to_allocate += 1
+        if self._session_state.next_task_id_to_allocate is None:
+            raise RuntimeError("Session state is missing task allocation state")
+        task_id = self._session_state.next_task_id_to_allocate
+        self._session_state.next_task_id_to_allocate += 1
         return task_id
 
     @property

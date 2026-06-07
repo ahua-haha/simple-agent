@@ -128,26 +128,26 @@ def test_session_runner_input_transition_creates_user_task_in_memory(tmp_path):
 
     runner.run_input_transition("Build feature")
 
-    task = runner._runtime.next_task
+    task = runner._session_state.next_task
     assert isinstance(task, UserTask)
     assert runner.user_task is task
     assert task.id == 1
     assert task.title == "Build feature"
     assert task.start_message_id == 1
-    assert runner._runtime.next_task_id_to_run == task.id
-    assert runner._runtime.next_task_id_to_allocate == 2
+    assert runner._session_state.next_task_id_to_run == task.id
+    assert runner._session_state.next_task_id_to_allocate == 2
 
-    assert len(runner._runtime.messages) == 1
-    message_entry = runner._runtime.messages[0]
+    assert len(runner._session_state.messages) == 1
+    message_entry = runner._session_state.messages[0]
     assert message_entry.id == 1
     assert isinstance(message_entry.message, UserMessage)
     assert message_entry.message.content[0].text == "Build feature"
-    assert runner._runtime.next_message_id == 2
+    assert runner._session_state.next_message_id == 2
 
     runner.run_input_transition("Second task")
 
-    assert runner._runtime.next_task is task
-    assert runner._runtime.next_task_id_to_run == task.id
-    assert [entry.message.content[0].text for entry in runner._runtime.messages] == ["Build feature"]
+    assert runner._session_state.next_task is task
+    assert runner._session_state.next_task_id_to_run == task.id
+    assert [entry.message.content[0].text for entry in runner._session_state.messages] == ["Build feature"]
     assert session._db.list_runner_messages(session.id) == []
     assert session._db.get_managed_task(task.id) is None
