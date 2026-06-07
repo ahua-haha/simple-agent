@@ -54,7 +54,11 @@ class SessionRunner:
             "user_task": UserTaskLifecycle(),
             "todo": TodoTaskLifecycle(),
         }
-        self._session_state = SessionState(messages=[])
+        self._session_state = SessionState(
+            messages=[],
+            session_id=self._session_id,
+            database=self._db,
+        )
         self._user_paused = False
 
     def subscribe(self, callback: Callable) -> None:
@@ -199,6 +203,8 @@ class SessionRunner:
                 MessageEntry(id=message_id, message=message)
                 for message_id, message in self._db.list_runner_message_entries(self._session_id, session=session)
             ],
+            session_id=self._session_id,
+            database=self._db,
             next_message_id=self._db.next_runner_message_id(session=session),
             next_tool_call_log_id=self._db.next_runner_tool_call_id(self._session_id, session=session),
             next_task_id_to_allocate=self._db.next_managed_task_id(session=session),

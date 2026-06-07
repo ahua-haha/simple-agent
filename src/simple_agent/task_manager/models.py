@@ -8,7 +8,7 @@ from typing import Literal
 from pydantic import BaseModel, Field
 
 TaskKind = Literal["user_task", "todo", "tool_call"]
-TaskStatus = Literal["active", "done", "error"]
+TaskStatus = Literal["active", "compacting", "done", "error"]
 
 
 class BaseTask(BaseModel):

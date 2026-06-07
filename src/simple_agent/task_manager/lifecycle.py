@@ -18,11 +18,12 @@ from pi.ai.types import AssistantMessage, TextContent, ToolCall, ToolResultMessa
 from simple_agent.message_store import MessageEntry
 from simple_agent.task_manager.models import ManagedTask, TodoTask, ToolCallTask, UserTask
 from simple_agent.task_manager.review import TaskTreeReviewRenderer, ToolCallReview
-from simple_agent.token_estimation import estimate_messages_tokens
 from simple_agent.tool.common_tools import create_all_coding_tools
 
 if TYPE_CHECKING:
+    from simple_agent.db.db import Database
     from simple_agent.process.agent_process import AgentProcess
+    from sqlmodel import Session as SqlSession
 
 
 class TaskLifecycleError(RuntimeError):
@@ -39,13 +40,12 @@ USER_TASK_COMPACT_SYSTEM_PROMPT = """Compact the finished user task into one com
 Use only the compact tools. Set the compacted user task result, record useful
 tool-call log IDs, then finish the compacted user task."""
 
-USER_TASK_CONTEXT_TOKEN_THRESHOLD = 120_000
-USER_TASK_TOOL_CALL_THRESHOLD = 200
-
 
 @dataclass
 class SessionState:
     messages: list[MessageEntry]
+    session_id: str | None = None
+    database: Database | None = None
     next_message_id: int = 1
     next_tool_call_log_id: int = 0
     next_task_id_to_allocate: int | None = None
@@ -116,6 +116,54 @@ class SessionState:
             )
         return tool_call_records, tool_call_tasks
 
+    def create_database_session(self) -> SqlSession:
+        return self._require_database().create_session()
+
+    def append_messages_to_database(
+        self,
+        *,
+        messages: list[MessageEntry],
+        session: SqlSession,
+    ) -> None:
+        database = self._require_database()
+        session_id = self._require_session_id()
+        for message in messages:
+            database.insert_runner_message(
+                session_id,
+                message.message,
+                id=message.id,
+                session=session,
+            )
+
+    def append_tool_calls_to_database(
+        self,
+        *,
+        tool_calls: list[tuple[int, ToolCall | None, ToolResultMessage]],
+        session: SqlSession,
+    ) -> None:
+        database = self._require_database()
+        session_id = self._require_session_id()
+        for log_id, tool_call, tool_result in tool_calls:
+            database.insert_runner_tool_call(
+                id=log_id,
+                session_id=session_id,
+                tool_call_id=tool_result.tool_call_id,
+                tool_name=tool_result.tool_name,
+                tool_call_json=tool_call.model_dump_json() if tool_call is not None else "null",
+                tool_result_json=tool_result.model_dump_json(),
+                session=session,
+            )
+
+    def append_tasks_to_database(
+        self,
+        *,
+        tasks: list[ManagedTask],
+        session: SqlSession,
+    ) -> None:
+        database = self._require_database()
+        for task in tasks:
+            database.upsert_managed_task(task, session=session)
+
     def set_next_task(self, task: ManagedTask | None, *, keep_instance: bool = False) -> None:
         self.next_task_id_to_run = task.id if task is not None else None
         self.next_task = task if task is not None and keep_instance else None
@@ -128,6 +176,16 @@ class SessionState:
             if entry.id == message_id:
                 return index
         raise RuntimeError(f"Could not find message id {message_id}")
+
+    def _require_database(self) -> Database:
+        if self.database is None:
+            raise TaskLifecycleError("Session state is missing database")
+        return self.database
+
+    def _require_session_id(self) -> str:
+        if self.session_id is None:
+            raise TaskLifecycleError("Session state is missing session id")
+        return self.session_id
 
 
 class BaseTaskLifecycle:
@@ -386,7 +444,7 @@ class UserTaskLifecycle(BaseTaskLifecycle):
         agent_process: AgentProcess,
         cancel_event: asyncio.Event | None = None,
     ) -> SessionState:
-        if self.task.status == "done":
+        if self.task.status in {"compacting", "done"}:
             return await self.handle_compact(
                 agent_process=agent_process,
                 cancel_event=cancel_event,
@@ -397,30 +455,9 @@ class UserTaskLifecycle(BaseTaskLifecycle):
             cancel_event=cancel_event,
         )
 
-    def _next_task_after_turn(self, task: UserTask) -> ManagedTask | None:
-        next_task = _find_task(task, self._session_state.next_task_id_to_run)
-        if next_task is not None:
-            return next_task
-        if task.status == "active":
-            self._session_state.set_next_task(task, keep_instance=True)
-            return task
-        return None
-
-    def _check_thresholds(
-        self,
-        *,
-        task: UserTask,
-        cancel_event: asyncio.Event | None,
-    ) -> None:
-        context_tokens = estimate_messages_tokens(self._session_state.message_values())
-        tool_calls = _count_task_tree_tool_calls(task)
-        if (
-            context_tokens <= USER_TASK_CONTEXT_TOKEN_THRESHOLD
-            and tool_calls <= USER_TASK_TOOL_CALL_THRESHOLD
-        ):
-            return
-        if cancel_event is not None:
-            cancel_event.set()
+    def should_compact_after_turn(self) -> bool:
+        # TODO: implement compact trigger logic for completed user tasks.
+        return False
 
     async def run_one_turn(
         self,
@@ -450,6 +487,8 @@ class UserTaskLifecycle(BaseTaskLifecycle):
             message=assistant_message,
         )
         tool_results: list[ToolResultMessage] = []
+        tool_call_records: list[tuple[int, ToolCall | None, ToolResultMessage]] = []
+        tool_call_tasks: list[ToolCallTask] = []
         if _assistant_has_tool_calls(assistant_message):
             self.current_assistant_message_id = assistant_entry.id
             try:
@@ -460,7 +499,7 @@ class UserTaskLifecycle(BaseTaskLifecycle):
                 )
             finally:
                 self.current_assistant_message_id = None
-            _, tool_call_tasks = self._session_state.create_tool_call_record_task_entries(
+            tool_call_records, tool_call_tasks = self._session_state.create_tool_call_record_task_entries(
                 assistant_message=assistant_message,
                 tool_result_messages=tool_results,
                 parent_task=task,
@@ -476,24 +515,41 @@ class UserTaskLifecycle(BaseTaskLifecycle):
         new_messages = [assistant_entry, *tool_result_entries]
         self._session_state.append_messages(new_messages)
 
-        # TODO: replace this temporary block with lifecycle-owned transition
-        # logic for a completed normal turn.
         if task.status == "done":
-            pass
+            self._session_state.set_next_task(task, keep_instance=True)
         elif not _assistant_has_tool_calls(assistant_message):
             self.current_assistant_message_id = assistant_entry.id
             try:
-                self.finish_task()
+                if self.should_compact_after_turn():
+                    task.status = "compacting"
+                    task.end_message_id = assistant_entry.id
+                    task.touch()
+                    self._session_state.set_next_task(task, keep_instance=True)
+                else:
+                    self.finish_task()
+                    self._session_state.next_task_id_to_run = task.parent_id
+                    self._session_state.next_task = None
             finally:
                 self.current_assistant_message_id = None
         else:
-            self._check_thresholds(
-                task=task,
-                cancel_event=cancel_event,
-            )
-            self._next_task_after_turn(task)
+            if self._session_state.next_task is None and task.status == "active":
+                self._session_state.set_next_task(task, keep_instance=True)
 
-        # TODO: sync normal run messages, tool calls, and task data to database here.
+        tasks_to_sync: list[ManagedTask] = [task, *task.children]
+        with self._session_state.create_database_session() as session:
+            self._session_state.append_messages_to_database(
+                messages=new_messages,
+                session=session,
+            )
+            self._session_state.append_tool_calls_to_database(
+                tool_calls=tool_call_records,
+                session=session,
+            )
+            self._session_state.append_tasks_to_database(
+                tasks=tasks_to_sync,
+                session=session,
+            )
+            session.commit()
         return self._session_state
 
     def sync(self, database: Any, session: Any) -> None:
@@ -920,25 +976,6 @@ def _count_user_task_tool_calls_after_latest_todo(user_task: UserTask) -> int:
 
 def _count_tool_calls(tasks: list[ManagedTask]) -> int:
     return sum(1 for task in tasks if task.kind == "tool_call")
-
-
-def _count_task_tree_tool_calls(task: ManagedTask) -> int:
-    total = 1 if task.kind == "tool_call" else 0
-    for child in task.children:
-        total += _count_task_tree_tool_calls(child)
-    return total
-
-
-def _find_task(task: ManagedTask, task_id: int | None) -> ManagedTask | None:
-    if task_id is None:
-        return None
-    if task.id == task_id:
-        return task
-    for child in task.children:
-        found = _find_task(child, task_id)
-        if found is not None:
-            return found
-    return None
 
 
 def _assistant_has_tool_calls(message: AssistantMessage) -> bool:
