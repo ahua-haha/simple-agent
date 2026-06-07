@@ -5,12 +5,12 @@ from __future__ import annotations
 import tempfile
 
 import pytest
-from pi.ai.types import TextContent, ToolResultMessage
+from pi.ai.types import AssistantMessage, TextContent, ToolResultMessage
 
 from simple_agent.db.db import Database
 from simple_agent.task_manager import TaskManager, ToolCallReview
 from simple_agent.task_manager.lifecycle import TodoTaskLifecycle, UserTaskLifecycle
-from simple_agent.task_manager.models import TodoTask, UserTask
+from simple_agent.task_manager.models import TodoTask, ToolCallTask, UserTask
 
 
 def test_managed_task_defaults():
@@ -45,10 +45,12 @@ def _create_todo(
     *,
     start_message_id: int | None = None,
 ) -> TodoTask:
-    todo = manager.active_lifecycle_for_tools().create_todo_task(
-        title=title,
-        start_message_id=start_message_id,
-    )
+    lifecycle = manager.active_lifecycle_for_tools()
+    if start_message_id is not None:
+        lifecycle.current_assistant_message_id = start_message_id
+    todo = lifecycle.create_todo_task(title=title)
+    if start_message_id is not None:
+        lifecycle.current_assistant_message_id = None
     manager.refresh_active_task()
     return todo
 
@@ -59,10 +61,12 @@ def _finish_todo(
     *,
     end_message_id: int | None = None,
 ) -> TodoTask:
-    todo = manager.active_lifecycle_for_tools().finish_task(
-        result=result,
-        end_message_id=end_message_id,
-    )
+    lifecycle = manager.active_lifecycle_for_tools()
+    if end_message_id is not None:
+        lifecycle.current_assistant_message_id = end_message_id
+    todo = lifecycle.finish_task(result=result)
+    if end_message_id is not None:
+        lifecycle.current_assistant_message_id = None
     manager.refresh_active_task()
     return todo
 
@@ -82,7 +86,17 @@ def _error_todo(
 
 
 def _record_tool_call(manager: TaskManager, tool_call_log_id: int):
-    return manager.active_lifecycle_for_tools().record_tool_call(tool_call_log_id)
+    active_task = manager.active_lifecycle_for_tools().task
+    tool_call = ToolCallTask(
+        id=manager.allocate_task_id(),
+        title=f"Tool call {tool_call_log_id}",
+        status="done",
+        parent_id=active_task.id,
+        tool_call_log_id=tool_call_log_id,
+    )
+    active_task.children.append(tool_call)
+    active_task.touch()
+    return tool_call
 
 
 async def _run_compact_tools(
@@ -164,8 +178,11 @@ def test_user_task_sync_persists_task_and_direct_children_only():
     user_task = UserTask(id=1, title="Build feature")
     user_lifecycle = UserTaskLifecycle(user_task)
     todo = user_lifecycle.create_todo_task(task_id=2, title="Inspect files")
-    TodoTaskLifecycle(todo, user_task=user_task).append_tool_call_task(task_id=3, tool_call_log_id=7)
-    direct_tool_call = user_lifecycle.append_tool_call_task(task_id=4, tool_call_log_id=8)
+    todo.children.append(
+        ToolCallTask(id=3, parent_id=todo.id, title="Tool call 7", status="done", tool_call_log_id=7)
+    )
+    direct_tool_call = ToolCallTask(id=4, parent_id=user_task.id, title="Tool call 8", status="done", tool_call_log_id=8)
+    user_task.children.append(direct_tool_call)
 
     with db.create_session() as session:
         user_lifecycle.sync(db, session)
@@ -186,7 +203,8 @@ def test_todo_task_sync_persists_task_and_direct_tool_calls():
     db = _make_db()
     todo = TodoTask(id=2, parent_id=1, title="Inspect files")
     lifecycle = TodoTaskLifecycle(todo)
-    tool_call = lifecycle.append_tool_call_task(task_id=3, tool_call_log_id=7)
+    tool_call = ToolCallTask(id=3, parent_id=todo.id, title="Tool call 7", status="done", tool_call_log_id=7)
+    todo.children.append(tool_call)
 
     with db.create_session() as session:
         lifecycle.sync(db, session)
@@ -312,6 +330,8 @@ def test_task_manager_does_not_expose_lifecycle_mutation_wrappers():
     assert not hasattr(manager, "finish_task")
     assert not hasattr(manager, "error_task")
     assert not hasattr(manager, "record_tool_call")
+    assert not hasattr(manager, "record_turn_tool_calls")
+    assert not hasattr(manager, "set_current_assistant_message_id")
 
 
 def test_finish_todo_marks_done_and_clears_active_todo():
@@ -369,23 +389,23 @@ def test_task_tools_use_current_assistant_message_id_for_boundaries():
     manager = TaskManager(db)
     _load(manager, None)
     manager.create_user_task("Build feature")
-    manager.set_current_assistant_message_id(22)
+    manager.active_lifecycle_for_tools().current_assistant_message_id = 22
 
     todo = _create_todo(manager, "Inspect files")
-    manager.set_current_assistant_message_id(22)
+    manager.active_lifecycle_for_tools().current_assistant_message_id = 22
     finished = _finish_todo(manager, "Done")
 
     assert todo.start_message_id == 22
     assert finished.end_message_id == 22
 
 
-def test_task_manager_routes_message_id_to_active_lifecycle():
+def test_task_tool_created_todo_uses_current_lifecycle_message_boundary():
     db = _make_db()
     manager = TaskManager(db)
     _load(manager, None)
     manager.create_user_task("Build feature")
     tools = {tool.name: tool for tool in manager.create_tools()}
-    manager.set_current_assistant_message_id(31)
+    manager.active_lifecycle_for_tools().current_assistant_message_id = 31
 
     async def run():
         return await tools["create_todo"].execute("call_1", {"title": "Inspect files"})
@@ -431,7 +451,7 @@ def test_record_tool_call_with_active_todo_attaches_to_todo():
     assert loaded_tool_call.tool_call_log_id == 8
 
 
-def test_record_turn_tool_calls_appends_task_under_active_task():
+def test_active_lifecycle_creates_tool_call_entries_under_active_task():
     db = _make_db()
     manager = TaskManager(db)
     _load(manager, None)
@@ -442,11 +462,16 @@ def test_record_turn_tool_calls_appends_task_under_active_task():
         toolName="ls",
         content=[TextContent(text="files")],
     )
+    lifecycle = manager.active_lifecycle_for_tools()
+    lifecycle.load_tool_call_log_id(9)
 
-    tasks = manager.record_turn_tool_calls(
-        tool_call_records=[(9, None, tool_result)],
+    records, tasks = lifecycle.create_tool_call_record_task_entries(
+        assistant_message=AssistantMessage(role="assistant", content=[]),
+        tool_result_messages=[tool_result],
     )
+    lifecycle.task.children.extend(tasks)
 
+    assert records == [(9, None, tool_result)]
     assert len(tasks) == 1
     assert tasks[0].parent_id == todo.id
     assert tasks[0].kind == "tool_call"

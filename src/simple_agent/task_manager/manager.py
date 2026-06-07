@@ -3,10 +3,9 @@
 from __future__ import annotations
 
 import json
-from typing import Any, TYPE_CHECKING, Mapping, cast
+from typing import TYPE_CHECKING, Mapping, cast
 
 from pi.agent import AgentTool
-from pi.ai.types import AssistantMessage, ToolResultMessage
 
 from simple_agent.task_manager.lifecycle import BaseTaskLifecycle, TodoTaskLifecycle, UserTaskLifecycle, todo_status_text
 from simple_agent.task_manager.models import ManagedTask, TodoTask, ToolCallTask, UserTask
@@ -99,23 +98,16 @@ class TaskManager:
     def create_tools(self) -> list[AgentTool]:
         return self.active_lifecycle_for_tools().create_tools()
 
-    def set_current_assistant_message_id(self, message_id: int | None) -> None:
-        self.active_lifecycle_for_tools().set_current_assistant_message_id(message_id)
-
-    def record_turn_tool_calls(
-        self,
-        *,
-        tool_call_records: list[tuple[int, Any, ToolResultMessage]],
-    ) -> list[ManagedTask]:
-        return self.active_lifecycle_for_tools().record_turn_tool_calls(
-            tool_call_records=tool_call_records,
-        )
-
     def finish_user_task(self, result: str | None = None, end_message_id: int | None = None) -> ManagedTask:
         user_task = self._require_user_task()
         if isinstance(self._active_lifecycle, TodoTaskLifecycle):
             raise TaskManagerError("Cannot finish user task while a todo is active")
-        self._lifecycle_for_task(user_task).finish_task(result=result, end_message_id=end_message_id)
+        lifecycle = self._lifecycle_for_task(user_task)
+        lifecycle.current_assistant_message_id = end_message_id
+        try:
+            lifecycle.finish_task(result=result)
+        finally:
+            lifecycle.current_assistant_message_id = None
         self.refresh_active_task()
         return user_task
 

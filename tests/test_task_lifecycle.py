@@ -155,7 +155,7 @@ def test_task_data_objects_do_not_expose_lifecycle_methods():
         assert not hasattr(task, "append_tool_call_task")
 
 
-def test_user_task_lifecycle_uses_owned_allocator_and_message_id():
+def test_user_task_lifecycle_uses_owned_allocator():
     next_id = 10
 
     def allocate_task_id():
@@ -167,14 +167,27 @@ def test_user_task_lifecycle_uses_owned_allocator_and_message_id():
     user_task = UserTask(id=1, title="Build feature")
     lifecycle = UserTaskLifecycle(user_task, allocate_task_id=allocate_task_id)
     lifecycle.current_assistant_message_id = 22
+    lifecycle.load_tool_call_log_id(7)
+    assistant_message = AssistantMessage(
+        role="assistant",
+        content=[ToolCall(id="call_1", name="ls", arguments={"path": "."})],
+    )
+    tool_result = ToolResultMessage(
+        toolCallId="call_1",
+        toolName="ls",
+        content=[TextContent(text="files")],
+    )
 
     todo = lifecycle.create_todo_task(title="Inspect files")
-    tool_call = lifecycle.record_tool_call(7)
+    _tool_call_records, tool_call_tasks = lifecycle.create_tool_call_record_task_entries(
+        assistant_message=assistant_message,
+        tool_result_messages=[tool_result],
+    )
 
     assert todo.id == 10
     assert todo.start_message_id == 22
-    assert tool_call.id == 11
-    assert tool_call.parent_id == user_task.id
+    assert tool_call_tasks[0].id == 11
+    assert tool_call_tasks[0].parent_id == user_task.id
 
 
 def test_user_task_lifecycle_creates_tool_call_record_task_entries_without_appending():
@@ -199,13 +212,14 @@ def test_user_task_lifecycle_creates_tool_call_record_task_entries_without_appen
         content=[TextContent(text="files")],
     )
 
-    entries = lifecycle.create_tool_call_record_task_entries(
+    tool_call_records, tool_call_tasks = lifecycle.create_tool_call_record_task_entries(
         assistant_message=assistant_message,
         tool_result_messages=[tool_result],
     )
-    tool_call_record, tool_call_task = entries[0]
 
-    assert tool_call_record == (7, assistant_message.content[0], tool_result)
+    assert tool_call_records == [(7, assistant_message.content[0], tool_result)]
+    assert len(tool_call_tasks) == 1
+    tool_call_task = tool_call_tasks[0]
     assert tool_call_task.id == 20
     assert tool_call_task.parent_id == user_task.id
     assert tool_call_task.tool_call_log_id == 7
@@ -351,7 +365,6 @@ async def test_user_task_lifecycle_run_one_turn_executes_tools_and_records_tool_
         return task_id
 
     lifecycle = UserTaskLifecycle(user_task, allocate_task_id=allocate_task_id)
-    lifecycle.current_assistant_message_id = 42
     lifecycle.load_messages([], next_message_id=1)
     lifecycle.load_tool_call_log_id(7)
     assistant_message = AssistantMessage(
@@ -381,7 +394,7 @@ async def test_user_task_lifecycle_run_one_turn_executes_tools_and_records_tool_
     assert result.tool_call_records == [(7, assistant_message.content[0], tool_result)]
     assert [child.tool_call_log_id for child in user_task.children] == [7]
     assert user_task.children[0].parent_id == user_task.id
-    assert lifecycle.current_assistant_message_id == 42
+    assert lifecycle.current_assistant_message_id is None
 
 
 def test_user_task_lifecycle_begins_compaction_only_when_done():

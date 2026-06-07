@@ -56,12 +56,6 @@ class BaseTaskLifecycle:
             raise TaskLifecycleError("Task lifecycle needs an ID allocator")
         return self._allocate_task_id()
 
-    def set_current_assistant_message_id(self, message_id: int | None) -> None:
-        self.current_assistant_message_id = message_id
-
-    def resolve_message_id(self, message_id: int | None = None) -> int | None:
-        return message_id if message_id is not None else self.current_assistant_message_id
-
     def consume_next_task(self) -> ManagedTask | None:
         next_task = self.next_task
         self.next_task = None
@@ -160,6 +154,33 @@ class BaseTaskLifecycle:
                 session=session,
             )
 
+    def create_tool_call_record_task_entries(
+        self,
+        *,
+        assistant_message: AssistantMessage,
+        tool_result_messages: list[ToolResultMessage],
+    ) -> tuple[list[tuple[int, ToolCall | None, ToolResultMessage]], list[ToolCallTask]]:
+        task = self.task
+        tool_call_records = []
+        tool_call_tasks = []
+        for tool_result_message in tool_result_messages:
+            log_id = self.allocate_tool_call_log_id()
+            tool_call = _tool_call_for_result(
+                assistant_message=assistant_message,
+                tool_result_message=tool_result_message,
+            )
+            tool_call_records.append((log_id, tool_call, tool_result_message))
+            tool_call_tasks.append(
+                ToolCallTask(
+                    id=self.allocate_task_id(),
+                    title=f"Tool call {log_id}",
+                    status="done",
+                    parent_id=task.id,
+                    tool_call_log_id=log_id,
+                )
+            )
+        return tool_call_records, tool_call_tasks
+
     def _message_index(self, message_id: int) -> int:
         for index, entry in enumerate(self.messages):
             if entry.id == message_id:
@@ -195,91 +216,25 @@ class UserTaskLifecycle(BaseTaskLifecycle):
         *,
         task_id: int | None = None,
         title: str,
-        start_message_id: int | None = None,
     ) -> TodoTask:
         todo = TodoTask(
             id=task_id if task_id is not None else self.allocate_task_id(),
             title=title,
             parent_id=self.task.id,
-            start_message_id=self.resolve_message_id(start_message_id),
+            start_message_id=self.current_assistant_message_id,
         )
         self.task.children.append(todo)
         self.task.touch()
         self.next_task = todo
         return todo
 
-    def finish_task(self, *, result: str | None = None, end_message_id: int | None = None) -> UserTask:
+    def finish_task(self, *, result: str | None = None) -> UserTask:
         self.task.status = "done"
         self.task.result = result
-        self.task.end_message_id = self.resolve_message_id(end_message_id)
+        self.task.end_message_id = self.current_assistant_message_id
         self.task.touch()
         self.next_task = None
         return self.task
-
-    def append_tool_call_task(
-        self,
-        *,
-        task_id: int | None = None,
-        tool_call_log_id: int,
-        assistant_message: Any | None = None,
-        tool_result_message: Any | None = None,
-    ) -> ToolCallTask:
-        tool_call_task = ToolCallTask(
-            id=task_id if task_id is not None else self.allocate_task_id(),
-            title=f"Tool call {tool_call_log_id}",
-            status="done",
-            parent_id=self.task.id,
-            tool_call_log_id=tool_call_log_id,
-        )
-        self.task.children.append(tool_call_task)
-        self.task.touch()
-        return tool_call_task
-
-    def record_tool_call(
-        self,
-        tool_call_log_id: int,
-        *,
-        assistant_message: Any | None = None,
-        tool_result_message: Any | None = None,
-    ) -> ToolCallTask:
-        return self.append_tool_call_task(
-            tool_call_log_id=tool_call_log_id,
-            assistant_message=assistant_message,
-            tool_result_message=tool_result_message,
-        )
-
-    def create_tool_call_record_task_entries(
-        self,
-        *,
-        assistant_message: AssistantMessage,
-        tool_result_messages: list[ToolResultMessage],
-    ) -> list[tuple[tuple[int, ToolCall | None, ToolResultMessage], ToolCallTask]]:
-        entries = []
-        for tool_result_message in tool_result_messages:
-            log_id = self.allocate_tool_call_log_id()
-            tool_call = _tool_call_for_result(
-                assistant_message=assistant_message,
-                tool_result_message=tool_result_message,
-            )
-            tool_call_task = ToolCallTask(
-                id=self.allocate_task_id(),
-                title=f"Tool call {log_id}",
-                status="done",
-                parent_id=self.task.id,
-                tool_call_log_id=log_id,
-            )
-            entries.append(((log_id, tool_call, tool_result_message), tool_call_task))
-        return entries
-
-    def record_turn_tool_calls(
-        self,
-        *,
-        tool_call_records: list[tuple[int, Any, ToolResultMessage]],
-    ) -> list[ToolCallTask]:
-        return [
-            self.append_tool_call_task(tool_call_log_id=log_id)
-            for log_id, _tool_call, _tool_result in tool_call_records
-        ]
 
     def todo_status_text(self) -> str:
         return todo_status_text(self.task)
@@ -320,18 +275,21 @@ class UserTaskLifecycle(BaseTaskLifecycle):
         tool_results: list[ToolResultMessage] = []
         tool_call_records: list[tuple[int, ToolCall | None, ToolResultMessage]] = []
         if _assistant_has_tool_calls(assistant_message):
-            tool_results = await agent_process.run_tool_calls_step(
-                tools=tools,
-                assistant_message=assistant_message,
-                cancel_event=cancel_event,
-            )
-            tool_call_entries = self.create_tool_call_record_task_entries(
+            self.current_assistant_message_id = assistant_entry.id
+            try:
+                tool_results = await agent_process.run_tool_calls_step(
+                    tools=tools,
+                    assistant_message=assistant_message,
+                    cancel_event=cancel_event,
+                )
+            finally:
+                self.current_assistant_message_id = None
+            tool_call_records, tool_call_tasks = self.create_tool_call_record_task_entries(
                 assistant_message=assistant_message,
                 tool_result_messages=tool_results,
             )
-            tool_call_records = [entry[0] for entry in tool_call_entries]
-            self.task.children.extend(entry[1] for entry in tool_call_entries)
-            if tool_call_entries:
+            self.task.children.extend(tool_call_tasks)
+            if tool_call_tasks:
                 self.task.touch()
 
         tool_result_entries = [
@@ -634,10 +592,10 @@ class TodoTaskLifecycle(BaseTaskLifecycle):
             "- Call finish_todo immediately when it is complete."
         )
 
-    def finish_task(self, *, result: str | None = None, end_message_id: int | None = None) -> TodoTask:
+    def finish_task(self, *, result: str | None = None) -> TodoTask:
         self.task.status = "done"
         self.task.result = result
-        self.task.end_message_id = self.resolve_message_id(end_message_id)
+        self.task.end_message_id = self.current_assistant_message_id
         self.task.touch()
         self.next_task = self.user_task
         return self.task
@@ -645,52 +603,14 @@ class TodoTaskLifecycle(BaseTaskLifecycle):
     def error_task(self, *, error: str, end_message_id: int | None = None) -> TodoTask:
         self.task.status = "error"
         self.task.error = error
-        self.task.end_message_id = self.resolve_message_id(end_message_id)
+        self.task.end_message_id = (
+            end_message_id
+            if end_message_id is not None
+            else self.current_assistant_message_id
+        )
         self.task.touch()
         self.next_task = self.user_task
         return self.task
-
-    def append_tool_call_task(
-        self,
-        *,
-        task_id: int | None = None,
-        tool_call_log_id: int,
-        assistant_message: Any | None = None,
-        tool_result_message: Any | None = None,
-    ) -> ToolCallTask:
-        tool_call_task = ToolCallTask(
-            id=task_id if task_id is not None else self.allocate_task_id(),
-            title=f"Tool call {tool_call_log_id}",
-            status="done",
-            parent_id=self.task.id,
-            tool_call_log_id=tool_call_log_id,
-        )
-        self.task.children.append(tool_call_task)
-        self.task.touch()
-        return tool_call_task
-
-    def record_tool_call(
-        self,
-        tool_call_log_id: int,
-        *,
-        assistant_message: Any | None = None,
-        tool_result_message: Any | None = None,
-    ) -> ToolCallTask:
-        return self.append_tool_call_task(
-            tool_call_log_id=tool_call_log_id,
-            assistant_message=assistant_message,
-            tool_result_message=tool_result_message,
-        )
-
-    def record_turn_tool_calls(
-        self,
-        *,
-        tool_call_records: list[tuple[int, Any, ToolResultMessage]],
-    ) -> list[ToolCallTask]:
-        return [
-            self.append_tool_call_task(tool_call_log_id=log_id)
-            for log_id, _tool_call, _tool_result in tool_call_records
-        ]
 
     def create_tools(self) -> list[AgentTool]:
         return [

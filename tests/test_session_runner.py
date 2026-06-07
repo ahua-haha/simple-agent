@@ -15,6 +15,7 @@ from simple_agent.message_store import MessageEntry
 from simple_agent.run_log import runtime_logger
 from simple_agent.session.runner import SessionRunner
 from simple_agent.task_manager import TaskManager
+from simple_agent.task_manager.models import ToolCallTask
 
 
 class FakeAgentProcess:
@@ -238,10 +239,12 @@ def _create_todo(
     *,
     start_message_id: int | None = None,
 ):
-    todo = manager.active_lifecycle_for_tools().create_todo_task(
-        title=title,
-        start_message_id=start_message_id,
-    )
+    lifecycle = manager.active_lifecycle_for_tools()
+    if start_message_id is not None:
+        lifecycle.current_assistant_message_id = start_message_id
+    todo = lifecycle.create_todo_task(title=title)
+    if start_message_id is not None:
+        lifecycle.current_assistant_message_id = None
     manager.refresh_active_task()
     return todo
 
@@ -252,16 +255,28 @@ def _finish_todo(
     *,
     end_message_id: int | None = None,
 ):
-    todo = manager.active_lifecycle_for_tools().finish_task(
-        result=result,
-        end_message_id=end_message_id,
-    )
+    lifecycle = manager.active_lifecycle_for_tools()
+    if end_message_id is not None:
+        lifecycle.current_assistant_message_id = end_message_id
+    todo = lifecycle.finish_task(result=result)
+    if end_message_id is not None:
+        lifecycle.current_assistant_message_id = None
     manager.refresh_active_task()
     return todo
 
 
 def _record_tool_call(manager: TaskManager, tool_call_log_id: int):
-    return manager.active_lifecycle_for_tools().record_tool_call(tool_call_log_id)
+    active_task = manager.active_lifecycle_for_tools().task
+    tool_call = ToolCallTask(
+        id=manager.allocate_task_id(),
+        title=f"Tool call {tool_call_log_id}",
+        status="done",
+        parent_id=active_task.id,
+        tool_call_log_id=tool_call_log_id,
+    )
+    active_task.children.append(tool_call)
+    active_task.touch()
+    return tool_call
 
 
 def _run_log_dir(tmp_path):
