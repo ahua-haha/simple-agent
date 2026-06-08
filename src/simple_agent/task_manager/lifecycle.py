@@ -250,6 +250,8 @@ class BaseTaskLifecycle:
 
 class UserTaskLifecycle(BaseTaskLifecycle):
     def set_data(self, session_state: SessionState) -> None:
+        from simple_agent.task_manager.task_builder import NextTaskBuilder
+
         self._session_state = session_state
         self.current_assistant_message_id = None
         task = self._session_state.next_task
@@ -258,26 +260,35 @@ class UserTaskLifecycle(BaseTaskLifecycle):
         if task.kind != "user_task":
             raise TaskLifecycleError("Active lifecycle task is not a user task")
         self.task = cast(UserTask, task)
+        self._task_builder = NextTaskBuilder(
+            self._session_state,
+            enabled_task_kinds=["todo", "repo_memory"],
+            current_assistant_message_id=lambda: self.current_assistant_message_id,
+        )
         self._compacted_tool_calls: list[ToolCallTask] = []
         self._compacted_user_task_finished = False
 
     def clear_data(self) -> None:
         super().clear_data()
         self.task = None
+        self._task_builder = None
 
     def instruction_text(self) -> str:
+        builder_instruction = self._task_builder.instruction_text()
         if _count_user_task_tool_calls_after_latest_todo(self.task) > 5:
             return (
                 "Runtime instruction for this turn:\n"
                 "- More than 5 tool calls have run since the previous todo.\n"
                 "- Stop and create a small atomic todo before doing more work.\n"
-                "- The todo should describe only the next coherent unit of work."
+                "- The todo should describe only the next coherent unit of work.\n\n"
+                f"{builder_instruction}"
             )
         return (
             "Runtime instruction for this turn:\n"
             "- Determine whether the user task is complex before doing more work.\n"
             "- If it is complex or long-running, create the next small atomic todo first.\n"
-            "- If it is simple, answer directly or use the needed tools."
+            "- If it is simple, answer directly or use the needed tools.\n\n"
+            f"{builder_instruction}"
         )
 
     def create_todo_task(
@@ -310,7 +321,7 @@ class UserTaskLifecycle(BaseTaskLifecycle):
 
     def create_tools(self) -> list[AgentTool]:
         return [
-            self.create_create_todo_tool(),
+            *self._task_builder.create_tools(),
             self.create_finish_user_task_tool(),
             *create_all_coding_tools("."),
         ]
