@@ -425,11 +425,6 @@ class UserTaskLifecycle(BaseTaskLifecycle):
             session.commit()
         return self._session_state
 
-    def sync(self, database: Any, session: Any) -> None:
-        database.upsert_managed_task(self.task, session=session)
-        for child in sorted(self.task.children, key=lambda item: item.id or 0):
-            database.upsert_managed_task(child, session=session)
-
     def create_create_todo_tool(self) -> AgentTool:
         tool = AgentTool(
             name="create_todo",
@@ -681,12 +676,10 @@ class TodoTaskLifecycle(BaseTaskLifecycle):
         if task.kind != "todo":
             raise TaskLifecycleError("Active lifecycle task is not a todo task")
         self.task = cast(TodoTask, task)
-        self.user_task = None
 
     def clear_data(self) -> None:
         super().clear_data()
         self.task = None
-        self.user_task = None
 
     def instruction_text(self) -> str:
         task = self._require_todo_task_data()
@@ -711,29 +704,19 @@ class TodoTaskLifecycle(BaseTaskLifecycle):
         task.result = result
         task.end_message_id = self.current_assistant_message_id
         task.touch()
-        self._set_parent_as_next_task()
+        self._session_state.next_task_id_to_run = task.parent_id
+        self._session_state.next_task = None
         return task
 
-    def error_task(self, *, error: str, end_message_id: int | None = None) -> TodoTask:
+    def error_task(self, *, error: str) -> TodoTask:
         task = self._require_todo_task_data()
         task.status = "error"
         task.error = error
-        task.end_message_id = (
-            end_message_id
-            if end_message_id is not None
-            else self.current_assistant_message_id
-        )
+        task.end_message_id = self.current_assistant_message_id
         task.touch()
-        self._set_parent_as_next_task()
-        return task
-
-    def _set_parent_as_next_task(self) -> None:
-        if self.user_task is not None:
-            self._session_state.set_next_task(self.user_task)
-            return
-        task = self._require_todo_task_data()
         self._session_state.next_task_id_to_run = task.parent_id
         self._session_state.next_task = None
+        return task
 
     def _require_todo_task_data(self) -> TodoTask:
         if self.task is None:
@@ -744,13 +727,107 @@ class TodoTaskLifecycle(BaseTaskLifecycle):
         return [
             self.create_finish_todo_tool(),
             self.create_error_todo_tool(),
+            *create_all_coding_tools("."),
         ]
 
-    def sync(self, database: Any, session: Any) -> None:
+    async def run(
+        self,
+        *,
+        agent_process: AgentProcess,
+        cancel_event: asyncio.Event | None = None,
+    ) -> SessionState:
         task = self._require_todo_task_data()
-        database.upsert_managed_task(task, session=session)
-        for child in sorted(task.children, key=lambda item: item.id or 0):
-            database.upsert_managed_task(child, session=session)
+        if task.status != "active":
+            self._session_state.next_task_id_to_run = task.parent_id
+            self._session_state.next_task = None
+            return self._session_state
+        return await self.run_one_turn(
+            agent_process=agent_process,
+            cancel_event=cancel_event,
+        )
+
+    async def run_one_turn(
+        self,
+        *,
+        agent_process: AgentProcess,
+        cancel_event: asyncio.Event | None = None,
+    ) -> SessionState:
+        task = self._require_todo_task_data()
+        tools = self.create_tools()
+        user_instruction_message = UserMessage(
+            content=[TextContent(text=self.instruction_text())],
+            timestamp=int(time.time() * 1000),
+        )
+        assistant_message = await agent_process.call_llm_step(
+            system_prompt=USER_TASK_SYSTEM_PROMPT,
+            messages=[*self._session_state.message_values(), user_instruction_message],
+            tools=tools,
+            cancel_event=cancel_event,
+        )
+        if _assistant_is_error(assistant_message):
+            raise TaskLifecycleError(
+                assistant_message.error_message or "assistant response stopped with error"
+            )
+
+        assistant_entry = MessageEntry(
+            id=self._session_state.allocate_message_id(),
+            message=assistant_message,
+        )
+        tool_results: list[ToolResultMessage] = []
+        tool_call_records: list[tuple[int, ToolCall | None, ToolResultMessage]] = []
+        tool_call_tasks: list[ToolCallTask] = []
+        if _assistant_has_tool_calls(assistant_message):
+            self.current_assistant_message_id = assistant_entry.id
+            try:
+                tool_results = await agent_process.run_tool_calls_step(
+                    tools=tools,
+                    assistant_message=assistant_message,
+                    cancel_event=cancel_event,
+                )
+            finally:
+                self.current_assistant_message_id = None
+            tool_call_records, tool_call_tasks = self._session_state.create_tool_call_record_task_entries(
+                assistant_message=assistant_message,
+                tool_result_messages=tool_results,
+                parent_task=task,
+            )
+            task.children.extend(tool_call_tasks)
+            if tool_call_tasks:
+                task.touch()
+
+        tool_result_entries = [
+            MessageEntry(id=self._session_state.allocate_message_id(), message=tool_result)
+            for tool_result in tool_results
+        ]
+        new_messages = [assistant_entry, *tool_result_entries]
+        self._session_state.append_messages(new_messages)
+
+        if not _assistant_has_tool_calls(assistant_message):
+            self.current_assistant_message_id = assistant_entry.id
+            try:
+                if task.status == "active":
+                    self.finish_task()
+            finally:
+                self.current_assistant_message_id = None
+        elif task.status == "active":
+            self._session_state.set_next_task(task, keep_instance=True)
+
+        tasks_to_sync: list[ManagedTask] = [task, *task.children]
+        with self._session_state.create_database_session() as session:
+            self._session_state.append_messages_to_database(
+                messages=new_messages,
+                session=session,
+            )
+            self._session_state.append_tool_calls_to_database(
+                tool_calls=tool_call_records,
+                session=session,
+            )
+            self._session_state.append_tasks_to_database(
+                tasks=tasks_to_sync,
+                session=session,
+            )
+            session.commit()
+        return self._session_state
 
     def create_finish_todo_tool(self) -> AgentTool:
         tool = AgentTool(
@@ -772,12 +849,7 @@ class TodoTaskLifecycle(BaseTaskLifecycle):
             task = self.finish_task(
                 result=params.get("result"),
             )
-            text = (
-                todo_status_text(self.user_task)
-                if self.user_task is not None
-                else f"Todo finished: {task.result or task.title}"
-            )
-            return AgentToolResult(content=[TextContent(text=text)])
+            return AgentToolResult(content=[TextContent(text=f"Todo finished: {task.result or task.title}")])
 
         tool.execute = execute
         return tool
@@ -802,12 +874,7 @@ class TodoTaskLifecycle(BaseTaskLifecycle):
             task = self.error_task(
                 error=params["error"],
             )
-            text = (
-                todo_status_text(self.user_task)
-                if self.user_task is not None
-                else f"Todo errored: {task.error or task.title}"
-            )
-            return AgentToolResult(content=[TextContent(text=text)])
+            return AgentToolResult(content=[TextContent(text=f"Todo errored: {task.error or task.title}")])
 
         tool.execute = execute
         return tool

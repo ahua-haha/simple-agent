@@ -304,6 +304,102 @@ def test_todo_task_lifecycle_uses_owned_message_id_for_finish():
     assert todo.end_message_id == 44
 
 
+@pytest.mark.asyncio
+async def test_todo_task_lifecycle_run_auto_finishes_without_tool_calls(tmp_path):
+    db = _make_db(tmp_path)
+    todo = TodoTask(id=2, parent_id=1, title="Inspect files")
+    session_state = SessionState(
+        messages=[],
+        database=db,
+        session_id="session_a",
+        next_task_id_to_allocate=3,
+    )
+    lifecycle = _todo_lifecycle(todo, session_state=session_state)
+    assistant_message = AssistantMessage(role="assistant", content=[TextContent(text="Inspected files")])
+    agent_process = FakeAgentProcess(assistant_message)
+
+    result = await lifecycle.run(agent_process=agent_process)
+
+    assert result is lifecycle._session_state
+    assert agent_process.tool_calls == []
+    assert todo.status == "done"
+    assert todo.end_message_id == 1
+    assert lifecycle._session_state.next_task is None
+    assert lifecycle._session_state.next_task_id_to_run == 1
+    assert [message.content[0].text for message in db.list_runner_messages("session_a")] == ["Inspected files"]
+    persisted = db.get_managed_task(todo.id)
+    assert persisted.status == "done"
+    assert persisted.end_message_id == 1
+
+
+@pytest.mark.asyncio
+async def test_todo_task_lifecycle_run_records_tool_calls_and_keeps_active(tmp_path):
+    db = _make_db(tmp_path)
+    todo = TodoTask(id=2, parent_id=1, title="Inspect files")
+    session_state = SessionState(
+        messages=[],
+        database=db,
+        session_id="session_a",
+        next_task_id_to_allocate=3,
+        next_tool_call_log_id=7,
+    )
+    lifecycle = _todo_lifecycle(todo, session_state=session_state)
+    assistant_message = AssistantMessage(
+        role="assistant",
+        content=[ToolCall(id="call_1", name="ls", arguments={"path": "."})],
+    )
+    tool_result = ToolResultMessage(
+        toolCallId="call_1",
+        toolName="ls",
+        content=[TextContent(text="files")],
+    )
+    agent_process = FakeAgentProcess(assistant_message, [tool_result])
+
+    result = await lifecycle.run(agent_process=agent_process)
+
+    assert result is lifecycle._session_state
+    assert todo.status == "active"
+    assert lifecycle._session_state.next_task is todo
+    assert lifecycle._session_state.next_task_id_to_run == todo.id
+    assert lifecycle._session_state.messages == [
+        MessageEntry(id=1, message=assistant_message),
+        MessageEntry(id=2, message=tool_result),
+    ]
+    assert [child.tool_call_log_id for child in todo.children] == [7]
+    assert [record.id for record in db.list_runner_tool_calls("session_a")] == [7]
+    assert [child.tool_call_log_id for child in db.list_managed_task_children(todo.id)] == [7]
+
+
+@pytest.mark.asyncio
+async def test_todo_task_lifecycle_run_routes_to_parent_when_finish_tool_called(tmp_path):
+    db = _make_db(tmp_path)
+    todo = TodoTask(id=2, parent_id=1, title="Inspect files")
+    session_state = SessionState(
+        messages=[],
+        database=db,
+        session_id="session_a",
+        next_task_id_to_allocate=3,
+        next_tool_call_log_id=7,
+    )
+    lifecycle = _todo_lifecycle(todo, session_state=session_state)
+    assistant_message = AssistantMessage(
+        role="assistant",
+        content=[ToolCall(id="call_1", name="finish_todo", arguments={"result": "Inspected files"})],
+    )
+    agent_process = ExecutingFakeAgentProcess(assistant_message)
+
+    result = await lifecycle.run(agent_process=agent_process)
+
+    assert result is lifecycle._session_state
+    assert todo.status == "done"
+    assert todo.result == "Inspected files"
+    assert todo.end_message_id == 1
+    assert lifecycle._session_state.next_task is None
+    assert lifecycle._session_state.next_task_id_to_run == 1
+    assert [record.id for record in db.list_runner_tool_calls("session_a")] == [7]
+    assert [child.tool_call_log_id for child in db.list_managed_task_children(todo.id)] == [7]
+
+
 def test_lifecycle_tracks_next_task_transition():
     user_task = UserTask(id=1, title="Build feature")
     user_lifecycle = _user_lifecycle(user_task, allocate_task_id=lambda: 2)
