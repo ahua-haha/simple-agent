@@ -323,6 +323,31 @@ class TestAgentIndexCRUD:
         finally:
             session.close()
 
+    def test_upsert_entry_merges_metadata_json(self, tmp_path):
+        db_path = str(tmp_path / "index.db")
+        idx = self._make_index(db_path)
+
+        idx.upsert_entry(
+            "main.py",
+            {"kind": "file", "description": "Entry point", "owner": "runtime"},
+        )
+        idx.upsert_entry(
+            "main.py",
+            {"description": "Updated entry"},
+        )
+
+        session = idx._get_session()
+        try:
+            entry = session.get(IndexNodeRecord, "main.py")
+            assert entry is not None
+            assert json.loads(entry.metadata_json) == {
+                "description": "Updated entry",
+                "owner": "runtime",
+            }
+            assert entry.status == "updated"
+        finally:
+            session.close()
+
 
 class TestAgentIndexRealSrc:
     """Tests that walk the real src/ directory."""

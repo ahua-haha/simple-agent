@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import json
 import os
+import time
 
 from collections.abc import Callable
 from pathlib import Path
@@ -110,8 +112,28 @@ class AgentIndex:
                 meta.value = target_commit
             session.commit()
 
-    def upsert_entry(self, entry: IndexNodeRecord) -> None:
-        return
+    def upsert_entry(self, path_id: str, update_json: dict) -> None:
+        update_data = dict(update_json)
+        kind = str(update_data.pop("kind", "file"))
+        with self._get_session() as session:
+            existing = session.get(IndexNodeRecord, path_id)
+            if existing is None:
+                entry = IndexNodeRecord(
+                    path=path_id,
+                    kind=kind,
+                    metadata_json=_metadata_json(update_data),
+                    status="updated",
+                    updated_at=int(time.time()),
+                )
+                session.add(entry)
+            else:
+                existing.kind = kind
+                existing.metadata_json = _metadata_json(
+                    _metadata_dict(existing.metadata_json) | update_data
+                )
+                existing.status = "updated"
+                existing.updated_at = int(time.time())
+            session.commit()
 
     def list_expired_entries(self, session: Session | None = None) -> list[IndexNodeRecord]:
         statement = select(IndexNodeRecord).where(IndexNodeRecord.status == "expired")
@@ -207,3 +229,14 @@ class AgentIndex:
         descs = self._load_descriptions()
         self._format_comments(root, descs, self._base_dir)
         return render_tree(root)
+
+
+def _metadata_dict(metadata_json: str) -> dict:
+    metadata = json.loads(metadata_json or "{}")
+    if not isinstance(metadata, dict):
+        raise ValueError("Index node metadata must be a JSON object")
+    return metadata
+
+
+def _metadata_json(metadata: dict) -> str:
+    return json.dumps(metadata, sort_keys=True, separators=(",", ":"))
