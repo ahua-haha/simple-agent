@@ -8,6 +8,7 @@ from collections.abc import Callable
 from pathlib import Path
 
 from pi.agent import AgentTool
+from sqlalchemy import or_, update
 from sqlmodel import SQLModel, Field, Session, create_engine, select
 
 from simple_agent.index.models import (
@@ -43,9 +44,15 @@ class AgentIndex:
     *db_path*.
     """
 
-    def __init__(self, db_path: str = "./data/agent_index.db", *,
-                 base_dir: str = "."):
+    def __init__(
+        self,
+        db_path: str = "./data/agent_index.db",
+        *,
+        base_dir: str = ".",
+        repo_watcher: RepoWatcher | None = None,
+    ):
         self._base_dir = Path(base_dir).resolve()
+        self._repo_watcher = repo_watcher
         os.makedirs(os.path.dirname(db_path) or ".", exist_ok=True)
         self._engine = create_engine(
             f"sqlite:///{db_path}",
@@ -60,19 +67,65 @@ class AgentIndex:
         return
 
     def parse_diff(self, from_commit: str, to_commit: str) -> list[str]:
-        return
+        if self._repo_watcher is None:
+            return []
+        changes = self._repo_watcher.get_changed_files_with_rename(from_commit, to_commit)
+        changed_files: list[str] = []
+        for _status, old_path, new_path in changes:
+            changed_files.append(old_path)
+            if new_path is not None:
+                changed_files.append(new_path)
+        return changed_files
 
-    def mark_expired(self, from_commit: str, to_commit: str) -> None:
-        return
+    def auto_commit(self, target_commit: str) -> None:
+        with self._get_session() as session:
+            meta = session.get(IndexMeta, "current_commit")
+            current_commit = meta.value if meta is not None else None
+            changed_paths = (
+                self.parse_diff(current_commit, target_commit)
+                if current_commit is not None
+                else []
+            )
+
+            if changed_paths:
+                conditions = []
+                for path in changed_paths:
+                    clean_path = path.rstrip("/")
+                    conditions.extend(
+                        [
+                            IndexNodeRecord.path == clean_path,
+                            IndexNodeRecord.path.startswith(clean_path + "/"),
+                            IndexNodeRecord.path.startswith(clean_path + ":"),
+                        ]
+                    )
+                session.exec(
+                    update(IndexNodeRecord)
+                    .where(or_(*conditions))
+                    .values(status="expired")
+                )
+
+            if meta is None:
+                session.add(IndexMeta(key="current_commit", value=target_commit))
+            else:
+                meta.value = target_commit
+            session.commit()
 
     def upsert_entry(self, entry: IndexNodeRecord) -> None:
         return
 
     def list_expired_entries(self, session: Session | None = None) -> list[IndexNodeRecord]:
-        return
+        statement = select(IndexNodeRecord).where(IndexNodeRecord.status == "expired")
+        if session is not None:
+            return list(session.exec(statement).all())
+        with self._get_session() as own_session:
+            return list(own_session.exec(statement).all())
 
     def list_updated_entries(self, session: Session | None = None) -> list[IndexNodeRecord]:
-        return
+        statement = select(IndexNodeRecord).where(IndexNodeRecord.status == "updated")
+        if session is not None:
+            return list(session.exec(statement).all())
+        with self._get_session() as own_session:
+            return list(own_session.exec(statement).all())
 
     def commit(self, target_commit: str) -> None:
         return

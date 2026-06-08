@@ -16,6 +16,7 @@ from simple_agent.index.indexer import (
     DirectoryNode,
     FileNode,
     IndexEntry,
+    IndexMeta,
     IndexNodeRecord,
     SymbolNode,
 )
@@ -42,10 +43,10 @@ def upsert_index_entry(
             path=path.rstrip("/"),
             kind=kind,
             metadata_json=json.dumps(metadata, separators=(",", ":")),
-            expired=False,
+            status="updated",
         )
         set_vals = {
-            "expired": stmt.excluded.expired,
+            "status": stmt.excluded.status,
             "updated_at": stmt.excluded.updated_at,
         }
         if type is not None:
@@ -405,168 +406,158 @@ class TestAgentIndexRealSrc:
 
 
 class TestIndexMeta:
-    """Tests for IndexMeta hash storage."""
+    """Tests for AgentIndex commit metadata and status workflow."""
 
     def _make_index(self, db_path: str) -> AgentIndex:
         return AgentIndex(db_path=db_path)
 
-    def test_current_commit_none_before_first_update(self):
+    def test_parse_diff_returns_changed_files(self):
+        class _Watcher:
+            def get_changed_files_with_rename(self, from_commit, to_commit):
+                assert from_commit == "abc123"
+                assert to_commit == "def456"
+                return [
+                    ("M", "src/app.py", None),
+                    ("A", "src/new.py", None),
+                    ("D", "src/old.py", None),
+                    ("R100", "src/name.py", "src/renamed.py"),
+                ]
+
         with tempfile.NamedTemporaryFile(suffix=".db", delete=False) as f:
             db_path = f.name
         try:
-            idx = self._make_index(db_path)
-            assert idx.get_current_commit() is None
+            idx = AgentIndex(db_path=db_path, repo_watcher=_Watcher())
+
+            assert idx.parse_diff("abc123", "def456") == [
+                "src/app.py",
+                "src/new.py",
+                "src/old.py",
+                "src/name.py",
+                "src/renamed.py",
+            ]
         finally:
             os.unlink(db_path)
 
-    def test_current_commit_stored_and_retrieved(self):
+    def test_auto_commit_marks_changed_entries_expired_and_sets_commit(self):
+        class _Watcher:
+            def get_changed_files_with_rename(self, from_commit, to_commit):
+                assert from_commit == "abc123"
+                assert to_commit == "def456"
+                return [("M", "src/app.py", None)]
+
         with tempfile.NamedTemporaryFile(suffix=".db", delete=False) as f:
             db_path = f.name
         try:
-            idx = self._make_index(db_path)
-            idx.set_current_commit("abc123")
-            assert idx.get_current_commit() == "abc123"
-        finally:
-            os.unlink(db_path)
-
-    def test_current_commit_overwritten(self):
-        with tempfile.NamedTemporaryFile(suffix=".db", delete=False) as f:
-            db_path = f.name
-        try:
-            idx = self._make_index(db_path)
-            idx.set_current_commit("abc123")
-            idx.set_current_commit("def456")
-            assert idx.get_current_commit() == "def456"
-        finally:
-            os.unlink(db_path)
-
-    def test_begin_update_to_commit_marks_expired_without_advancing_commit(self):
-        with tempfile.NamedTemporaryFile(suffix=".db", delete=False) as f:
-            db_path = f.name
-        try:
-            idx = self._make_index(db_path)
-            idx.set_current_commit("abc123")
-            calls = []
-
-            def mark_expired(current_commit, target_commit, repo_watcher, session):
-                calls.append((current_commit, target_commit, repo_watcher, session))
-                return 3
-
-            idx._mark_expired_from_changes = mark_expired
-
-            result = idx.begin_update_to_commit("def456", repo_watcher=object())
-
-            assert result == 3
-            assert idx.get_current_commit() == "abc123"
-            assert calls[0][0] == "abc123"
-            assert calls[0][1] == "def456"
-            assert calls[0][2] is not None
-            assert calls[0][3] is not None
-        finally:
-            os.unlink(db_path)
-
-    def test_begin_update_to_commit_skips_when_commit_is_current(self):
-        with tempfile.NamedTemporaryFile(suffix=".db", delete=False) as f:
-            db_path = f.name
-        try:
-            idx = self._make_index(db_path)
-            idx.set_current_commit("abc123")
-            calls = []
-
-            def mark_expired(current_commit, target_commit, repo_watcher, session):
-                calls.append((current_commit, target_commit, repo_watcher, session))
-                return 3
-
-            idx._mark_expired_from_changes = mark_expired
-
-            result = idx.begin_update_to_commit("abc123", repo_watcher=object())
-
-            assert result == 0
-            assert idx.get_current_commit() == "abc123"
-            assert calls == []
-        finally:
-            os.unlink(db_path)
-
-    def test_commit_update_sets_current_commit_when_no_expired_entries(self):
-        with tempfile.NamedTemporaryFile(suffix=".db", delete=False) as f:
-            db_path = f.name
-        try:
-            idx = self._make_index(db_path)
-            idx.set_current_commit("abc123")
-            upsert_index_entry(idx, path="main.py", type="file", description="Entry point")
-
-            idx.commit_update("def456")
-
-            assert idx.get_current_commit() == "def456"
-        finally:
-            os.unlink(db_path)
-
-    def test_list_active_returns_only_not_expired_entries(self):
-        with tempfile.NamedTemporaryFile(suffix=".db", delete=False) as f:
-            db_path = f.name
-        try:
-            idx = self._make_index(db_path)
-            upsert_index_entry(idx, path="main.py", type="file", description="Entry point")
-            upsert_index_entry(idx, path="old.py", type="file", description="Old")
+            idx = AgentIndex(db_path=db_path, repo_watcher=_Watcher())
+            upsert_index_entry(idx, path="src/app.py", type="file", description="App")
+            upsert_index_entry(idx, path="src/app.py:main", type="function", description="Main")
+            upsert_index_entry(idx, path="src/other.py", type="file", description="Other")
             session = idx._get_session()
             try:
-                record = session.get(IndexNodeRecord, "old.py")
-                assert record is not None
-                record.expired = True
+                session.add(IndexMeta(key="current_commit", value="abc123"))
                 session.commit()
             finally:
                 session.close()
 
-            active_paths = {entry.path for entry in idx.list_active()}
+            idx.auto_commit("def456")
 
-            assert active_paths == {"main.py"}
-        finally:
-            os.unlink(db_path)
-
-    def test_commit_update_checks_active_entries_before_setting_commit(self):
-        with tempfile.NamedTemporaryFile(suffix=".db", delete=False) as f:
-            db_path = f.name
-        try:
-            idx = self._make_index(db_path)
-            idx.set_current_commit("abc123")
-            upsert_index_entry(idx, path="main.py", type="file", description="Entry point")
-            calls = []
-
-            def check_active_entries(target_commit, session):
-                calls.append((target_commit, session))
-
-            idx._check_active_entries_aligned = check_active_entries
-
-            idx.commit_update("def456")
-
-            assert idx.get_current_commit() == "def456"
-            assert calls[0][0] == "def456"
-            assert calls[0][1] is not None
-        finally:
-            os.unlink(db_path)
-
-    def test_commit_update_fails_when_expired_entries_exist(self):
-        from simple_agent.index.indexer import IndexUpdateError
-
-        with tempfile.NamedTemporaryFile(suffix=".db", delete=False) as f:
-            db_path = f.name
-        try:
-            idx = self._make_index(db_path)
-            idx.set_current_commit("abc123")
-            upsert_index_entry(idx, path="main.py", type="file", description="Entry point")
             session = idx._get_session()
             try:
-                record = session.get(IndexNodeRecord, "main.py")
-                assert record is not None
-                record.expired = True
+                app = session.get(IndexNodeRecord, "src/app.py")
+                symbol = session.get(IndexNodeRecord, "src/app.py:main")
+                other = session.get(IndexNodeRecord, "src/other.py")
+                meta = session.get(IndexMeta, "current_commit")
+
+                assert app is not None
+                assert app.status == "expired"
+                assert symbol is not None
+                assert symbol.status == "expired"
+                assert other is not None
+                assert other.status == "updated"
+                assert meta is not None
+                assert meta.value == "def456"
+            finally:
+                session.close()
+        finally:
+            os.unlink(db_path)
+
+    def test_auto_commit_marks_directory_descendants_expired(self):
+        class _Watcher:
+            def get_changed_files_with_rename(self, from_commit, to_commit):
+                return [("M", "src/pkg", None)]
+
+        with tempfile.NamedTemporaryFile(suffix=".db", delete=False) as f:
+            db_path = f.name
+        try:
+            idx = AgentIndex(db_path=db_path, repo_watcher=_Watcher())
+            upsert_index_entry(idx, path="src/pkg/file.py", type="file", description="File")
+            upsert_index_entry(idx, path="src/other.py", type="file", description="Other")
+            session = idx._get_session()
+            try:
+                session.add(IndexMeta(key="current_commit", value="abc123"))
                 session.commit()
             finally:
                 session.close()
 
-            with pytest.raises(IndexUpdateError):
-                idx.commit_update("def456")
+            idx.auto_commit("def456")
 
-            assert idx.get_current_commit() == "abc123"
+            expired_paths = {entry.path for entry in idx.list_expired_entries()}
+            updated_paths = {entry.path for entry in idx.list_updated_entries()}
+            assert expired_paths == {"src/pkg/file.py"}
+            assert updated_paths == {"src/other.py"}
+        finally:
+            os.unlink(db_path)
+
+    def test_auto_commit_marks_renamed_old_and_new_paths_expired(self):
+        class _Watcher:
+            def get_changed_files_with_rename(self, from_commit, to_commit):
+                return [("R100", "src/old.py", "src/new.py")]
+
+        with tempfile.NamedTemporaryFile(suffix=".db", delete=False) as f:
+            db_path = f.name
+        try:
+            idx = AgentIndex(db_path=db_path, repo_watcher=_Watcher())
+            upsert_index_entry(idx, path="src/old.py", type="file", description="Old")
+            upsert_index_entry(idx, path="src/new.py", type="file", description="New")
+            session = idx._get_session()
+            try:
+                session.add(IndexMeta(key="current_commit", value="abc123"))
+                session.commit()
+            finally:
+                session.close()
+
+            idx.auto_commit("def456")
+
+            assert {entry.path for entry in idx.list_expired_entries()} == {
+                "src/old.py",
+                "src/new.py",
+            }
+        finally:
+            os.unlink(db_path)
+
+    def test_auto_commit_sets_initial_commit_without_diff(self):
+        class _Watcher:
+            def get_changed_files_with_rename(self, from_commit, to_commit):
+                raise AssertionError("first auto_commit should not parse diff")
+
+        with tempfile.NamedTemporaryFile(suffix=".db", delete=False) as f:
+            db_path = f.name
+        try:
+            idx = AgentIndex(db_path=db_path, repo_watcher=_Watcher())
+            upsert_index_entry(idx, path="src/app.py", type="file", description="App")
+
+            idx.auto_commit("def456")
+
+            session = idx._get_session()
+            try:
+                app = session.get(IndexNodeRecord, "src/app.py")
+                meta = session.get(IndexMeta, "current_commit")
+                assert app is not None
+                assert app.status == "updated"
+                assert meta is not None
+                assert meta.value == "def456"
+            finally:
+                session.close()
         finally:
             os.unlink(db_path)
 
