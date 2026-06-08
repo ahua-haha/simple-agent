@@ -90,21 +90,7 @@ class AgentIndex:
             )
 
             if changed_paths:
-                conditions = []
-                for path in changed_paths:
-                    clean_path = path.rstrip("/")
-                    conditions.extend(
-                        [
-                            IndexNodeRecord.path == clean_path,
-                            IndexNodeRecord.path.startswith(clean_path + "/"),
-                            IndexNodeRecord.path.startswith(clean_path + ":"),
-                        ]
-                    )
-                session.exec(
-                    update(IndexNodeRecord)
-                    .where(or_(*conditions))
-                    .values(status="expired")
-                )
+                self._expire_changed_entries(changed_paths, session)
 
             if meta is None:
                 session.add(IndexMeta(key="current_commit", value=target_commit))
@@ -150,6 +136,49 @@ class AgentIndex:
             return list(own_session.exec(statement).all())
 
     def commit(self, target_commit: str) -> None:
+        with self._get_session() as session:
+            meta = session.get(IndexMeta, "current_commit")
+            current_commit = meta.value if meta is not None else None
+            changed_paths = (
+                self.parse_diff(current_commit, target_commit)
+                if current_commit is not None
+                else []
+            )
+
+            if changed_paths:
+                self._expire_changed_entries(changed_paths, session)
+
+            self._check_updated_entries_exist(target_commit, session)
+
+            if meta is None:
+                session.add(IndexMeta(key="current_commit", value=target_commit))
+            else:
+                meta.value = target_commit
+            session.commit()
+
+    def _expire_changed_entries(self, changed_paths: list[str], session: Session) -> None:
+        conditions = []
+        for path in changed_paths:
+            clean_path = path.rstrip("/")
+            conditions.extend(
+                [
+                    IndexNodeRecord.path == clean_path,
+                    IndexNodeRecord.path.startswith(clean_path + "/"),
+                    IndexNodeRecord.path.startswith(clean_path + ":"),
+                ]
+            )
+        if not conditions:
+            return
+        session.exec(
+            update(IndexNodeRecord)
+            .where(or_(*conditions))
+            .where(IndexNodeRecord.status != "updated")
+            .where(IndexNodeRecord.status != "expired")
+            .values(status="expired")
+        )
+
+    def _check_updated_entries_exist(self, target_commit: str, session: Session) -> None:
+        # TODO: verify every updated entry still exists in target_commit.
         return
 
     def _load_gitignore_spec(self) -> pathspec.PathSpec | None:

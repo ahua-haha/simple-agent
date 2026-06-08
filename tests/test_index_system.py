@@ -463,12 +463,15 @@ class TestIndexMeta:
         finally:
             os.unlink(db_path)
 
-    def test_auto_commit_marks_changed_entries_expired_and_sets_commit(self):
+    def test_auto_commit_marks_changed_non_active_entries_expired_and_sets_commit(self):
         class _Watcher:
             def get_changed_files_with_rename(self, from_commit, to_commit):
                 assert from_commit == "abc123"
                 assert to_commit == "def456"
-                return [("M", "src/app.py", None)]
+                return [
+                    ("M", "src/app.py", None),
+                    ("M", "src/stale.py", None),
+                ]
 
         with tempfile.NamedTemporaryFile(suffix=".db", delete=False) as f:
             db_path = f.name
@@ -476,10 +479,14 @@ class TestIndexMeta:
             idx = AgentIndex(db_path=db_path, repo_watcher=_Watcher())
             upsert_index_entry(idx, path="src/app.py", type="file", description="App")
             upsert_index_entry(idx, path="src/app.py:main", type="function", description="Main")
+            upsert_index_entry(idx, path="src/stale.py", type="file", description="Stale")
             upsert_index_entry(idx, path="src/other.py", type="file", description="Other")
             session = idx._get_session()
             try:
                 session.add(IndexMeta(key="current_commit", value="abc123"))
+                stale = session.get(IndexNodeRecord, "src/stale.py")
+                assert stale is not None
+                stale.status = "stale"
                 session.commit()
             finally:
                 session.close()
@@ -490,13 +497,16 @@ class TestIndexMeta:
             try:
                 app = session.get(IndexNodeRecord, "src/app.py")
                 symbol = session.get(IndexNodeRecord, "src/app.py:main")
+                stale = session.get(IndexNodeRecord, "src/stale.py")
                 other = session.get(IndexNodeRecord, "src/other.py")
                 meta = session.get(IndexMeta, "current_commit")
 
                 assert app is not None
-                assert app.status == "expired"
+                assert app.status == "updated"
                 assert symbol is not None
-                assert symbol.status == "expired"
+                assert symbol.status == "updated"
+                assert stale is not None
+                assert stale.status == "expired"
                 assert other is not None
                 assert other.status == "updated"
                 assert meta is not None
@@ -520,6 +530,9 @@ class TestIndexMeta:
             session = idx._get_session()
             try:
                 session.add(IndexMeta(key="current_commit", value="abc123"))
+                record = session.get(IndexNodeRecord, "src/pkg/file.py")
+                assert record is not None
+                record.status = "stale"
                 session.commit()
             finally:
                 session.close()
@@ -547,6 +560,12 @@ class TestIndexMeta:
             session = idx._get_session()
             try:
                 session.add(IndexMeta(key="current_commit", value="abc123"))
+                old = session.get(IndexNodeRecord, "src/old.py")
+                assert old is not None
+                old.status = "stale"
+                new = session.get(IndexNodeRecord, "src/new.py")
+                assert new is not None
+                new.status = "stale"
                 session.commit()
             finally:
                 session.close()
@@ -579,6 +598,67 @@ class TestIndexMeta:
                 meta = session.get(IndexMeta, "current_commit")
                 assert app is not None
                 assert app.status == "updated"
+                assert meta is not None
+                assert meta.value == "def456"
+            finally:
+                session.close()
+        finally:
+            os.unlink(db_path)
+
+    def test_commit_marks_changed_non_active_entries_expired_and_sets_commit(self):
+        class _Watcher:
+            def get_changed_files_with_rename(self, from_commit, to_commit):
+                assert from_commit == "abc123"
+                assert to_commit == "def456"
+                return [
+                    ("M", "src/app.py", None),
+                    ("M", "src/stale.py", None),
+                    ("M", "src/already.py", None),
+                ]
+
+        with tempfile.NamedTemporaryFile(suffix=".db", delete=False) as f:
+            db_path = f.name
+        try:
+            idx = AgentIndex(db_path=db_path, repo_watcher=_Watcher())
+            upsert_index_entry(idx, path="src/app.py", type="file", description="App")
+            upsert_index_entry(idx, path="src/app.py:main", type="function", description="Main")
+            upsert_index_entry(idx, path="src/stale.py", type="file", description="Stale")
+            upsert_index_entry(idx, path="src/already.py", type="file", description="Already")
+            upsert_index_entry(idx, path="src/other.py", type="file", description="Other")
+            session = idx._get_session()
+            try:
+                session.add(IndexMeta(key="current_commit", value="abc123"))
+                stale = session.get(IndexNodeRecord, "src/stale.py")
+                assert stale is not None
+                stale.status = "stale"
+                already = session.get(IndexNodeRecord, "src/already.py")
+                assert already is not None
+                already.status = "expired"
+                session.commit()
+            finally:
+                session.close()
+
+            idx.commit("def456")
+
+            session = idx._get_session()
+            try:
+                app = session.get(IndexNodeRecord, "src/app.py")
+                symbol = session.get(IndexNodeRecord, "src/app.py:main")
+                stale = session.get(IndexNodeRecord, "src/stale.py")
+                already = session.get(IndexNodeRecord, "src/already.py")
+                other = session.get(IndexNodeRecord, "src/other.py")
+                meta = session.get(IndexMeta, "current_commit")
+
+                assert app is not None
+                assert app.status == "updated"
+                assert symbol is not None
+                assert symbol.status == "updated"
+                assert stale is not None
+                assert stale.status == "expired"
+                assert already is not None
+                assert already.status == "expired"
+                assert other is not None
+                assert other.status == "updated"
                 assert meta is not None
                 assert meta.value == "def456"
             finally:
