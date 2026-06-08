@@ -3,10 +3,13 @@
 from __future__ import annotations
 
 import os
+import json
 import sqlite3
 import tempfile
 
 import pytest
+from sqlalchemy import delete
+from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 
 from simple_agent.index.indexer import (
     AgentIndex,
@@ -16,6 +19,65 @@ from simple_agent.index.indexer import (
     IndexNodeRecord,
     SymbolNode,
 )
+
+
+def upsert_index_entry(
+    idx: AgentIndex,
+    path: str,
+    *,
+    type: str | None = None,
+    description: str | None = None,
+) -> None:
+    entry_type = type or "file"
+    kind = "symbol" if entry_type in {"class", "function", "method"} else entry_type
+    if kind == "folder":
+        kind = "directory"
+    metadata = {"description": description or ""}
+    if kind == "symbol":
+        metadata["symbol_type"] = entry_type
+
+    session = idx._get_session()
+    try:
+        stmt = sqlite_insert(IndexNodeRecord).values(
+            path=path.rstrip("/"),
+            kind=kind,
+            metadata_json=json.dumps(metadata, separators=(",", ":")),
+            expired=False,
+        )
+        set_vals = {
+            "expired": stmt.excluded.expired,
+            "updated_at": stmt.excluded.updated_at,
+        }
+        if type is not None:
+            set_vals["kind"] = stmt.excluded.kind
+        if description is not None:
+            set_vals["metadata"] = stmt.excluded.metadata
+            set_vals["propagation_count"] = stmt.excluded.propagation_count
+        session.exec(
+            stmt.on_conflict_do_update(
+                index_elements=[IndexNodeRecord.path],
+                set_=set_vals,
+            )
+        )
+        session.commit()
+    finally:
+        session.close()
+
+
+def remove_index_entry(idx: AgentIndex, path: str) -> None:
+    clean = path.rstrip("/")
+    session = idx._get_session()
+    try:
+        session.exec(
+            delete(IndexNodeRecord).where(
+                (IndexNodeRecord.path == clean) |
+                (IndexNodeRecord.path.startswith(clean + "/")) |
+                (IndexNodeRecord.path.startswith(clean + ":"))
+            )
+        )
+        session.commit()
+    finally:
+        session.close()
 
 
 class TestAgentIndexCRUD:
@@ -34,6 +96,14 @@ class TestAgentIndexCRUD:
             with open(full, "w") as fh:
                 fh.write(content or "")
 
+    def test_create_tools_only_defines_update_entry_tool_for_now(self, tmp_path):
+        db_path = str(tmp_path / "index.db")
+        idx = self._make_index(db_path)
+
+        tools = idx.create_tools()
+
+        assert [tool.name for tool in tools] == ["index_update"]
+
     def test_update_creates_entry(self, tmp_path):
         """update() should store a description that appears in tree()."""
         db_path = str(tmp_path / "index.db")
@@ -41,7 +111,7 @@ class TestAgentIndexCRUD:
         self._make_workspace(ws, {"main.py": "print('hello')"})
 
         idx = self._make_index(db_path, base_dir=ws)
-        idx.update(path="main.py", type="file", description="App entry point")
+        upsert_index_entry(idx, path="main.py", type="file", description="App entry point")
 
         output = idx.tree()
         assert "main.py" in output
@@ -54,8 +124,8 @@ class TestAgentIndexCRUD:
         self._make_workspace(ws, {"main.py": "x"})
 
         idx = self._make_index(db_path, base_dir=ws)
-        idx.update(path="main.py", type="file", description="Old description")
-        idx.update(path="main.py", type="file", description="New description")
+        upsert_index_entry(idx, path="main.py", type="file", description="Old description")
+        upsert_index_entry(idx, path="main.py", type="file", description="New description")
 
         output = idx.tree()
         assert "New description" in output
@@ -71,11 +141,11 @@ class TestAgentIndexCRUD:
         })
 
         idx = self._make_index(db_path, base_dir=ws)
-        idx.update(path="old", type="directory", description="Old dir")
-        idx.update(path="old/module.py", type="file", description="Old file")
-        idx.update(path="other.py", type="file", description="Other file")
+        upsert_index_entry(idx, path="old", type="directory", description="Old dir")
+        upsert_index_entry(idx, path="old/module.py", type="file", description="Old file")
+        upsert_index_entry(idx, path="other.py", type="file", description="Other file")
 
-        idx.remove("old")
+        remove_index_entry(idx, "old")
 
         output = idx.tree()
         # Descriptions cleared
@@ -94,9 +164,9 @@ class TestAgentIndexCRUD:
         })
 
         idx = self._make_index(db_path, base_dir=ws)
-        idx.update(path="src/__init__.py", type="file", description="Package init")
-        idx.update(path="src/process", type="directory", description="Process modules")
-        idx.update(path="src/process/agent_process.py", type="file", description="Agent process")
+        upsert_index_entry(idx, path="src/__init__.py", type="file", description="Package init")
+        upsert_index_entry(idx, path="src/process", type="directory", description="Process modules")
+        upsert_index_entry(idx, path="src/process/agent_process.py", type="file", description="Agent process")
 
         output = idx.tree()
         assert "src/" in output
@@ -115,9 +185,9 @@ class TestAgentIndexCRUD:
         })
 
         idx = self._make_index(db_path, base_dir=ws)
-        idx.update(path="src", type="directory", description="Source")
-        idx.update(path="src/process", type="directory", description="Processes")
-        idx.update(path="src/process/file.py", type="file", description="File")
+        upsert_index_entry(idx, path="src", type="directory", description="Source")
+        upsert_index_entry(idx, path="src/process", type="directory", description="Processes")
+        upsert_index_entry(idx, path="src/process/file.py", type="file", description="File")
 
         output = idx.tree(depth=1)
         # depth=1: root + direct children (src/); grandchildren hidden
@@ -135,9 +205,9 @@ class TestAgentIndexCRUD:
         })
 
         idx = self._make_index(db_path, base_dir=ws)
-        idx.update(path="src/state", type="directory", description="State module")
-        idx.update(path="src/state/models.py", type="file", description="Data models")
-        idx.update(path="tests", type="directory", description="Test suite")
+        upsert_index_entry(idx, path="src/state", type="directory", description="State module")
+        upsert_index_entry(idx, path="src/state/models.py", type="file", description="Data models")
+        upsert_index_entry(idx, path="tests", type="directory", description="Test suite")
 
         output = idx.tree(path="src/state")
         assert "models.py" in output
@@ -147,8 +217,8 @@ class TestAgentIndexCRUD:
         """Symbol entries with colon-separated paths are stored in the DB."""
         db_path = str(tmp_path / "index.db")
         idx = self._make_index(db_path)
-        idx.update(path="main.py", type="file", description="Entry point")
-        idx.update(path="main.py:main", type="function", description="Main function")
+        upsert_index_entry(idx, path="main.py", type="file", description="Entry point")
+        upsert_index_entry(idx, path="main.py:main", type="function", description="Main function")
 
         session = idx._get_session()
         try:
@@ -168,13 +238,13 @@ class TestAgentIndexCRUD:
             columns = conn.execute("PRAGMA table_info(index_nodes)").fetchall()
 
         names = {column[1] for column in columns}
-        assert names == {"path", "kind", "metadata", "propagation_count", "updated_at"}
+        assert names == {"path", "kind", "metadata", "expired", "propagation_count", "updated_at"}
 
     def test_file_node_roundtrips_description_through_metadata(self, tmp_path):
         db_path = str(tmp_path / "index.db")
         idx = self._make_index(db_path)
 
-        idx.update(path="main.py", type="file", description="Entry point")
+        upsert_index_entry(idx, path="main.py", type="file", description="Entry point")
 
         session = idx._get_session()
         try:
@@ -186,11 +256,35 @@ class TestAgentIndexCRUD:
         finally:
             session.close()
 
+    def test_update_marks_entry_not_expired(self, tmp_path):
+        db_path = str(tmp_path / "index.db")
+        idx = self._make_index(db_path)
+
+        upsert_index_entry(idx, path="main.py", type="file", description="Old")
+        session = idx._get_session()
+        try:
+            record = session.get(IndexNodeRecord, "main.py")
+            assert record is not None
+            record.expired = True
+            session.commit()
+        finally:
+            session.close()
+
+        upsert_index_entry(idx, path="main.py", type="file", description="New")
+
+        session = idx._get_session()
+        try:
+            record = session.get(IndexNodeRecord, "main.py")
+            assert record is not None
+            assert record.expired is False
+        finally:
+            session.close()
+
     def test_directory_node_roundtrips_description_through_metadata(self, tmp_path):
         db_path = str(tmp_path / "index.db")
         idx = self._make_index(db_path)
 
-        idx.update(path="src", type="directory", description="Source directory")
+        upsert_index_entry(idx, path="src", type="directory", description="Source directory")
 
         session = idx._get_session()
         try:
@@ -199,6 +293,32 @@ class TestAgentIndexCRUD:
             assert record.kind == "directory"
             node = DirectoryNode.from_record(record)
             assert node.description == "Source directory"
+        finally:
+            session.close()
+
+    def test_update_description_resets_counter(self, tmp_path):
+        db_path = str(tmp_path / "index.db")
+        idx = self._make_index(db_path)
+
+        upsert_index_entry(idx, path="dir", type="directory", description="Old")
+
+        session = idx._get_session()
+        try:
+            entry = session.get(IndexEntry, "dir")
+            assert entry is not None
+            entry.propagation_count = 0
+            session.commit()
+        finally:
+            session.close()
+
+        upsert_index_entry(idx, path="dir", description="New description")
+
+        session = idx._get_session()
+        try:
+            entry = session.get(IndexEntry, "dir")
+            assert entry is not None
+            assert entry.propagation_count == 4
+            assert entry.description == "New description"
         finally:
             session.close()
 
@@ -226,7 +346,7 @@ class TestAgentIndexRealSrc:
                 entry_type = "file"
                 if suffix == ".html":
                     entry_type = "template"
-                idx.update(path=entry_path, type=entry_type, description=full)
+                upsert_index_entry(idx, path=entry_path, type=entry_type, description=full)
 
             for name in dirnames:
                 if name.startswith("__pycache__") or name.startswith("."):
@@ -237,7 +357,7 @@ class TestAgentIndexRealSrc:
                 if depth >= max_depth:
                     dirnames.remove(name)  # don't descend further
                     continue
-                idx.update(path=entry_path + "/", type="directory", description="")
+                upsert_index_entry(idx, path=entry_path + "/", type="directory", description="")
 
     def test_src_tree_max_depth_3(self):
         """Index the real src/ directory with max depth 3 and print the tree."""
@@ -290,482 +410,163 @@ class TestIndexMeta:
     def _make_index(self, db_path: str) -> AgentIndex:
         return AgentIndex(db_path=db_path)
 
-    def test_hash_none_before_first_sync(self):
+    def test_current_commit_none_before_first_update(self):
         with tempfile.NamedTemporaryFile(suffix=".db", delete=False) as f:
             db_path = f.name
         try:
             idx = self._make_index(db_path)
-            assert idx._get_hash() is None
+            assert idx.get_current_commit() is None
         finally:
             os.unlink(db_path)
 
-    def test_hash_stored_and_retrieved(self):
+    def test_current_commit_stored_and_retrieved(self):
         with tempfile.NamedTemporaryFile(suffix=".db", delete=False) as f:
             db_path = f.name
         try:
             idx = self._make_index(db_path)
-            idx._set_hash("abc123")
-            assert idx._get_hash() == "abc123"
+            idx.set_current_commit("abc123")
+            assert idx.get_current_commit() == "abc123"
         finally:
             os.unlink(db_path)
 
-    def test_hash_overwritten(self):
+    def test_current_commit_overwritten(self):
         with tempfile.NamedTemporaryFile(suffix=".db", delete=False) as f:
             db_path = f.name
         try:
             idx = self._make_index(db_path)
-            idx._set_hash("abc123")
-            idx._set_hash("def456")
-            assert idx._get_hash() == "def456"
+            idx.set_current_commit("abc123")
+            idx.set_current_commit("def456")
+            assert idx.get_current_commit() == "def456"
         finally:
             os.unlink(db_path)
 
-
-class TestHandleDeletes:
-    """Tests for AgentIndex._handle_deletes()."""
-
-    def _make_index(self, db_path: str) -> AgentIndex:
-        return AgentIndex(db_path=db_path)
-
-    def _make_watcher(self, dir_exists=True):
-        class _W:
-            def path_exists_in_tree(self, _hash, _path):
-                return dir_exists
-            def get_file_diff(self, _old, _new, _path, context_lines=0):
-                return ""
-        return _W()
-
-    def test_deletes_entry_and_returns_for_propagate(self):
+    def test_begin_update_to_commit_marks_expired_without_advancing_commit(self):
         with tempfile.NamedTemporaryFile(suffix=".db", delete=False) as f:
             db_path = f.name
         try:
             idx = self._make_index(db_path)
-            idx.update(path="src/config.py", type="file", description="Config")
-            idx.update(path="src", type="directory", description="Source")
-            watcher = self._make_watcher(dir_exists=True)
+            idx.set_current_commit("abc123")
+            calls = []
 
-            result = idx._handle_deletes(
-                [("D", "src/config.py", None)], watcher, "h2",
-            )
-            assert result == ["src/config.py"]
+            def mark_expired(current_commit, target_commit, repo_watcher, session):
+                calls.append((current_commit, target_commit, repo_watcher, session))
+                return 3
 
-            # Entry removed from DB
+            idx._mark_expired_from_changes = mark_expired
+
+            result = idx.begin_update_to_commit("def456", repo_watcher=object())
+
+            assert result == 3
+            assert idx.get_current_commit() == "abc123"
+            assert calls[0][0] == "abc123"
+            assert calls[0][1] == "def456"
+            assert calls[0][2] is not None
+            assert calls[0][3] is not None
+        finally:
+            os.unlink(db_path)
+
+    def test_begin_update_to_commit_skips_when_commit_is_current(self):
+        with tempfile.NamedTemporaryFile(suffix=".db", delete=False) as f:
+            db_path = f.name
+        try:
+            idx = self._make_index(db_path)
+            idx.set_current_commit("abc123")
+            calls = []
+
+            def mark_expired(current_commit, target_commit, repo_watcher, session):
+                calls.append((current_commit, target_commit, repo_watcher, session))
+                return 3
+
+            idx._mark_expired_from_changes = mark_expired
+
+            result = idx.begin_update_to_commit("abc123", repo_watcher=object())
+
+            assert result == 0
+            assert idx.get_current_commit() == "abc123"
+            assert calls == []
+        finally:
+            os.unlink(db_path)
+
+    def test_commit_update_sets_current_commit_when_no_expired_entries(self):
+        with tempfile.NamedTemporaryFile(suffix=".db", delete=False) as f:
+            db_path = f.name
+        try:
+            idx = self._make_index(db_path)
+            idx.set_current_commit("abc123")
+            upsert_index_entry(idx, path="main.py", type="file", description="Entry point")
+
+            idx.commit_update("def456")
+
+            assert idx.get_current_commit() == "def456"
+        finally:
+            os.unlink(db_path)
+
+    def test_list_active_returns_only_not_expired_entries(self):
+        with tempfile.NamedTemporaryFile(suffix=".db", delete=False) as f:
+            db_path = f.name
+        try:
+            idx = self._make_index(db_path)
+            upsert_index_entry(idx, path="main.py", type="file", description="Entry point")
+            upsert_index_entry(idx, path="old.py", type="file", description="Old")
             session = idx._get_session()
             try:
-                assert session.get(IndexEntry, "src/config.py") is None
-                src_entry = session.get(IndexEntry, "src")
-                assert src_entry is not None
-                assert src_entry.description == "Source"
-            finally:
-                session.close()
-        finally:
-            os.unlink(db_path)
-
-    def test_deletes_orphan_directory(self):
-        with tempfile.NamedTemporaryFile(suffix=".db", delete=False) as f:
-            db_path = f.name
-        try:
-            idx = self._make_index(db_path)
-            idx.update(path="old", type="directory", description="Old")
-            idx.update(path="old/legacy.py", type="file", description="Legacy")
-            watcher = self._make_watcher(dir_exists=False)
-
-            result = idx._handle_deletes(
-                [("D", "old/legacy.py", None)], watcher, "h2",
-            )
-            assert "old/legacy.py" in result
-            assert "old" in result
-
-            # Entries removed from DB
-            session = idx._get_session()
-            try:
-                assert session.get(IndexEntry, "old/legacy.py") is None
-                assert session.get(IndexEntry, "old") is None
-            finally:
-                session.close()
-        finally:
-            os.unlink(db_path)
-
-    def test_missing_entry_added_and_no_error(self):
-        with tempfile.NamedTemporaryFile(suffix=".db", delete=False) as f:
-            db_path = f.name
-        try:
-            idx = self._make_index(db_path)
-            watcher = self._make_watcher()
-
-            result = idx._handle_deletes(
-                [("D", "nonexistent.py", None)], watcher, "h2",
-            )
-            assert result == ["nonexistent.py"]  # added, DELETE silently no-ops
-        finally:
-            os.unlink(db_path)
-
-    def test_non_delete_status_ignored(self):
-        with tempfile.NamedTemporaryFile(suffix=".db", delete=False) as f:
-            db_path = f.name
-        try:
-            idx = self._make_index(db_path)
-            idx.update(path="mod.py", type="file", description="Mod")
-            watcher = self._make_watcher()
-
-            result = idx._handle_deletes(
-                [("M", "mod.py", None), ("A", "new.py", None), ("R100", "old.py", "new.py")],
-                watcher, "h2",
-            )
-            assert result == []
-        finally:
-            os.unlink(db_path)
-
-
-
-class TestHandleModified:
-    """Tests for AgentIndex._handle_modified()."""
-
-    def _make_index(self, db_path: str) -> AgentIndex:
-        return AgentIndex(db_path=db_path)
-
-    def _make_watcher(self, diff_text=""):
-        class _W:
-            def path_exists_in_tree(self, _hash, _path):
-                return True
-            def get_file_diff(self, _old, _new, _path, context_lines=0):
-                return diff_text
-        return _W()
-
-    def test_decrements_counter_on_modify(self):
-        """Modified file decrements propagation_count and preserves description."""
-        with tempfile.NamedTemporaryFile(suffix=".db", delete=False) as f:
-            db_path = f.name
-        try:
-            idx = self._make_index(db_path)
-            idx.update(path="src", type="directory", description="Source")
-            idx.update(path="src/mod.py", type="file", description="Mod")
-            watcher = self._make_watcher()
-
-            result = idx._handle_modified(
-                [("M", "src/mod.py", None)], watcher, "h1", "h2",
-            )
-            assert result == ["src/mod.py"]
-
-            session = idx._get_session()
-            try:
-                entry = session.get(IndexEntry, "src/mod.py")
-                assert entry.propagation_count == 3  # 4→3
-                assert entry.description == "Mod"     # preserved
-            finally:
-                session.close()
-        finally:
-            os.unlink(db_path)
-
-    def test_counter_zero_removes_file_entry(self):
-        """When counter reaches 0, the file entry is deleted."""
-        with tempfile.NamedTemporaryFile(suffix=".db", delete=False) as f:
-            db_path = f.name
-        try:
-            idx = self._make_index(db_path)
-            idx.update(path="old.py", type="file", description="Old")
-
-            session = idx._get_session()
-            try:
-                entry = session.get(IndexEntry, "old.py")
-                entry.propagation_count = 1
+                record = session.get(IndexNodeRecord, "old.py")
+                assert record is not None
+                record.expired = True
                 session.commit()
             finally:
                 session.close()
 
-            watcher = self._make_watcher()
-            result = idx._handle_modified(
-                [("M", "old.py", None)], watcher, "h1", "h2",
-            )
-            assert result == ["old.py"]
+            active_paths = {entry.path for entry in idx.list_active()}
 
+            assert active_paths == {"main.py"}
+        finally:
+            os.unlink(db_path)
+
+    def test_commit_update_checks_active_entries_before_setting_commit(self):
+        with tempfile.NamedTemporaryFile(suffix=".db", delete=False) as f:
+            db_path = f.name
+        try:
+            idx = self._make_index(db_path)
+            idx.set_current_commit("abc123")
+            upsert_index_entry(idx, path="main.py", type="file", description="Entry point")
+            calls = []
+
+            def check_active_entries(target_commit, session):
+                calls.append((target_commit, session))
+
+            idx._check_active_entries_aligned = check_active_entries
+
+            idx.commit_update("def456")
+
+            assert idx.get_current_commit() == "def456"
+            assert calls[0][0] == "def456"
+            assert calls[0][1] is not None
+        finally:
+            os.unlink(db_path)
+
+    def test_commit_update_fails_when_expired_entries_exist(self):
+        from simple_agent.index.indexer import IndexUpdateError
+
+        with tempfile.NamedTemporaryFile(suffix=".db", delete=False) as f:
+            db_path = f.name
+        try:
+            idx = self._make_index(db_path)
+            idx.set_current_commit("abc123")
+            upsert_index_entry(idx, path="main.py", type="file", description="Entry point")
             session = idx._get_session()
             try:
-                assert session.get(IndexEntry, "old.py") is None
-            finally:
-                session.close()
-        finally:
-            os.unlink(db_path)
-
-    def test_multiple_files_collected_for_propagation(self):
-        """Every modified file in the index is collected for propagation."""
-        with tempfile.NamedTemporaryFile(suffix=".db", delete=False) as f:
-            db_path = f.name
-        try:
-            idx = self._make_index(db_path)
-            idx.update(path="a.py", type="file", description="A")
-            idx.update(path="b.py", type="file", description="B")
-            watcher = self._make_watcher()
-
-            result = idx._handle_modified(
-                [("M", "a.py", None), ("M", "b.py", None)],
-                watcher, "h1", "h2",
-            )
-            assert result == ["a.py", "b.py"]
-
-            session = idx._get_session()
-            try:
-                assert session.get(IndexEntry, "a.py").propagation_count == 3
-                assert session.get(IndexEntry, "b.py").propagation_count == 3
-            finally:
-                session.close()
-        finally:
-            os.unlink(db_path)
-
-    def test_non_modified_status_ignored(self):
-        """Only M status is processed; D and A are ignored."""
-        with tempfile.NamedTemporaryFile(suffix=".db", delete=False) as f:
-            db_path = f.name
-        try:
-            idx = self._make_index(db_path)
-            idx.update(path="keep.py", type="file", description="Keep")
-            watcher = self._make_watcher()
-
-            result = idx._handle_modified(
-                [("D", "keep.py", None), ("A", "new.py", None)],
-                watcher, "h1", "h2",
-            )
-            assert result == []
-
-            session = idx._get_session()
-            try:
-                entry = session.get(IndexEntry, "keep.py")
-                assert entry.propagation_count == 4  # unchanged
-                assert entry.description == "Keep"
-            finally:
-                session.close()
-        finally:
-            os.unlink(db_path)
-
-    def test_missing_file_skipped(self):
-        """Files not present in the index are silently skipped."""
-        with tempfile.NamedTemporaryFile(suffix=".db", delete=False) as f:
-            db_path = f.name
-        try:
-            idx = self._make_index(db_path)
-            watcher = self._make_watcher()
-
-            result = idx._handle_modified(
-                [("M", "nonexistent.py", None)], watcher, "h1", "h2",
-            )
-            assert result == []
-        finally:
-            os.unlink(db_path)
-
-
-class TestHandleAppended:
-    """Tests for AgentIndex._handle_appended()."""
-
-    def _make_index(self, db_path: str) -> AgentIndex:
-        return AgentIndex(db_path=db_path)
-
-    def test_creates_entry_and_returns_parent(self):
-        with tempfile.NamedTemporaryFile(suffix=".db", delete=False) as f:
-            db_path = f.name
-        try:
-            idx = self._make_index(db_path)
-            result = idx._handle_appended(
-                [("A", "src/new.py", None)],
-            )
-            assert result == ["src/new.py"]
-        finally:
-            os.unlink(db_path)
-
-    def test_top_level_file_collected(self):
-        with tempfile.NamedTemporaryFile(suffix=".db", delete=False) as f:
-            db_path = f.name
-        try:
-            idx = self._make_index(db_path)
-            result = idx._handle_appended(
-                [("A", "top_level.py", None)],
-            )
-            assert result == ["top_level.py"]
-        finally:
-            os.unlink(db_path)
-
-    def test_non_append_status_ignored(self):
-        with tempfile.NamedTemporaryFile(suffix=".db", delete=False) as f:
-            db_path = f.name
-        try:
-            idx = self._make_index(db_path)
-            result = idx._handle_appended(
-                [("M", "mod.py", None), ("D", "gone.py", None)],
-            )
-            assert result == []
-        finally:
-            os.unlink(db_path)
-
-
-class TestSyncOrphanDirectory:
-    """Integration test: sync removes orphan directory entries."""
-
-    def _make_index(self, db_path: str) -> AgentIndex:
-        return AgentIndex(db_path=db_path)
-
-    def test_sync_removes_directory_when_all_files_deleted(self):
-        import tempfile
-        with tempfile.TemporaryDirectory() as tmpdir:
-            from git import Repo
-            from simple_agent.snapshot.ghost_indexer import RepoWatcher
-
-            repo = Repo.init(tmpdir)
-            db_path = os.path.join(tmpdir, "index.db")
-            idx = self._make_index(db_path)
-
-            subdir = os.path.join(tmpdir, "mylib")
-            os.makedirs(subdir)
-            with open(os.path.join(subdir, "util.py"), "w") as fh:
-                fh.write("x\n")
-            repo.index.add(["mylib/util.py"])
-            repo.index.commit("init")
-
-            watcher = RepoWatcher(tmpdir, os.path.join(tmpdir, "shadow"))
-            h1 = watcher.take_snapshot()
-
-            idx.update(path="mylib/util.py", type="file", description="Util")
-            idx.sync(None, h1, watcher)
-
-            tree_before = idx.tree(path=tmpdir)
-            assert "mylib/" in tree_before
-
-            os.unlink(os.path.join(subdir, "util.py"))
-            os.rmdir(subdir)
-            repo.index.remove(["mylib/util.py"])
-            repo.index.commit("deleted")
-            h2 = watcher.take_snapshot()
-
-            processed = idx.sync(h1, h2, watcher)
-            assert processed >= 1
-
-            tree_after = idx.tree(path=tmpdir)
-            assert "mylib/" not in tree_after
-            assert "util.py" not in tree_after
-
-
-
-class TestPropagateStale:
-    """Tests for AgentIndex._propagate_stale()."""
-
-    def _make_index(self, db_path: str) -> AgentIndex:
-        return AgentIndex(db_path=db_path)
-
-    def test_single_change_below_threshold(self):
-        """One file change (score=1.0) does not decrement counter."""
-        with tempfile.NamedTemporaryFile(suffix=".db", delete=False) as f:
-            db_path = f.name
-        try:
-            idx = self._make_index(db_path)
-            idx.update(path="src", type="directory", description="Core source")
-
-            idx._propagate_stale(["src/a.py"])
-
-            session = idx._get_session()
-            try:
-                entry = session.get(IndexEntry, "src")
-                assert entry.propagation_count == 4  # unchanged (1.0 < 3.0)
-                assert entry.description == "Core source"
-            finally:
-                session.close()
-        finally:
-            os.unlink(db_path)
-
-    def test_three_direct_children_trigger_decrement(self):
-        """Three direct children (score=3.0) decrement counter by 1."""
-        with tempfile.NamedTemporaryFile(suffix=".db", delete=False) as f:
-            db_path = f.name
-        try:
-            idx = self._make_index(db_path)
-            idx.update(path="lib", type="directory", description="Library")
-            paths = [f"lib/{n}" for n in ["a.py", "b.py", "c.py"]]
-
-            idx._propagate_stale(paths)
-
-            session = idx._get_session()
-            try:
-                entry = session.get(IndexEntry, "lib")
-                assert entry.propagation_count == 3  # 4→3
-                assert entry.description == "Library"  # not cleared
-            finally:
-                session.close()
-        finally:
-            os.unlink(db_path)
-
-    def test_deep_changes_decay(self):
-        """Files at depth 2 contribute factor^1 = 0.7 each."""
-        with tempfile.NamedTemporaryFile(suffix=".db", delete=False) as f:
-            db_path = f.name
-        try:
-            idx = self._make_index(db_path)
-            idx.update(path="src", type="directory", description="Source")
-            idx.update(path="src/sub", type="directory", description="Sub")
-
-            # 5 files at depth 2 → 5 × 0.7 = 3.5 ≥ 3 → decrement
-            paths = [f"src/sub/{n}" for n in ["a.py", "b.py", "c.py", "d.py", "e.py"]]
-            idx._propagate_stale(paths)
-
-            session = idx._get_session()
-            try:
-                sub = session.get(IndexEntry, "src/sub")
-                assert sub.propagation_count == 3  # 5.0 ≥ 3 → 4→3
-
-                src = session.get(IndexEntry, "src")
-                assert src.propagation_count == 3  # 3.5 ≥ 3 → 4→3
-            finally:
-                session.close()
-        finally:
-            os.unlink(db_path)
-
-    def test_counter_zero_removes_entry(self):
-        """When counter reaches 0, the entry is deleted from the DB."""
-        with tempfile.NamedTemporaryFile(suffix=".db", delete=False) as f:
-            db_path = f.name
-        try:
-            idx = self._make_index(db_path)
-            idx.update(path="pkg", type="directory", description="Package")
-
-            session = idx._get_session()
-            try:
-                entry = session.get(IndexEntry, "pkg")
-                entry.propagation_count = 1
+                record = session.get(IndexNodeRecord, "main.py")
+                assert record is not None
+                record.expired = True
                 session.commit()
             finally:
                 session.close()
 
-            # 3 files → score 3.0 ≥ 3 → counter 1→0 → entry removed
-            idx._propagate_stale(["pkg/a.py", "pkg/b.py", "pkg/c.py"])
+            with pytest.raises(IndexUpdateError):
+                idx.commit_update("def456")
 
-            session = idx._get_session()
-            try:
-                assert session.get(IndexEntry, "pkg") is None
-            finally:
-                session.close()
-        finally:
-            os.unlink(db_path)
-
-    def test_update_description_resets_counter(self):
-        with tempfile.NamedTemporaryFile(suffix=".db", delete=False) as f:
-            db_path = f.name
-        try:
-            idx = self._make_index(db_path)
-            idx.update(path="dir", type="directory", description="Old")
-
-            session = idx._get_session()
-            try:
-                entry = session.get(IndexEntry, "dir")
-                entry.propagation_count = 0
-                session.commit()
-            finally:
-                session.close()
-
-            idx.update(path="dir", description="New description")
-
-            session = idx._get_session()
-            try:
-                entry = session.get(IndexEntry, "dir")
-                assert entry.propagation_count == 4
-                assert entry.description == "New description"
-            finally:
-                session.close()
+            assert idx.get_current_commit() == "abc123"
         finally:
             os.unlink(db_path)
 
@@ -779,11 +580,11 @@ class TestTreeSmoke:
             db_path = f.name
         try:
             idx = AgentIndex(db_path)
-            idx.update(path="src/simple_agent/index", type="directory",
+            upsert_index_entry(idx, path="src/simple_agent/index", type="directory",
                        description="Project index")
-            idx.update(path="src/simple_agent/index/indexer.py", type="file",
+            upsert_index_entry(idx, path="src/simple_agent/index/indexer.py", type="file",
                        description="AgentIndex and tree renderer")
-            idx.update(path="main.py", type="file",
+            upsert_index_entry(idx, path="main.py", type="file",
                        description="Application entry point")
 
             print()
@@ -830,6 +631,8 @@ class TestTreeRenderPython:
 
     def test_render_python_file_tree(self):
         from pathlib import Path
+        pytest.importorskip("tree_sitter")
+        pytest.importorskip("tree_sitter_python")
         from simple_agent.index.models import FileNode
         from simple_agent.index.tree import WalkOptions, render_tree, walk_file
 

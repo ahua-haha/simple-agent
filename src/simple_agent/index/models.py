@@ -19,6 +19,7 @@ class IndexNodeRecord(SQLModel, table=True):
     path: str = Field(primary_key=True)
     kind: str = Field(default="file", index=True)
     metadata_json: str = Field(default="{}", sa_column=Column("metadata", String))
+    status: str = Field(default="updated", index=True)
     propagation_count: int = Field(default=4)
     updated_at: int = Field(default_factory=lambda: int(time.time()))
 
@@ -131,6 +132,7 @@ def index_node_to_record(node: IndexNode) -> IndexNodeRecord:
         path=node.path,
         kind=node.kind,
         metadata_json=node.metadata_json(),
+        status="updated",
         propagation_count=node.propagation_count,
         updated_at=node.updated_at,
     )
