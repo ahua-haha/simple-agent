@@ -97,13 +97,39 @@ class TestAgentIndexCRUD:
             with open(full, "w") as fh:
                 fh.write(content or "")
 
-    def test_create_tools_only_defines_update_entry_tool_for_now(self, tmp_path):
+    def test_create_tools_defines_tree_and_upsert_tools(self, tmp_path):
         db_path = str(tmp_path / "index.db")
         idx = self._make_index(db_path)
 
         tools = idx.create_tools()
 
-        assert [tool.name for tool in tools] == ["index_update"]
+        assert [tool.name for tool in tools] == ["index_tree", "index_upsert"]
+
+    @pytest.mark.asyncio
+    async def test_index_upsert_tool_updates_entry_metadata(self, tmp_path):
+        db_path = str(tmp_path / "index.db")
+        idx = self._make_index(db_path)
+        tools = {tool.name: tool for tool in idx.create_tools()}
+
+        result = await tools["index_upsert"].execute(
+            "call_1",
+            {
+                "path_id": "main.py",
+                "metadata": {
+                    "kind": "file",
+                    "description": "App entry",
+                },
+            },
+        )
+
+        assert result.content[0].text == "Updated index entry: main.py"
+        session = idx._get_session()
+        try:
+            entry = session.get(IndexNodeRecord, "main.py")
+            assert entry is not None
+            assert entry.description == "App entry"
+        finally:
+            session.close()
 
     def test_update_creates_entry(self, tmp_path):
         """update() should store a description that appears in tree()."""

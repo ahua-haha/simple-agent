@@ -15,6 +15,7 @@ from simple_agent.task_manager.lifecycle import (
     TodoTaskLifecycle,
     UserTaskLifecycle,
 )
+from simple_agent.task_manager.repo_memory_lifecycle import RepoMemoryLifecycle
 from simple_agent.task_manager.models import ManagedTask, TodoTask, UserTask
 
 if TYPE_CHECKING:
@@ -53,6 +54,7 @@ class SessionRunner:
         self._lifecycles = {
             "user_task": UserTaskLifecycle(),
             "todo": TodoTaskLifecycle(),
+            "repo_memory": RepoMemoryLifecycle(),
         }
         self._session_state = SessionState(
             messages=[],

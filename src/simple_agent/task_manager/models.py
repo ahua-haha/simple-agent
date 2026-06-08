@@ -7,7 +7,7 @@ from typing import Literal
 
 from pydantic import BaseModel, Field
 
-TaskKind = Literal["user_task", "todo", "tool_call"]
+TaskKind = Literal["user_task", "todo", "tool_call", "repo_memory"]
 TaskStatus = Literal["active", "done", "error"]
 
 
@@ -86,7 +86,27 @@ class ToolCallTask(BaseTask):
         return cls(id=id, parent_id=parent_id, status=status, **_metadata_dict(metadata))
 
 
-ManagedTask = UserTask | TodoTask | ToolCallTask
+class RepoMemoryTask(BaseTask):
+    kind: Literal["repo_memory"] = "repo_memory"
+    title: str
+    repo_path: str = "."
+    index_db_path: str
+    result: str | None = None
+    error: str | None = None
+
+    @classmethod
+    def from_metadata(
+        cls,
+        *,
+        id: int | None,
+        parent_id: int | None,
+        status: str,
+        metadata: str,
+    ) -> "RepoMemoryTask":
+        return cls(id=id, parent_id=parent_id, status=status, **_metadata_dict(metadata))
+
+
+ManagedTask = UserTask | TodoTask | ToolCallTask | RepoMemoryTask
 
 
 def task_from_metadata(
@@ -103,6 +123,8 @@ def task_from_metadata(
         return TodoTask.from_metadata(id=id, parent_id=parent_id, status=status, metadata=metadata)
     if kind == "tool_call":
         return ToolCallTask.from_metadata(id=id, parent_id=parent_id, status=status, metadata=metadata)
+    if kind == "repo_memory":
+        return RepoMemoryTask.from_metadata(id=id, parent_id=parent_id, status=status, metadata=metadata)
     raise ValueError(f"Unknown task kind: {kind}")
 
 

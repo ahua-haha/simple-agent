@@ -9,7 +9,8 @@ import time
 from collections.abc import Callable
 from pathlib import Path
 
-from pi.agent import AgentTool
+from pi.agent import AgentTool, AgentToolResult
+from pi.ai.types import TextContent
 from sqlalchemy import or_, update
 from sqlmodel import SQLModel, Field, Session, create_engine, select
 
@@ -67,7 +68,76 @@ class AgentIndex:
         return Session(self._engine)
 
     def create_tools(self) -> list[AgentTool]:
-        return
+        return [
+            self.create_tree_tool(),
+            self.create_upsert_tool(),
+        ]
+
+    def create_tree_tool(self) -> AgentTool:
+        tool = AgentTool(
+            name="index_tree",
+            description=(
+                "Render the current repo memory tree from the AgentIndex database. "
+                "Use this before writing repo memory to understand what is already recorded."
+            ),
+            parameters={
+                "type": "object",
+                "properties": {
+                    "path": {
+                        "type": "string",
+                        "description": "Optional path under the indexed repo to render.",
+                    },
+                    "depth": {
+                        "type": "integer",
+                        "description": "Optional maximum depth to render.",
+                    },
+                },
+            },
+        )
+
+        async def execute(tool_call_id, params, cancel_event=None, on_update=None):
+            output = self.tree(
+                path=params.get("path", ""),
+                depth=params.get("depth"),
+            )
+            return AgentToolResult(content=[TextContent(text=output)])
+
+        tool.execute = execute
+        return tool
+
+    def create_upsert_tool(self) -> AgentTool:
+        tool = AgentTool(
+            name="index_upsert",
+            description=(
+                "Create or update one repo memory entry in AgentIndex. "
+                "Only write concise factual metadata for paths you inspected."
+            ),
+            parameters={
+                "type": "object",
+                "properties": {
+                    "path_id": {
+                        "type": "string",
+                        "description": "Index path id, such as src/app.py or src/app.py:ClassName.",
+                    },
+                    "metadata": {
+                        "type": "object",
+                        "description": "Metadata JSON to merge into the entry. Include kind and description.",
+                    },
+                },
+                "required": ["path_id", "metadata"],
+            },
+        )
+
+        async def execute(tool_call_id, params, cancel_event=None, on_update=None):
+            path_id = params["path_id"]
+            metadata = params["metadata"]
+            if not isinstance(metadata, dict):
+                raise ValueError("index_upsert metadata must be an object")
+            self.upsert_entry(path_id, metadata)
+            return AgentToolResult(content=[TextContent(text=f"Updated index entry: {path_id}")])
+
+        tool.execute = execute
+        return tool
 
     def parse_diff(self, from_commit: str, to_commit: str) -> list[str]:
         if self._repo_watcher is None:

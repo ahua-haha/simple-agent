@@ -15,7 +15,8 @@ from simple_agent.task_manager.lifecycle import (
     TodoTaskLifecycle,
     UserTaskLifecycle,
 )
-from simple_agent.task_manager.models import TodoTask, ToolCallTask, UserTask
+from simple_agent.task_manager.repo_memory_lifecycle import RepoMemoryLifecycle
+from simple_agent.task_manager.models import RepoMemoryTask, TodoTask, ToolCallTask, UserTask, task_from_metadata
 
 
 def _make_db(tmp_path):
@@ -225,11 +226,58 @@ def test_tool_call_task_remains_data_only():
 def test_task_data_objects_do_not_expose_lifecycle_methods():
     user_task = UserTask(title="Build feature")
     todo = TodoTask(title="Inspect files")
+    repo_memory = RepoMemoryTask(
+        title="Write repo memory",
+        index_db_path="./index.db",
+    )
 
-    for task in [user_task, todo]:
+    for task in [user_task, todo, repo_memory]:
         assert not hasattr(task, "create_tools")
         assert not hasattr(task, "sync")
         assert not hasattr(task, "append_tool_call_task")
+
+
+def test_repo_memory_task_roundtrips_metadata():
+    task = RepoMemoryTask(
+        id=3,
+        title="Write repo memory",
+        repo_path="/repo",
+        index_db_path="/repo/.agent-index.db",
+        result="Updated index",
+    )
+
+    restored = task_from_metadata(
+        id=task.id,
+        parent_id=task.parent_id,
+        kind=task.kind,
+        status=task.status,
+        metadata=task.metadata_json(),
+    )
+
+    assert restored == task
+
+
+def test_repo_memory_lifecycle_instruction_and_tools(tmp_path):
+    task = RepoMemoryTask(
+        id=3,
+        title="Write repo memory",
+        repo_path=str(tmp_path),
+        index_db_path=str(tmp_path / "index.db"),
+    )
+    session_state = SessionState(messages=[])
+    session_state.next_task = task
+    session_state.next_task_id_to_run = task.id
+    lifecycle = RepoMemoryLifecycle()
+    lifecycle.set_data(session_state)
+
+    instruction = lifecycle.instruction_text()
+    tools = lifecycle.create_tools()
+
+    assert "Write durable repo memory" in instruction
+    assert task.repo_path in instruction
+    assert task.index_db_path in instruction
+    assert "index_tree" in [tool.name for tool in tools]
+    assert "index_upsert" in [tool.name for tool in tools]
 
 
 def test_user_task_lifecycle_uses_owned_allocator():
