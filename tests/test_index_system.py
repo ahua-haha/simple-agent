@@ -3,11 +3,19 @@
 from __future__ import annotations
 
 import os
+import sqlite3
 import tempfile
 
 import pytest
 
-from simple_agent.index.indexer import AgentIndex, IndexEntry
+from simple_agent.index.indexer import (
+    AgentIndex,
+    DirectoryNode,
+    FileNode,
+    IndexEntry,
+    IndexNodeRecord,
+    SymbolNode,
+)
 
 
 class TestAgentIndexCRUD:
@@ -144,9 +152,53 @@ class TestAgentIndexCRUD:
 
         session = idx._get_session()
         try:
-            sym = session.get(IndexEntry, "main.py:main")
+            sym = session.get(IndexNodeRecord, "main.py:main")
             assert sym is not None
-            assert sym.description == "Main function"
+            assert sym.kind == "symbol"
+            assert SymbolNode.from_record(sym).description == "Main function"
+            assert SymbolNode.from_record(sym).symbol_type == "function"
+        finally:
+            session.close()
+
+    def test_index_node_record_has_generic_metadata_schema(self, tmp_path):
+        db_path = str(tmp_path / "index.db")
+        self._make_index(db_path)
+
+        with sqlite3.connect(db_path) as conn:
+            columns = conn.execute("PRAGMA table_info(index_nodes)").fetchall()
+
+        names = {column[1] for column in columns}
+        assert names == {"path", "kind", "metadata", "propagation_count", "updated_at"}
+
+    def test_file_node_roundtrips_description_through_metadata(self, tmp_path):
+        db_path = str(tmp_path / "index.db")
+        idx = self._make_index(db_path)
+
+        idx.update(path="main.py", type="file", description="Entry point")
+
+        session = idx._get_session()
+        try:
+            record = session.get(IndexNodeRecord, "main.py")
+            assert record is not None
+            assert record.kind == "file"
+            node = FileNode.from_record(record)
+            assert node.description == "Entry point"
+        finally:
+            session.close()
+
+    def test_directory_node_roundtrips_description_through_metadata(self, tmp_path):
+        db_path = str(tmp_path / "index.db")
+        idx = self._make_index(db_path)
+
+        idx.update(path="src", type="directory", description="Source directory")
+
+        session = idx._get_session()
+        try:
+            record = session.get(IndexNodeRecord, "src")
+            assert record is not None
+            assert record.kind == "directory"
+            node = DirectoryNode.from_record(record)
+            assert node.description == "Source directory"
         finally:
             session.close()
 
@@ -743,11 +795,46 @@ class TestTreeSmoke:
 class TestTreeRenderPython:
     """Render Python files with tree-sitter symbol extraction."""
 
+    def test_node_formats_name_and_comment(self):
+        from simple_agent.index.models import SymbolNode
+        from simple_agent.index.tree import render_tree
+
+        node = SymbolNode(
+            path="src/app.py:run()",
+            description="Runs the app",
+            symbol_type="function",
+        )
+
+        assert node.format_node() == "app.py:run()  # Runs the app [function]"
+        assert "# Runs the app [function]" in render_tree(node)
+
+    def test_walk_file_accepts_root_node_and_returns_same_node(self):
+        from pathlib import Path
+        from simple_agent.index.models import FileNode
+        from simple_agent.index.tree import WalkOptions, walk_file
+
+        path = Path("src/simple_agent/process/agent_process.py")
+        root = FileNode(path=str(path))
+
+        assert walk_file(root, WalkOptions()) is root
+
+    def test_build_tree_accepts_file_path(self):
+        from simple_agent.index.models import FileNode
+        from simple_agent.index.tree import WalkOptions, build_tree
+
+        root = FileNode(path="src/simple_agent/index/tree.py")
+        node = build_tree(root, WalkOptions())
+
+        assert node is root
+        assert node.path.endswith("src/simple_agent/index/tree.py")
+
     def test_render_python_file_tree(self):
         from pathlib import Path
-        from simple_agent.index.tree import walk_file, render_tree
+        from simple_agent.index.models import FileNode
+        from simple_agent.index.tree import WalkOptions, render_tree, walk_file
 
-        node = walk_file(Path("src/simple_agent/process/agent_process.py"))
+        path = Path("src/simple_agent/process/agent_process.py")
+        node = walk_file(FileNode(path=str(path)), WalkOptions())
         assert node is not None
         out = render_tree(node)
         print()

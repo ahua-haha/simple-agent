@@ -1,50 +1,31 @@
-"""Directory walker — walks directories into TreeNodes."""
+"""Directory walker."""
 
 from __future__ import annotations
 
-from collections.abc import Callable
 from pathlib import Path
 
-from simple_agent.index.tree import TreeNode, walk_file
+from simple_agent.index.models import DirectoryNode, FileNode
+from simple_agent.index.tree import WalkOptions, walk_file
 
 
-def walk_dir(
-    dir_path: Path,
-    *,
-    depth: int | None = None,
-    current_depth: int = 0,
-    filter_fn: Callable[[Path], bool] | None = None,
-) -> TreeNode | None:
-    """Walk a directory and return a TreeNode with its children.
-
-    Sets ``metadata["abs_path"]``. Does NOT access the database."""
-
-    if filter_fn is not None and filter_fn(dir_path):
-        return None
-
-    node = TreeNode(name=dir_path.name or str(dir_path), is_dir=True,
-                    metadata={"abs_path": str(dir_path)})
-
-    if depth is not None and current_depth >= depth:
-        return node
+def walk_dir(root: DirectoryNode, options: WalkOptions) -> DirectoryNode:
+    """Walk a directory node and return *root* with children populated."""
+    dir_path = Path(root.path)
+    if options.should_skip(dir_path) or options.at_depth_limit():
+        return root
 
     try:
         entries = sorted(dir_path.iterdir())
     except OSError:
-        return node
+        return root
 
     for entry in entries:
+        child_options = options.child()
         if entry.is_dir():
-            child = walk_dir(entry, depth=depth,
-                             current_depth=current_depth + 1,
-                             filter_fn=filter_fn)
-            if child is not None:
-                node.children.append(child)
+            child = DirectoryNode(path=str(entry))
+            root.children.append(walk_dir(child, child_options))
         elif entry.is_file():
-            child = walk_file(entry, depth=depth,
-                              current_depth=current_depth + 1,
-                              filter_fn=filter_fn)
-            if child is not None:
-                node.children.append(child)
+            child = FileNode(path=str(entry))
+            root.children.append(walk_file(child, child_options))
 
-    return node
+    return root

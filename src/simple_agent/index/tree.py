@@ -1,85 +1,76 @@
-"""TreeNode and file walker dispatcher."""
+"""Index node walker dispatcher and renderer."""
 
 from __future__ import annotations
 
 from collections.abc import Callable
+from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
+
+from simple_agent.index.models import BaseNode, DirectoryNode, FileNode
 
 
-class TreeNode:
-    """A node in the in-memory tree for rendering, with name, comment, and children."""
+@dataclass(frozen=True)
+class WalkOptions:
+    depth: int | None = None
+    current_depth: int = 0
+    filter_fn: Callable[[Path], bool] | None = None
 
-    def __init__(self, name: str, is_dir: bool = False, comment: str = "",
-                 children: list[TreeNode] | None = None,
-                 metadata: dict[str, Any] | None = None):
-        self.name = name
-        self.is_dir = is_dir
-        self.comment = comment
-        self.children = children or []
-        self.metadata = metadata or {}
+    def child(self) -> "WalkOptions":
+        return WalkOptions(
+            depth=self.depth,
+            current_depth=self.current_depth + 1,
+            filter_fn=self.filter_fn,
+        )
+
+    def should_skip(self, path: Path) -> bool:
+        return self.filter_fn is not None and self.filter_fn(path)
+
+    def at_depth_limit(self) -> bool:
+        return self.depth is not None and self.current_depth >= self.depth
 
 
-def walk_file(
-    file_path: Path,
-    *,
-    depth: int | None = None,
-    current_depth: int = 0,
-    filter_fn: Callable[[Path], bool] | None = None,
-) -> TreeNode | None:
-    """Walk a file and return a TreeNode with symbol children.
-
-    Routes to type-specific walkers based on file extension.
-    *depth* controls symbol nesting; shared with ``walk_dir``.
-    Sets ``metadata["abs_path"]``. Does NOT access the database."""
-
-    if filter_fn is not None and filter_fn(file_path):
-        return None
+def walk_file(root: FileNode, options: WalkOptions) -> FileNode:
+    """Walk a file node and return *root* with any symbol children populated."""
+    file_path = Path(root.path)
+    if options.should_skip(file_path):
+        return root
 
     suffix = file_path.suffix
     if suffix == ".py":
-        from simple_agent.index.python_walker import _walk_python_file
-        return _walk_python_file(file_path, depth=depth, current_depth=current_depth)
-    elif suffix in (".md", ".mdx", ".markdown"):
-        from simple_agent.index.markdown_walker import _walk_markdown_file
-        return _walk_markdown_file(file_path)
-    else:
-        return _walk_generic_file(file_path)
-
-
-def _walk_generic_file(file_path: Path) -> TreeNode:
-    """Walk a generic file and return a TreeNode."""
-    return TreeNode(name=file_path.name, is_dir=False,
-                    metadata={"abs_path": str(file_path)})
+        from simple_agent.index.python_walker import walk_python_file
+        return walk_python_file(root, options)
+    if suffix in (".md", ".mdx", ".markdown"):
+        from simple_agent.index.markdown_walker import walk_markdown_file
+        return walk_markdown_file(root, options)
+    return root
 
 
 def build_tree(
-    base_path: str = "",
-    *,
-    depth: int | None = None,
-    filter_fn: Callable[[Path], bool] | None = None,
-) -> TreeNode | None:
-    """Walk the filesystem under *base_path*, return a ``TreeNode``.
-
-    Does NOT access the database."""
+    root: BaseNode,
+    options: WalkOptions,
+) -> BaseNode:
+    """Walk from *root* and return it with children populated."""
     from simple_agent.index.dir_walker import walk_dir
 
-    full = Path(base_path).resolve() if base_path else Path(".").resolve()
-    if not full.is_dir():
-        return None
+    root_path = Path(root.path)
+    if isinstance(root, DirectoryNode) and root_path.is_dir():
+        return walk_dir(root, options)
+    if isinstance(root, FileNode) and root_path.is_file():
+        return walk_file(root, options)
+    return root
 
-    return walk_dir(full, depth=depth, filter_fn=filter_fn)
 
-
-def render_tree(node: TreeNode) -> str:
-    """Render a TreeNode tree as an ASCII tree.
-
-    Pure output. Uses ``node.comment`` for the trailing annotation."""
+def render_tree(node: BaseNode | None) -> str:
+    """Render a ``BaseNode`` tree as an ASCII tree."""
     if node is None:
         return "(empty)"
 
-    def _render(n: TreeNode, prefix: str = "", is_last: bool = True,
-                is_root: bool = True) -> str:
+    def _render(
+        current: BaseNode,
+        prefix: str = "",
+        is_last: bool = True,
+        is_root: bool = True,
+    ) -> str:
         output = ""
 
         if is_root:
@@ -89,31 +80,27 @@ def render_tree(node: TreeNode) -> str:
             pointer = "└── " if is_last else "├── "
             current_prefix = prefix + pointer
 
-        suffix = "/" if n.is_dir else ""
-        comment = f"  # {n.comment}" if n.comment else ""
-
         if is_root:
-            label = n.metadata.get("abs_path", n.name)
-            output += f"{label}{suffix}{comment}\n"
+            output += f"{current.format_node(label=current.path)}\n"
         else:
-            output += f"{current_prefix}{n.name}{suffix}{comment}\n"
+            output += f"{current_prefix}{current.format_node()}\n"
 
-        if n.children:
+        if current.children:
             sorted_children = sorted(
-                n.children,
-                key=lambda c: (0 if c.is_dir else 1, c.name.lower())
+                current.children,
+                key=lambda child: (0 if child.is_dir else 1, child.name.lower()),
             )
 
             next_prefix = prefix if is_root else prefix + ("    " if is_last else "│   ")
 
             num_children = len(sorted_children)
             for index, child in enumerate(sorted_children):
-                is_child_last = (index == num_children - 1)
+                is_child_last = index == num_children - 1
                 output += _render(
                     child,
                     prefix=next_prefix,
                     is_last=is_child_last,
-                    is_root=False
+                    is_root=False,
                 )
 
         return output

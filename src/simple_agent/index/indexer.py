@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import os
 import time
 
@@ -12,19 +13,19 @@ from pi.agent import AgentTool, AgentToolResult
 from pi.ai.types import TextContent
 from sqlmodel import SQLModel, Field, Session, create_engine, select
 
+from simple_agent.index.models import (
+    BaseNode,
+    DirectoryNode,
+    FileNode,
+    IndexNodeRecord,
+    SymbolNode,
+)
 from simple_agent.snapshot.ghost_indexer import RepoWatcher
-from simple_agent.index.tree import TreeNode, build_tree, render_tree
+from simple_agent.index.tree import WalkOptions, build_tree, render_tree
 import pathspec
 
 
-class IndexEntry(SQLModel, table=True):
-    __tablename__ = "index_entries"
-
-    path: str = Field(primary_key=True)
-    type: str = Field(default="file")
-    description: str = Field(default="")
-    propagation_count: int = Field(default=4)
-    updated_at: int = Field(default_factory=lambda: int(time.time()))
+IndexEntry = IndexNodeRecord
 
 
 class IndexMeta(SQLModel, table=True):
@@ -171,25 +172,37 @@ class AgentIndex:
         from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 
         now = int(time.time())
+        entry_type = type or "file"
+        kind = "symbol" if entry_type in {"class", "function", "method"} else entry_type
+        if kind == "folder":
+            kind = "directory"
+        metadata = {"description": description or ""}
+        if kind == "symbol":
+            metadata["symbol_type"] = entry_type
 
-        stmt = sqlite_insert(IndexEntry).values(
+        stmt = sqlite_insert(IndexNodeRecord).values(
             path=p,
-            type=type or "file",
-            description=description or "",
+            kind=kind,
+            metadata_json=json.dumps(metadata, separators=(",", ":")),
             updated_at=now,
         )
 
         update_cols: set[str] = {"updated_at"}
         if type is not None:
-            update_cols.add("type")
+            update_cols.add("kind")
         if description is not None:
-            update_cols.add("description")
+            update_cols.add("metadata_json")
             update_cols.add("propagation_count")
 
-        set_vals = {c: getattr(stmt.excluded, c) for c in update_cols}
+        set_vals = {}
+        for column_name in update_cols:
+            if column_name == "metadata_json":
+                set_vals["metadata"] = stmt.excluded.metadata
+            else:
+                set_vals[column_name] = getattr(stmt.excluded, column_name)
 
         sess.exec(stmt.on_conflict_do_update(
-            index_elements=[IndexEntry.path],
+            index_elements=[IndexNodeRecord.path],
             set_=set_vals,
         ))
 
@@ -204,10 +217,10 @@ class AgentIndex:
         clean = path.rstrip("/")
         from sqlalchemy import delete
         sess.exec(
-            delete(IndexEntry).where(
-                (IndexEntry.path == clean) |
-                (IndexEntry.path.startswith(clean + "/")) |
-                (IndexEntry.path.startswith(clean + ":"))
+            delete(IndexNodeRecord).where(
+                (IndexNodeRecord.path == clean) |
+                (IndexNodeRecord.path.startswith(clean + "/")) |
+                (IndexNodeRecord.path.startswith(clean + ":"))
             )
         )
         if _close:
@@ -252,10 +265,10 @@ class AgentIndex:
         from sqlalchemy import delete as sql_delete
         for path in removed:
             sess.exec(
-                sql_delete(IndexEntry).where(
-                    (IndexEntry.path == path) |
-                    (IndexEntry.path.startswith(path + "/")) |
-                    (IndexEntry.path.startswith(path + ":"))
+                sql_delete(IndexNodeRecord).where(
+                    (IndexNodeRecord.path == path) |
+                    (IndexNodeRecord.path.startswith(path + "/")) |
+                    (IndexNodeRecord.path.startswith(path + ":"))
                 )
             )
 
@@ -267,8 +280,8 @@ class AgentIndex:
     def _parse_file_tree(
         self,
         file_path: str,
-    ) -> list[IndexEntry]:
-        """Parse *file_path* and return symbol ``IndexEntry`` objects.
+    ) -> list[IndexNodeRecord]:
+        """Parse *file_path* and return symbol ``IndexNodeRecord`` objects.
 
         TODO: implement language-specific parsing.
         """
@@ -280,7 +293,7 @@ class AgentIndex:
         repo_watcher: RepoWatcher,
         old_hash: str,
         new_hash: str,
-    ) -> list[IndexEntry]:
+    ) -> list[IndexNodeRecord]:
         """Parse the diff for *file_path* and return entries to delete.
 
         Fetches the file diff internally from *repo_watcher*, parses it
@@ -320,11 +333,11 @@ class AgentIndex:
             deleted = self.parse_file_diff(old_path, repo_watcher, old_hash, new_hash)
             for d in deleted:
                 sess.exec(
-                    sql_delete(IndexEntry).where(IndexEntry.path == d.path)
+                    sql_delete(IndexNodeRecord).where(IndexNodeRecord.path == d.path)
                 )
 
             # Decrement file counter; remove when exhausted
-            entry = sess.get(IndexEntry, old_path)
+            entry = sess.get(IndexNodeRecord, old_path)
             if entry is None:
                 continue
             entry.propagation_count -= 1
@@ -381,7 +394,7 @@ class AgentIndex:
         for dir_path, score in scores.items():
             if score < threshold:
                 continue
-            entry = sess.get(IndexEntry, dir_path)
+            entry = sess.get(IndexNodeRecord, dir_path)
             if entry is None:
                 continue
             entry.propagation_count -= 1
@@ -465,29 +478,21 @@ class AgentIndex:
     def _load_descriptions(self) -> dict[str, str]:
         sess = self._get_session()
         try:
-            entries = sess.exec(select(IndexEntry)).all()
+            entries = sess.exec(select(IndexNodeRecord)).all()
             return {e.path: e.description for e in entries if e.description}
         finally:
             sess.close()
 
     @staticmethod
-    def _format_comments(node: TreeNode, descs: dict[str, str], base: Path) -> None:
-        """Walk the tree and set ``comment`` on each node from descriptions.
-
-        Derives the relative path from ``metadata["abs_path"]`` and *base*."""
-        abs_path = node.metadata.get("abs_path", "")
+    def _format_comments(node: BaseNode, descs: dict[str, str], base: Path) -> None:
+        """Walk the tree and set node descriptions from stored index descriptions."""
         try:
-            rel = str(Path(abs_path).relative_to(base))
+            rel = str(Path(node.path).relative_to(base))
         except ValueError:
-            rel = abs_path
-        parts: list[str] = []
+            rel = node.path
         desc = descs.get(rel, "")
         if desc:
-            parts.append(desc)
-        node_type = node.metadata.get("type", "")
-        if node_type:
-            parts.append(f"[{node_type}]")
-        node.comment = " ".join(parts) if parts else ""
+            node.description = desc
 
         for child in node.children:
             AgentIndex._format_comments(child, descs, base)
@@ -503,11 +508,15 @@ class AgentIndex:
         filesystem; descriptions from the database.
         """
         filter_fn = self._make_tree_filter()
-        full_path = str(self._base_dir / path) if path else str(self._base_dir)
-        root = build_tree(full_path, depth=depth, filter_fn=filter_fn)
-        if root is None:
+        full_path = (self._base_dir / path) if path else self._base_dir
+        if full_path.is_dir():
+            root: BaseNode = DirectoryNode(path=str(full_path))
+        elif full_path.is_file():
+            root = FileNode(path=str(full_path))
+        else:
             return "(empty)"
 
+        root = build_tree(root, WalkOptions(depth=depth, filter_fn=filter_fn))
         descs = self._load_descriptions()
         self._format_comments(root, descs, self._base_dir)
         return render_tree(root)
