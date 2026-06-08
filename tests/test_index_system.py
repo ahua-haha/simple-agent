@@ -214,6 +214,24 @@ class TestAgentIndexCRUD:
         assert "models.py" in output
         assert "Test suite" not in output
 
+    def test_tree_fills_existing_nodes_with_database_metadata(self, tmp_path):
+        db_path = str(tmp_path / "index.db")
+        ws = str(tmp_path / "ws")
+        self._make_workspace(ws, {"main.py": "print('hello')\n"})
+
+        idx = self._make_index(db_path, base_dir=ws)
+        idx.upsert_entry(
+            "main.py",
+            {
+                "kind": "file",
+                "description": "Application entry",
+            },
+        )
+
+        output = idx.tree(path="main.py")
+
+        assert "main.py  # Application entry" in output
+
     def test_symbol_entry_stored_in_db(self, tmp_path):
         """Symbol entries with colon-separated paths are stored in the DB."""
         db_path = str(tmp_path / "index.db")

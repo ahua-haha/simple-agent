@@ -19,6 +19,7 @@ from simple_agent.index.models import (
     FileNode,
     IndexNodeRecord,
     SymbolNode,
+    index_node_from_record,
 )
 from simple_agent.snapshot.ghost_indexer import RepoWatcher
 from simple_agent.index.tree import WalkOptions, build_tree, render_tree
@@ -213,27 +214,38 @@ class AgentIndex:
 
         return filter_fn
 
-    def _load_descriptions(self) -> dict[str, str]:
-        sess = self._get_session()
-        try:
-            entries = sess.exec(select(IndexNodeRecord)).all()
-            return {e.path: e.description for e in entries if e.description}
-        finally:
-            sess.close()
+    def _load_entries(self) -> dict[str, IndexNodeRecord]:
+        with self._get_session() as session:
+            entries = session.exec(select(IndexNodeRecord)).all()
+            return {entry.path: entry for entry in entries}
 
-    @staticmethod
-    def _format_comments(node: BaseNode, descs: dict[str, str], base: Path) -> None:
-        """Walk the tree and set node descriptions from stored index descriptions."""
-        try:
-            rel = str(Path(node.path).relative_to(base))
-        except ValueError:
-            rel = node.path
-        desc = descs.get(rel, "")
-        if desc:
-            node.description = desc
+    def _fill_tree_metadata(self, node: BaseNode, entries: dict[str, IndexNodeRecord]) -> None:
+        """Walk the tree and fill matching nodes with stored index metadata."""
+        entry = entries.get(self._node_path_id(node))
+        if entry is not None:
+            self._apply_entry_metadata(node, entry)
 
         for child in node.children:
-            AgentIndex._format_comments(child, descs, base)
+            self._fill_tree_metadata(child, entries)
+
+    def _node_path_id(self, node: BaseNode) -> str:
+        path = node.path
+        base = str(self._base_dir)
+        if path == base:
+            return "."
+        prefix = base + os.sep
+        if path.startswith(prefix):
+            return path[len(prefix):]
+        return path
+
+    @staticmethod
+    def _apply_entry_metadata(node: BaseNode, entry: IndexNodeRecord) -> None:
+        entry_node = index_node_from_record(entry)
+        node.description = entry_node.description
+        node.propagation_count = entry_node.propagation_count
+        node.updated_at = entry_node.updated_at
+        if hasattr(node, "symbol_type") and hasattr(entry_node, "symbol_type"):
+            node.symbol_type = entry_node.symbol_type
 
     def tree(
         self,
@@ -255,8 +267,8 @@ class AgentIndex:
             return "(empty)"
 
         root = build_tree(root, WalkOptions(depth=depth, filter_fn=filter_fn))
-        descs = self._load_descriptions()
-        self._format_comments(root, descs, self._base_dir)
+        entries = self._load_entries()
+        self._fill_tree_metadata(root, entries)
         return render_tree(root)
 
 
