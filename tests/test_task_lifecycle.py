@@ -1,9 +1,12 @@
+import json
+
 import pytest
 
 from pi.ai.types import AssistantMessage, TextContent, ToolCall, ToolResultMessage, UserMessage
 
 from simple_agent.db.db import Database
 from simple_agent.message_store import MessageEntry
+from simple_agent.run_log import runtime_logger
 from simple_agent.task_manager.lifecycle import (
     USER_TASK_COMPACT_SYSTEM_PROMPT,
     USER_TASK_SYSTEM_PROMPT,
@@ -17,6 +20,16 @@ from simple_agent.task_manager.models import TodoTask, ToolCallTask, UserTask
 
 def _make_db(tmp_path):
     return Database(str(tmp_path / "session.db"))
+
+
+@pytest.fixture(autouse=True)
+def _runtime_log_dir(tmp_path):
+    runtime_logger.set_log_dir(tmp_path / "logs")
+
+
+def _read_log_records(tmp_path, session_id="session_a"):
+    log_file = tmp_path / "logs" / f"{session_id}.jsonl"
+    return [json.loads(line) for line in log_file.read_text(encoding="utf-8").splitlines()]
 
 
 def _user_lifecycle(
@@ -368,6 +381,14 @@ async def test_todo_task_lifecycle_run_records_tool_calls_and_keeps_active(tmp_p
     assert [child.tool_call_log_id for child in todo.children] == [7]
     assert [record.id for record in db.list_runner_tool_calls("session_a")] == [7]
     assert [child.tool_call_log_id for child in db.list_managed_task_children(todo.id)] == [7]
+    records = _read_log_records(tmp_path)
+    assert len(records) == 1
+    assert records[0]["event"] == "handle_running"
+    assert records[0]["assistant_message_id"] == 1
+    assert records[0]["tool_results"] == [
+        {"tool_call_id": "call_1", "tool_name": "ls", "message_id": 2}
+    ]
+    assert records[0]["next_action"] == "next_task"
 
 
 @pytest.mark.asyncio
@@ -733,6 +754,7 @@ async def test_user_task_lifecycle_run_raises_on_assistant_error(tmp_path):
 @pytest.mark.asyncio
 async def test_user_task_lifecycle_run_executes_tools_and_returns_current_task(tmp_path):
     db = _make_db(tmp_path)
+    runtime_logger.set_log_dir(tmp_path / "logs")
     user_task = UserTask(id=1, title="Build feature")
     session_state = SessionState(
         messages=[],
@@ -780,6 +802,16 @@ async def test_user_task_lifecycle_run_executes_tools_and_returns_current_task(t
     ]
     assert [record.id for record in db.list_runner_tool_calls("session_a")] == [7]
     assert [child.tool_call_log_id for child in db.list_managed_task_children(user_task.id)] == [7]
+    records = _read_log_records(tmp_path)
+    assert len(records) == 1
+    assert records[0]["event"] == "handle_running"
+    assert records[0]["session_id"] == "session_a"
+    assert records[0]["assistant_message_id"] == 1
+    assert records[0]["assistant_message"]["content"][0]["name"] == "ls"
+    assert records[0]["tool_results"] == [
+        {"tool_call_id": "call_1", "tool_name": "ls", "message_id": 2}
+    ]
+    assert records[0]["next_action"] == "next_task"
 
 
 @pytest.mark.asyncio
@@ -878,6 +910,7 @@ def test_user_task_lifecycle_compaction_requires_finished_compacted_user_task():
 @pytest.mark.asyncio
 async def test_user_task_lifecycle_handle_compact_runs_loop_and_returns_state(tmp_path):
     db = _make_db(tmp_path)
+    runtime_logger.set_log_dir(tmp_path / "logs")
     user_task = UserTask(
         id=1,
         parent_id=99,
@@ -946,6 +979,23 @@ async def test_user_task_lifecycle_handle_compact_runs_loop_and_returns_state(tm
     persisted_children = db.list_managed_task_children(user_task.id)
     assert [child.tool_call_log_id for child in persisted_children] == [7]
     assert db.get_managed_task(3) is None
+    records = _read_log_records(tmp_path)
+    assert len(records) == 1
+    assert records[0]["event"] == "handle_compact_result"
+    assert records[0]["message_scope"] == {"start_message_id": 1, "end_message_id": 3}
+    assert [message["role"] for message in records[0]["compact_messages"][:3]] == [
+        "user",
+        "assistant",
+        "assistant",
+    ]
+    assert [message["content"][0]["text"] for message in records[0]["compact_messages"][:3]] == [
+        "Build feature",
+        "work",
+        "done",
+    ]
+    assert records[0]["compact_messages"][-1]["content"][0]["text"] == "compact done"
+    assert records[0]["replacement_messages"][0]["id"] == 4
+    assert records[0]["next_action"] == "next_task"
 
 
 @pytest.mark.asyncio

@@ -16,6 +16,7 @@ from pi.agent.types import AgentMessage
 from pi.ai.types import AssistantMessage, TextContent, ToolCall, ToolResultMessage, UserMessage
 
 from simple_agent.message_store import MessageEntry
+from simple_agent.run_log import runtime_logger
 from simple_agent.task_manager.models import ManagedTask, TodoTask, ToolCallTask, UserTask
 from simple_agent.task_manager.review import TaskTreeReviewRenderer, ToolCallReview
 from simple_agent.tool.common_tools import create_all_coding_tools
@@ -347,6 +348,7 @@ class UserTaskLifecycle(BaseTaskLifecycle):
             content=[TextContent(text=self.instruction_text())],
             timestamp=int(time.time() * 1000),
         )
+        context_messages = list(self._session_state.messages)
         assistant_message = await agent_process.call_llm_step(
             system_prompt=USER_TASK_SYSTEM_PROMPT,
             messages=[*self._session_state.message_values(), user_instruction_message],
@@ -407,6 +409,16 @@ class UserTaskLifecycle(BaseTaskLifecycle):
             has_child_task = self._session_state.next_task is not None and self._session_state.next_task is not task
             if not has_child_task and task.status == "active":
                 self._session_state.set_next_task(task, keep_instance=True)
+
+        runtime_logger.log_handle_running(
+            session_id=self._session_state._require_session_id(),
+            messages=context_messages,
+            user_instruction_message=user_instruction_message,
+            assistant_message_id=assistant_entry.id,
+            assistant_message=assistant_message,
+            tool_result_entries=tool_result_entries,
+            next_action=_next_task_action_text(self._session_state),
+        )
 
         tasks_to_sync: list[ManagedTask] = [task, *task.children]
         with self._session_state.create_database_session() as session:
@@ -522,7 +534,7 @@ class UserTaskLifecycle(BaseTaskLifecycle):
             compact_messages.extend(tool_results)
 
         start_message_id, end_message_id, compacted_messages = self.compaction_result()
-        self._session_state.replace_message_range(
+        replacement_entries = self._session_state.replace_message_range(
             start_message_id=start_message_id,
             end_message_id=end_message_id,
             replacement_messages=compacted_messages,
@@ -536,6 +548,15 @@ class UserTaskLifecycle(BaseTaskLifecycle):
         self.task.touch()
         self._session_state.next_task_id_to_run = self.task.parent_id
         self._session_state.next_task = None
+        runtime_logger.log_handle_compact_result(
+            session_id=self._session_state._require_session_id(),
+            compact_messages=compact_messages,
+            start_message_id=start_message_id,
+            end_message_id=end_message_id,
+            compacted_messages=compacted_messages,
+            replacement_messages=replacement_entries,
+            next_action=_next_task_action_text(self._session_state),
+        )
         with self._session_state.create_database_session() as session:
             self._session_state.replace_messages_in_database(session=session)
             self._session_state.replace_task_tree_in_database(task=self.task, session=session)
@@ -758,6 +779,7 @@ class TodoTaskLifecycle(BaseTaskLifecycle):
             content=[TextContent(text=self.instruction_text())],
             timestamp=int(time.time() * 1000),
         )
+        context_messages = list(self._session_state.messages)
         assistant_message = await agent_process.call_llm_step(
             system_prompt=USER_TASK_SYSTEM_PROMPT,
             messages=[*self._session_state.message_values(), user_instruction_message],
@@ -811,6 +833,16 @@ class TodoTaskLifecycle(BaseTaskLifecycle):
                 self.current_assistant_message_id = None
         elif task.status == "active":
             self._session_state.set_next_task(task, keep_instance=True)
+
+        runtime_logger.log_handle_running(
+            session_id=self._session_state._require_session_id(),
+            messages=context_messages,
+            user_instruction_message=user_instruction_message,
+            assistant_message_id=assistant_entry.id,
+            assistant_message=assistant_message,
+            tool_result_entries=tool_result_entries,
+            next_action=_next_task_action_text(self._session_state),
+        )
 
         tasks_to_sync: list[ManagedTask] = [task, *task.children]
         with self._session_state.create_database_session() as session:
@@ -906,6 +938,10 @@ def _count_user_task_tool_calls_after_latest_todo(user_task: UserTask) -> int:
 
 def _count_tool_calls(tasks: list[ManagedTask]) -> int:
     return sum(1 for task in tasks if task.kind == "tool_call")
+
+
+def _next_task_action_text(session_state: SessionState) -> str:
+    return "next_task" if session_state.next_task_id_to_run is not None else "wait_user_input"
 
 
 def _assistant_has_tool_calls(message: AssistantMessage) -> bool:
