@@ -50,7 +50,9 @@ class RepoMemoryLifecycle(BaseTaskLifecycle):
             f"- AgentIndex database: {self.task.index_db_path}\n"
             "- Inspect files before writing memory.\n"
             "- Use index_tree to review existing repo memory.\n"
-            "- Use index_upsert to record concise factual metadata for inspected files or symbols.\n"
+            "- Use index_upsert to record a short and concise description for each inspected entry.\n"
+            "- Each description should say what each entry does, not how you found it.\n"
+            "- Keep descriptions factual, specific, and brief enough to scan in the tree view.\n"
             "- When enough useful repo memory is written, respond without tool calls with a concise summary."
         )
 

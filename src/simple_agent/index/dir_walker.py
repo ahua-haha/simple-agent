@@ -20,6 +20,8 @@ def walk_dir(root: DirectoryNode, options: WalkOptions) -> DirectoryNode:
         return root
 
     for entry in entries:
+        if options.should_skip(entry):
+            continue
         child_options = options.child()
         if entry.is_dir():
             child = DirectoryNode(path=str(entry))

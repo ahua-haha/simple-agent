@@ -260,25 +260,22 @@ class AgentIndex:
         except FileNotFoundError:
             return None
 
-    @staticmethod
-    def _format_path(path: Path) -> str:
-        """Normalize *path* to a string with ``/`` suffix for directories."""
-        s = str(path)
-        if path.is_dir():
-            s += "/"
-        return s
-
     def _make_tree_filter(self) -> Callable[[Path], bool]:
         spec = self._load_gitignore_spec()
         base = self._base_dir
 
         def filter_fn(abs_path: Path) -> bool:
+            try:
+                rel = abs_path.relative_to(base)
+            except ValueError:
+                return False
+            if rel.parts and rel.parts[0] in {".git", ".venv", "__pycache__", ".pytest_cache"}:
+                return True
             if spec is not None:
-                try:
-                    rel = abs_path.relative_to(base)
-                except ValueError:
-                    return False
-                if spec.match_file(self._format_path(rel)):
+                rel_text = rel.as_posix()
+                if abs_path.is_dir():
+                    rel_text += "/"
+                if spec.match_file(rel_text):
                     return True
             return False
 
