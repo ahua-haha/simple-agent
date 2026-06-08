@@ -176,12 +176,13 @@ def test_user_task_instruction_asks_for_complexity_check_when_tool_count_is_smal
 
     assert "Runtime instruction for this turn" in instruction
     assert "Determine whether the user task is complex" in instruction
-    assert "create the next small atomic todo first" in instruction
+    assert "decompose it into the next enabled task" in instruction
+    assert "Choose the enabled task kind that best moves the user task forward" in instruction
     assert "create_next_task" in instruction
     assert "repo_memory" in instruction
 
 
-def test_user_task_instruction_requires_todo_after_many_tool_calls():
+def test_user_task_instruction_requires_next_task_after_many_tool_calls():
     task = UserTask(title="Build feature")
     task.children = [
         ToolCallTask(title=f"Tool call {index}", tool_call_log_id=index)
@@ -192,7 +193,8 @@ def test_user_task_instruction_requires_todo_after_many_tool_calls():
     instruction = lifecycle.instruction_text()
 
     assert "More than 5 tool calls have run since the previous todo" in instruction
-    assert "create a small atomic todo before doing more work" in instruction
+    assert "create the next enabled task before doing more work" in instruction
+    assert "Use any enabled task kind" in instruction
 
 
 def test_todo_task_instruction_focuses_active_todo_when_tool_count_is_small():

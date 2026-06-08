@@ -279,14 +279,17 @@ class UserTaskLifecycle(BaseTaskLifecycle):
             return (
                 "Runtime instruction for this turn:\n"
                 "- More than 5 tool calls have run since the previous todo.\n"
-                "- Stop and create a small atomic todo before doing more work.\n"
-                "- The todo should describe only the next coherent unit of work.\n\n"
+                "- Stop and create the next enabled task before doing more work.\n"
+                "- Use any enabled task kind that best captures the next coherent unit of work.\n"
+                "- Keep the next task small and atomic so it can be completed cleanly.\n\n"
                 f"{builder_instruction}"
             )
         return (
             "Runtime instruction for this turn:\n"
             "- Determine whether the user task is complex before doing more work.\n"
-            "- If it is complex or long-running, create the next small atomic todo first.\n"
+            "- If it is complex or long-running, decompose it into the next enabled task first.\n"
+            "- Choose the enabled task kind that best moves the user task forward.\n"
+            "- Keep each created task small, atomic, and directly tied to finishing the user task.\n"
             "- If it is simple, answer directly or use the needed tools.\n\n"
             f"{builder_instruction}"
         )

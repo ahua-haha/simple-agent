@@ -34,17 +34,29 @@ class NextTaskBuilder:
     def instruction_text(self) -> str:
         lines = [
             "Next task builder:",
-            "- Use create_next_task before switching to a different unit of work.",
+            "- Tool: create_next_task(kind, title, metadata).",
+            "- Use it before switching from the current task to a different unit of work.",
+            "- Enabled task kinds:",
         ]
         if "todo" in self._enabled_task_kinds:
-            lines.append(
-                "- kind=todo: use for the next small atomic implementation, debugging, or inspection step."
+            lines.extend(
+                [
+                    "  - todo: use for the next small atomic implementation, debugging, inspection, or verification step.",
+                    "    metadata: omit it or pass {}. Put the concrete next action in title.",
+                    "    example: {\"kind\":\"todo\",\"title\":\"Inspect session runner state transitions\",\"metadata\":{}}",
+                ]
             )
         if "repo_memory" in self._enabled_task_kinds:
-            lines.append(
-                "- kind=repo_memory: use when the next step is to write durable repo memory with AgentIndex."
+            lines.extend(
+                [
+                    "  - repo_memory: use when the next step is to write durable repository memory with AgentIndex.",
+                    "    metadata: {\"repo_path\":\"<repo path>\",\"index_db_path\":\"<index database path>\"}.",
+                    "    repo_path may be omitted when the current repository root is correct.",
+                    "    index_db_path is required.",
+                    "    example: {\"kind\":\"repo_memory\",\"title\":\"Write memory for task lifecycle design\",\"metadata\":{\"repo_path\":\".\",\"index_db_path\":\".agent-index.db\"}}",
+                ]
             )
-        lines.append("- Put task-specific fields in metadata.")
+        lines.append("- Do not invent metadata keys unless the selected task kind asks for them.")
         lines.append("- Create only one next task at a time.")
         return "\n".join(lines)
 

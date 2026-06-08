@@ -17,6 +17,10 @@ def test_next_task_builder_instruction_describes_supported_tasks():
     assert "create_next_task" in instruction
     assert "todo" in instruction
     assert "repo_memory" in instruction
+    assert "metadata" in instruction
+    assert "index_db_path is required" in instruction
+    assert '{"kind":"todo"' in instruction
+    assert '{"kind":"repo_memory"' in instruction
 
 
 def test_next_task_builder_can_limit_enabled_task_set():
@@ -27,6 +31,7 @@ def test_next_task_builder_can_limit_enabled_task_set():
 
     assert "repo_memory" in instruction
     assert "kind=todo" not in instruction
+    assert "index_db_path is required" in instruction
     assert tool.parameters["properties"]["kind"]["enum"] == ["repo_memory"]
 
 

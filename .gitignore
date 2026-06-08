@@ -23,3 +23,8 @@ logs/
 
 data/
 sessions/
+
+.agent-index.db
+.claude/
+.codegraph/
+.mcp.json
