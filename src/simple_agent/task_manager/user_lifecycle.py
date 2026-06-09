@@ -389,4 +389,9 @@ def _count_user_task_tool_calls_after_latest_todo(user_task: UserTask) -> int:
 
 
 def _count_tool_calls(tasks: list[ManagedTask]) -> int:
-    return sum(1 for task in tasks if task.kind == "tool_call")
+    count = 0
+    for task in tasks:
+        if task.kind == "tool_call":
+            count += 1
+        count += _count_tool_calls(task.children)
+    return count

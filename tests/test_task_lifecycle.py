@@ -1237,3 +1237,19 @@ def test_user_task_lifecycle_should_compact_after_more_than_ten_tool_calls():
     lifecycle = _user_lifecycle(user_task)
 
     assert lifecycle.should_compact_after_turn() is True
+
+
+def test_user_task_lifecycle_should_compact_after_nested_tool_calls():
+    todo = TodoTask(
+        id=2,
+        parent_id=1,
+        title="Inspect files",
+        children=[
+            ToolCallTask(id=index + 3, parent_id=2, tool_call_log_id=index)
+            for index in range(11)
+        ],
+    )
+    user_task = UserTask(id=1, title="Build feature", children=[todo])
+    lifecycle = _user_lifecycle(user_task)
+
+    assert lifecycle.should_compact_after_turn() is True
