@@ -1095,8 +1095,9 @@ async def test_user_task_lifecycle_run_syncs_created_todo_task(tmp_path):
     assert todos[0].title == "Inspect files"
     assert todos[0].start_message_id == 1
     assert len(tool_calls) == 1
+    assert [child.kind for child in user_task.children] == ["tool_call", "todo"]
     assert lifecycle._session_state.next_task_id_to_run == todos[0].id
-    assert lifecycle._session_state.next_task is user_task.children[0]
+    assert lifecycle._session_state.next_task is user_task.children[1]
 
 
 def test_user_task_lifecycle_compact_tools_do_not_require_begin_step():
