@@ -356,7 +356,7 @@ async def test_repo_memory_lifecycle_uses_task_private_current_message_id(tmp_pa
             )
 
             async def execute(tool_call_id, params, cancel_event=None, on_update=None):
-                observed_message_ids.append(task.current_assistant_message_id)
+                observed_message_ids.append(lifecycle._current_assistant_message_id)
                 return AgentToolResult(content=[TextContent(text="tree")])
 
             tool.execute = execute
@@ -389,7 +389,7 @@ async def test_repo_memory_lifecycle_uses_task_private_current_message_id(tmp_pa
     await lifecycle.run(agent_process=agent_process)
 
     assert observed_message_ids == [1]
-    assert task.current_assistant_message_id is None
+    assert lifecycle._current_assistant_message_id is None
 
 
 def test_user_task_maintains_compaction_runtime_state():
@@ -425,12 +425,10 @@ def test_user_task_lifecycle_owns_next_task_builder():
     assert not hasattr(task, "next_task_builder")
 
 
-def test_user_and_todo_task_runtime_message_id_is_not_persisted():
+def test_task_models_do_not_own_runtime_message_id():
     user_task = UserTask(id=1, title="Build feature")
     todo = TodoTask(id=2, parent_id=1, title="Inspect files")
 
-    user_task.current_assistant_message_id = 11
-    todo.current_assistant_message_id = 12
     restored_user = task_from_metadata(
         id=user_task.id,
         parent_id=user_task.parent_id,
@@ -448,8 +446,10 @@ def test_user_and_todo_task_runtime_message_id_is_not_persisted():
 
     assert "_current_assistant_message_id" not in json.loads(user_task.metadata_json())
     assert "_current_assistant_message_id" not in json.loads(todo.metadata_json())
-    assert restored_user.current_assistant_message_id is None
-    assert restored_todo.current_assistant_message_id is None
+    assert not hasattr(user_task, "current_assistant_message_id")
+    assert not hasattr(todo, "current_assistant_message_id")
+    assert not hasattr(restored_user, "current_assistant_message_id")
+    assert not hasattr(restored_todo, "current_assistant_message_id")
 
 
 def test_user_task_lifecycle_uses_owned_allocator():
@@ -463,7 +463,7 @@ def test_user_task_lifecycle_uses_owned_allocator():
 
     user_task = UserTask(id=1, title="Build feature")
     lifecycle = _user_lifecycle(user_task, allocate_task_id=allocate_task_id)
-    user_task.current_assistant_message_id = 22
+    lifecycle._current_assistant_message_id = 22
     lifecycle._session_state.next_tool_call_log_id = 7
     assistant_message = AssistantMessage(
         role="assistant",
@@ -529,7 +529,7 @@ def test_user_task_lifecycle_creates_tool_call_record_task_entries_without_appen
 def test_todo_task_lifecycle_uses_owned_message_id_for_finish():
     todo = TodoTask(id=2, parent_id=1, title="Inspect files")
     lifecycle = _todo_lifecycle(todo, allocate_task_id=lambda: 3)
-    todo.current_assistant_message_id = 44
+    lifecycle._current_assistant_message_id = 44
 
     lifecycle.finish_task(result="Inspected files")
 
@@ -1045,7 +1045,7 @@ async def test_user_task_lifecycle_run_executes_tools_and_returns_current_task(t
     assert lifecycle._session_state.next_tool_call_log_id == 8
     assert [child.tool_call_log_id for child in user_task.children] == [7]
     assert user_task.children[0].parent_id == user_task.id
-    assert user_task.current_assistant_message_id is None
+    assert lifecycle._current_assistant_message_id is None
     assert lifecycle._session_state.next_task is user_task
     assert [type(message).__name__ for message in db.list_runner_messages("session_a")] == [
         "AssistantMessage",

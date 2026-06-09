@@ -42,23 +42,11 @@ class UserTask(BaseTask):
     error: str | None = None
     start_message_id: int | None = None
     end_message_id: int | None = None
-    _current_assistant_message_id: int | None = PrivateAttr(default=None)
     _compacted_tool_calls: list["ToolCallTask"] = PrivateAttr(default_factory=list)
     _compacted_user_task_finished: bool = PrivateAttr(default=False)
 
     def format_for_render(self, *, tool_call: Any | None = None, sequence: int | None = None) -> str:
         return f"user_task [{self.status}] {self.title}"
-
-    @property
-    def current_assistant_message_id(self) -> int | None:
-        return self._current_assistant_message_id
-
-    @current_assistant_message_id.setter
-    def current_assistant_message_id(self, message_id: int | None) -> None:
-        self._current_assistant_message_id = message_id
-
-    def clear_runtime_state(self) -> None:
-        self.current_assistant_message_id = None
 
     @property
     def compacted_tool_calls(self) -> list["ToolCallTask"]:
@@ -95,18 +83,9 @@ class TodoTask(BaseTask):
     error: str | None = None
     start_message_id: int | None = None
     end_message_id: int | None = None
-    _current_assistant_message_id: int | None = PrivateAttr(default=None)
 
     def format_for_render(self, *, tool_call: Any | None = None, sequence: int | None = None) -> str:
         return f"todo [{self.status}] {self.title}"
-
-    @property
-    def current_assistant_message_id(self) -> int | None:
-        return self._current_assistant_message_id
-
-    @current_assistant_message_id.setter
-    def current_assistant_message_id(self, message_id: int | None) -> None:
-        self._current_assistant_message_id = message_id
 
     @classmethod
     def from_metadata(
@@ -154,7 +133,6 @@ class RepoMemoryTask(BaseTask):
     result: str | None = None
     error: str | None = None
     _agent_index: AgentIndex | None = PrivateAttr(default=None)
-    _current_assistant_message_id: int | None = PrivateAttr(default=None)
 
     def format_for_render(self, *, tool_call: Any | None = None, sequence: int | None = None) -> str:
         return f"repo_memory [{self.status}] {self.title}"
@@ -166,14 +144,6 @@ class RepoMemoryTask(BaseTask):
                 base_dir=self.repo_path,
             )
         return self._agent_index
-
-    @property
-    def current_assistant_message_id(self) -> int | None:
-        return self._current_assistant_message_id
-
-    @current_assistant_message_id.setter
-    def current_assistant_message_id(self, message_id: int | None) -> None:
-        self._current_assistant_message_id = message_id
 
     @classmethod
     def from_metadata(

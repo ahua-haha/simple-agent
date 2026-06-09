@@ -29,6 +29,7 @@ class RepoMemoryLifecycle(BaseTaskLifecycle):
 
     def set_data(self, session_state: SessionState) -> None:
         self._session_state = session_state
+        self._current_assistant_message_id = None
         task = self._session_state.next_task
         if task is None:
             raise TaskLifecycleError("Session state has no next task")
@@ -37,8 +38,7 @@ class RepoMemoryLifecycle(BaseTaskLifecycle):
         self.task = cast(RepoMemoryTask, task)
 
     def clear_data(self) -> None:
-        if self.task is not None:
-            self.task.current_assistant_message_id = None
+        super().clear_data()
         self.task = None
 
     def instruction_text(self) -> str:
@@ -109,7 +109,7 @@ class RepoMemoryLifecycle(BaseTaskLifecycle):
         tool_call_records: list[tuple[int, ToolCall | None, ToolResultMessage]] = []
         tool_call_tasks: list[ToolCallTask] = []
         if _assistant_has_tool_calls(assistant_message):
-            task.current_assistant_message_id = assistant_entry.id
+            self._current_assistant_message_id = assistant_entry.id
             try:
                 tool_results = await agent_process.run_tool_calls_step(
                     tools=tools,
@@ -117,7 +117,7 @@ class RepoMemoryLifecycle(BaseTaskLifecycle):
                     cancel_event=cancel_event,
                 )
             finally:
-                task.current_assistant_message_id = None
+                self._current_assistant_message_id = None
             tool_call_records, tool_call_tasks = self._session_state.create_tool_call_record_task_entries(
                 assistant_message=assistant_message,
                 tool_result_messages=tool_results,
