@@ -4,10 +4,10 @@ from __future__ import annotations
 
 import asyncio
 import time
-from typing import TYPE_CHECKING, Any, cast
+from typing import TYPE_CHECKING, cast
 
 from pi.agent import AgentTool, AgentToolResult
-from pi.ai.types import AssistantMessage, TextContent, UserMessage
+from pi.ai.types import TextContent, UserMessage
 
 from simple_agent.run_log import runtime_logger
 from simple_agent.task_manager.base_lifecycle import (
@@ -16,8 +16,6 @@ from simple_agent.task_manager.base_lifecycle import (
     TaskLifecycleError,
     USER_TASK_COMPACT_SYSTEM_PROMPT,
     USER_TASK_SYSTEM_PROMPT,
-    _assistant_has_tool_calls,
-    _assistant_is_error,
     _next_task_action_text,
 )
 from simple_agent.task_manager.models import ManagedTask, TodoTask, ToolCallTask, UserTask
@@ -261,179 +259,6 @@ class UserTaskLifecycle(BaseTaskLifecycle):
             )
             session.commit()
         return self._session_state
-
-    async def handle_compact(
-        self,
-        *,
-        agent_process: AgentProcess,
-        cancel_event: asyncio.Event | None = None,
-    ) -> SessionState:
-        if not self.task.children:
-            if cancel_event is not None:
-                cancel_event.clear()
-            self._session_state.next_task_id_to_run = self.task.parent_id
-            self._session_state.next_task = None
-            return self._session_state
-
-        self.task.compacted_tool_calls = []
-        self.task.compacted_user_task_finished = False
-
-        compact_instruction = self.compaction_instruction_text()
-        compact_messages = [
-            *self._session_state.message_values(),
-            UserMessage(
-                content=[TextContent(text=compact_instruction)],
-                timestamp=int(time.time() * 1000),
-            ),
-        ]
-        compact_tools = self.create_compact_tools()
-        while True:
-            assistant_message = await agent_process.call_llm_step(
-                system_prompt=USER_TASK_COMPACT_SYSTEM_PROMPT,
-                messages=compact_messages,
-                tools=compact_tools,
-                cancel_event=cancel_event,
-            )
-            compact_messages.append(assistant_message)
-            if _assistant_is_error(assistant_message):
-                raise TaskLifecycleError(
-                    assistant_message.error_message or "assistant response stopped with error"
-                )
-            if not _assistant_has_tool_calls(assistant_message):
-                break
-            tool_results = await agent_process.run_tool_calls_step(
-                tools=compact_tools,
-                assistant_message=assistant_message,
-                cancel_event=cancel_event,
-            )
-            compact_messages.extend(tool_results)
-
-        start_message_id, end_message_id, compacted_messages = self.compaction_result()
-        replacement_entries = self._session_state.replace_message_range(
-            start_message_id=start_message_id,
-            end_message_id=end_message_id,
-            replacement_messages=compacted_messages,
-        )
-
-        if cancel_event is not None:
-            cancel_event.clear()
-
-        # TODO: determine next action after compacting.
-        self.task.children = list(self.task.compacted_tool_calls)
-        self.task.touch()
-        self._session_state.next_task_id_to_run = self.task.parent_id
-        self._session_state.next_task = None
-        runtime_logger.log_handle_compact_result(
-            session_id=self._session_state._require_session_id(),
-            compact_messages=compact_messages,
-            start_message_id=start_message_id,
-            end_message_id=end_message_id,
-            compacted_messages=compacted_messages,
-            replacement_messages=replacement_entries,
-            next_action=_next_task_action_text(self._session_state),
-        )
-        with self._session_state.create_database_session() as session:
-            self._session_state.replace_messages_in_database(session=session)
-            self._session_state.replace_task_tree_in_database(task=self.task, session=session)
-            session.commit()
-        return self._session_state
-
-    def create_compact_tools(self) -> list[AgentTool]:
-        create_tool = AgentTool(
-            name="create_compacted_user_task",
-            description="Set the compacted user task result with a concise summary.",
-            parameters={
-                "type": "object",
-                "properties": {
-                    "description": {"type": "string", "description": "Compacted user task summary"},
-                },
-                "required": ["description"],
-            },
-        )
-
-        async def create_execute(tool_call_id, params, cancel_event=None, on_update=None):
-            task = self.create_compacted_user_task(
-                description=params["description"],
-            )
-            return AgentToolResult(content=[TextContent(text=f"created compacted user task {task.id}")])
-
-        create_tool.execute = create_execute
-
-        record_tool = AgentTool(
-            name="record_compacted_tool_call",
-            description="Keep one useful runner tool-call log ID in the compacted user task.",
-            parameters={
-                "type": "object",
-                "properties": {
-                    "tool_call_log_id": {"type": "integer", "description": "Runner tool-call log ID"},
-                },
-                "required": ["tool_call_log_id"],
-            },
-        )
-
-        async def record_execute(tool_call_id, params, cancel_event=None, on_update=None):
-            self.record_compacted_tool_call(
-                tool_call_log_id=params["tool_call_log_id"],
-            )
-            return AgentToolResult(content=[TextContent(text="recorded compacted tool call")])
-
-        record_tool.execute = record_execute
-
-        finish_tool = AgentTool(
-            name="finish_compacted_user_task",
-            description="Finish the compacted user task after selecting useful tool calls.",
-            parameters={"type": "object", "properties": {}, "required": []},
-        )
-
-        async def finish_execute(tool_call_id, params, cancel_event=None, on_update=None):
-            task = self.finish_compacted_user_task()
-            return AgentToolResult(content=[TextContent(text=f"finished compacted user task {task.id}")])
-
-        finish_tool.execute = finish_execute
-        return [create_tool, record_tool, finish_tool]
-
-    def create_compacted_user_task(self, *, description: str) -> UserTask:
-        self.task.result = description
-        self.task.touch()
-        return self.task
-
-    def record_compacted_tool_call(self, *, tool_call_log_id: int) -> None:
-        tool_call_task = ToolCallTask(
-            id=self._session_state.allocate_task_id(),
-            status="done",
-            parent_id=self.task.id,
-            tool_call_log_id=tool_call_log_id,
-        )
-        self.task.compacted_tool_calls.append(tool_call_task)
-
-    def finish_compacted_user_task(self) -> UserTask:
-        if self.task.result is None:
-            raise TaskLifecycleError("No compacted user task result")
-        self.task.compacted_user_task_finished = True
-        self.task.touch()
-        return self.task
-
-    def compaction_result(self) -> tuple[int, int, list[Any]]:
-        if self.task.result is None:
-            raise TaskLifecycleError("No compacted user task result")
-        if not self.task.compacted_user_task_finished:
-            raise TaskLifecycleError("Compacted user task is not finished")
-        if self.task.start_message_id is None or self.task.end_message_id is None:
-            raise TaskLifecycleError("Compact scope is missing message boundaries")
-        tool_refs = [
-            child.tool_call_log_id
-            for child in self.task.compacted_tool_calls
-            if child.tool_call_log_id is not None
-        ]
-        text = (
-            f"Compacted user task: {self.task.result or self.task.title}\n"
-            f"Useful tool calls: {tool_refs}"
-        )
-        return (
-            self.task.start_message_id,
-            self.task.end_message_id,
-            [AssistantMessage(role="assistant", content=[TextContent(text=text)])],
-        )
 
     def create_finish_user_task_tool(self) -> AgentTool:
         tool = AgentTool(

@@ -43,27 +43,9 @@ class UserTask(BaseTask):
     start_message_id: int | None = None
     end_message_id: int | None = None
     compacted_tool_call_task_ids: list[int] = Field(default_factory=list)
-    _compacted_tool_calls: list["ToolCallTask"] = PrivateAttr(default_factory=list)
-    _compacted_user_task_finished: bool = PrivateAttr(default=False)
 
     def format_for_render(self, *, tool_call: Any | None = None, sequence: int | None = None) -> str:
         return f"user_task [{self.status}] {self.title}"
-
-    @property
-    def compacted_tool_calls(self) -> list["ToolCallTask"]:
-        return self._compacted_tool_calls
-
-    @compacted_tool_calls.setter
-    def compacted_tool_calls(self, tool_calls: list["ToolCallTask"]) -> None:
-        self._compacted_tool_calls = tool_calls
-
-    @property
-    def compacted_user_task_finished(self) -> bool:
-        return self._compacted_user_task_finished
-
-    @compacted_user_task_finished.setter
-    def compacted_user_task_finished(self, value: bool) -> None:
-        self._compacted_user_task_finished = value
 
     @classmethod
     def from_metadata(
