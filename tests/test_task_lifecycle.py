@@ -512,7 +512,7 @@ def test_user_task_lifecycle_uses_owned_allocator():
         content=[TextContent(text="files")],
     )
 
-    todo = lifecycle.create_todo_task(title="Inspect files")
+    todo = lifecycle.create_next_task(kind="todo", title="Inspect files", enabled_task_kinds=["todo"])
     _tool_call_records, tool_call_tasks = lifecycle._session_state.create_tool_call_record_task_entries(
         assistant_message=assistant_message,
         tool_result_messages=[tool_result],
@@ -682,7 +682,7 @@ def test_lifecycle_tracks_next_task_transition():
     user_task = UserTask(id=1, title="Build feature")
     user_lifecycle = _user_lifecycle(user_task, allocate_task_id=lambda: 2)
 
-    todo = user_lifecycle.create_todo_task(title="Inspect files")
+    todo = user_lifecycle.create_next_task(kind="todo", title="Inspect files", enabled_task_kinds=["todo"])
 
     assert user_lifecycle._session_state.next_task_id_to_run == todo.id
     assert user_lifecycle._session_state.next_task is todo
@@ -699,7 +699,7 @@ def test_lifecycle_allocates_task_id_from_session_state_context():
     user_task = UserTask(id=1, title="Build feature")
     lifecycle = _user_lifecycle(user_task, session_state=session_state)
 
-    todo = lifecycle.create_todo_task(title="Inspect files")
+    todo = lifecycle.create_next_task(kind="todo", title="Inspect files", enabled_task_kinds=["todo"])
 
     assert todo.id == 7
     assert session_state.next_task_id_to_allocate == 8

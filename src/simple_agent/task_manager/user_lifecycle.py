@@ -66,23 +66,6 @@ class UserTaskLifecycle(BaseTaskLifecycle):
             f"{builder_instruction}"
         )
 
-    def create_todo_task(
-        self,
-        *,
-        task_id: int | None = None,
-        title: str,
-    ) -> TodoTask:
-        todo = TodoTask(
-            id=task_id if task_id is not None else self._session_state.allocate_task_id(),
-            title=title,
-            parent_id=self.task.id,
-            start_message_id=self._current_assistant_message_id,
-        )
-        self.task.children.append(todo)
-        self.task.touch()
-        self._session_state.set_next_task(todo, keep_instance=True)
-        return todo
-
     def finish_task(self, *, result: str | None = None) -> UserTask:
         self.task.status = "done"
         self.task.result = result
@@ -221,36 +204,6 @@ class UserTaskLifecycle(BaseTaskLifecycle):
             )
             session.commit()
         return self._session_state
-
-    def create_create_todo_tool(self) -> AgentTool:
-        tool = AgentTool(
-            name="create_todo",
-            description=(
-                "Create the next todo item for the current session task list. "
-                "Use for complex tasks with 3+ steps or when the user provides "
-                "multiple tasks. Create items in priority order. Only one todo "
-                "may be active at a time."
-            ),
-            parameters={
-                "type": "object",
-                "properties": {
-                    "title": {
-                        "type": "string",
-                        "description": "Short content for the next coherent unit of work.",
-                    },
-                },
-                "required": ["title"],
-            },
-        )
-
-        async def execute(tool_call_id, params, cancel_event=None, on_update=None):
-            self.create_todo_task(
-                title=params["title"],
-            )
-            return AgentToolResult(content=[TextContent(text=todo_status_text(self.task))])
-
-        tool.execute = execute
-        return tool
 
     # ------------------------------------------------------------------
     # User-task compaction phase
