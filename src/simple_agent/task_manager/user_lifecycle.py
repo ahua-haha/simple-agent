@@ -234,7 +234,6 @@ class UserTaskLifecycle(BaseTaskLifecycle):
             cancel_event=cancel_event,
         )
         new_messages = [turn_result.assistant_entry, *turn_result.tool_result_entries]
-        self._session_state.append_messages(new_messages)
 
         task.children.extend(turn_result.tool_call_tasks)
         if turn_result.tool_call_tasks:
@@ -242,24 +241,22 @@ class UserTaskLifecycle(BaseTaskLifecycle):
 
         replacement_entries: list[MessageEntry] = []
         if turn_result.has_tool_call:
+            self._session_state.append_messages(new_messages)
             self.set_next_task(task.id, task)
         else:
             if task.start_message_id is None:
                 raise TaskLifecycleError("Compact task is missing start message id")
+            end_message_id = task.end_message_id or self._session_state.messages[-1].id
             compacted_messages = format_messages_from_user_task(task)
             replacement_entries = self._session_state.replace_message_range(
                 start_message_id=task.start_message_id,
-                end_message_id=turn_result.assistant_entry.id,
+                end_message_id=end_message_id,
                 replacement_messages=compacted_messages,
             )
             self.set_next_task(task.parent_id, None)
 
         tasks_to_sync: list[ManagedTask] = [task, *task.children]
         with self._session_state.create_database_session() as session:
-            self._session_state.append_messages_to_database(
-                messages=new_messages,
-                session=session,
-            )
             self._session_state.append_tool_calls_to_database(
                 tool_calls=turn_result.tool_call_records,
                 session=session,
@@ -271,8 +268,13 @@ class UserTaskLifecycle(BaseTaskLifecycle):
             if replacement_entries:
                 self._session_state.replace_message_range_in_database(
                     start_message_id=task.start_message_id,
-                    end_message_id=turn_result.assistant_entry.id,
+                    end_message_id=end_message_id,
                     replacement_messages=replacement_entries,
+                    session=session,
+                )
+            else:
+                self._session_state.append_messages_to_database(
+                    messages=new_messages,
                     session=session,
                 )
             session.commit()
