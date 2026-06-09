@@ -9,7 +9,6 @@ from typing import cast
 from pi.agent import AgentTool
 from pi.ai.types import AssistantMessage, TextContent, ToolCall, ToolResultMessage, UserMessage
 
-from simple_agent.index.indexer import AgentIndex
 from simple_agent.message_store import MessageEntry
 from simple_agent.run_log import runtime_logger
 from simple_agent.task_manager.lifecycle import (
@@ -30,7 +29,6 @@ class RepoMemoryLifecycle(BaseTaskLifecycle):
 
     def set_data(self, session_state: SessionState) -> None:
         self._session_state = session_state
-        self.current_assistant_message_id = None
         task = self._session_state.next_task
         if task is None:
             raise TaskLifecycleError("Session state has no next task")
@@ -39,7 +37,8 @@ class RepoMemoryLifecycle(BaseTaskLifecycle):
         self.task = cast(RepoMemoryTask, task)
 
     def clear_data(self) -> None:
-        super().clear_data()
+        if self.task is not None:
+            self.task.current_assistant_message_id = None
         self.task = None
 
     def instruction_text(self) -> str:
@@ -57,12 +56,8 @@ class RepoMemoryLifecycle(BaseTaskLifecycle):
         )
 
     def create_tools(self) -> list[AgentTool]:
-        index = AgentIndex(
-            db_path=self.task.index_db_path,
-            base_dir=self.task.repo_path,
-        )
         return [
-            *index.create_tools(),
+            *self.task.agent_index().create_tools(),
             *create_all_coding_tools(self.task.repo_path),
         ]
 
@@ -114,7 +109,7 @@ class RepoMemoryLifecycle(BaseTaskLifecycle):
         tool_call_records: list[tuple[int, ToolCall | None, ToolResultMessage]] = []
         tool_call_tasks: list[ToolCallTask] = []
         if _assistant_has_tool_calls(assistant_message):
-            self.current_assistant_message_id = assistant_entry.id
+            task.current_assistant_message_id = assistant_entry.id
             try:
                 tool_results = await agent_process.run_tool_calls_step(
                     tools=tools,
@@ -122,7 +117,7 @@ class RepoMemoryLifecycle(BaseTaskLifecycle):
                     cancel_event=cancel_event,
                 )
             finally:
-                self.current_assistant_message_id = None
+                task.current_assistant_message_id = None
             tool_call_records, tool_call_tasks = self._session_state.create_tool_call_record_task_entries(
                 assistant_message=assistant_message,
                 tool_result_messages=tool_results,

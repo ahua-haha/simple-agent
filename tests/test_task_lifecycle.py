@@ -2,11 +2,13 @@ import json
 
 import pytest
 
+from pi.agent import AgentTool, AgentToolResult
 from pi.ai.types import AssistantMessage, TextContent, ToolCall, ToolResultMessage, UserMessage
 
 from simple_agent.db.db import Database
 from simple_agent.message_store import MessageEntry
 from simple_agent.run_log import runtime_logger
+from simple_agent.index.indexer import AgentIndex
 from simple_agent.task_manager.lifecycle import (
     USER_TASK_COMPACT_SYSTEM_PROMPT,
     USER_TASK_SYSTEM_PROMPT,
@@ -255,6 +257,32 @@ def test_repo_memory_task_roundtrips_metadata():
     assert restored == task
 
 
+def test_repo_memory_task_maintains_runtime_agent_index(tmp_path):
+    task = RepoMemoryTask(
+        id=3,
+        title="Write repo memory",
+        repo_path=str(tmp_path),
+        index_db_path=str(tmp_path / "index.db"),
+    )
+
+    first_index = task.agent_index()
+    second_index = task.agent_index()
+    restored = task_from_metadata(
+        id=task.id,
+        parent_id=task.parent_id,
+        kind=task.kind,
+        status=task.status,
+        metadata=task.metadata_json(),
+    )
+
+    assert isinstance(first_index, AgentIndex)
+    assert second_index is first_index
+    assert restored.agent_index() is not first_index
+    metadata = json.loads(task.metadata_json())
+    assert "_agent_index" not in metadata
+    assert "_current_assistant_message_id" not in metadata
+
+
 def test_repo_memory_lifecycle_instruction_and_tools(tmp_path):
     task = RepoMemoryTask(
         id=3,
@@ -272,10 +300,96 @@ def test_repo_memory_lifecycle_instruction_and_tools(tmp_path):
     tools = lifecycle.create_tools()
 
     assert "Write durable repo memory" in instruction
+    assert "short and concise description" in instruction
+    assert "what each entry does" in instruction
     assert task.repo_path in instruction
     assert task.index_db_path in instruction
     assert "index_tree" in [tool.name for tool in tools]
     assert "index_upsert" in [tool.name for tool in tools]
+
+
+def test_repo_memory_lifecycle_uses_task_owned_agent_index(tmp_path):
+    class FakeIndex:
+        def __init__(self):
+            self.create_tools_calls = 0
+
+        def create_tools(self):
+            self.create_tools_calls += 1
+            return [
+                type(
+                    "FakeTool",
+                    (),
+                    {"name": "fake_index_tool"},
+                )()
+            ]
+
+    task = RepoMemoryTask(
+        id=3,
+        title="Write repo memory",
+        repo_path=str(tmp_path),
+        index_db_path=str(tmp_path / "index.db"),
+    )
+    fake_index = FakeIndex()
+    task._agent_index = fake_index
+    session_state = SessionState(messages=[])
+    session_state.next_task = task
+    session_state.next_task_id_to_run = task.id
+    lifecycle = RepoMemoryLifecycle()
+    lifecycle.set_data(session_state)
+
+    tools = lifecycle.create_tools()
+
+    assert fake_index.create_tools_calls == 1
+    assert "fake_index_tool" in [tool.name for tool in tools]
+
+
+@pytest.mark.asyncio
+async def test_repo_memory_lifecycle_uses_task_private_current_message_id(tmp_path):
+    observed_message_ids: list[int | None] = []
+
+    class FakeIndex:
+        def create_tools(self):
+            tool = AgentTool(
+                name="index_tree",
+                description="Fake tree",
+                parameters={"type": "object", "properties": {}},
+            )
+
+            async def execute(tool_call_id, params, cancel_event=None, on_update=None):
+                observed_message_ids.append(task.current_assistant_message_id)
+                return AgentToolResult(content=[TextContent(text="tree")])
+
+            tool.execute = execute
+            return [tool]
+
+    db = _make_db(tmp_path)
+    task = RepoMemoryTask(
+        id=3,
+        title="Write repo memory",
+        repo_path=str(tmp_path),
+        index_db_path=str(tmp_path / "index.db"),
+    )
+    task._agent_index = FakeIndex()
+    session_state = SessionState(
+        messages=[],
+        database=db,
+        session_id="session_a",
+        next_task_id_to_allocate=4,
+    )
+    session_state.next_task = task
+    session_state.next_task_id_to_run = task.id
+    lifecycle = RepoMemoryLifecycle()
+    lifecycle.set_data(session_state)
+    assistant_message = AssistantMessage(
+        role="assistant",
+        content=[ToolCall(id="call_1", name="index_tree", arguments={})],
+    )
+    agent_process = ExecutingFakeAgentProcess(assistant_message)
+
+    await lifecycle.run(agent_process=agent_process)
+
+    assert observed_message_ids == [1]
+    assert task.current_assistant_message_id is None
 
 
 def test_user_task_lifecycle_uses_owned_allocator():
