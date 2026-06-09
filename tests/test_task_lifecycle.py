@@ -427,8 +427,6 @@ def test_base_lifecycle_provides_next_task_instruction_and_tool():
     instruction = lifecycle.next_task_instruction_text(enabled_task_kinds=["todo"])
     next_task_tools = lifecycle.create_next_task_tools(enabled_task_kinds=["todo"])
 
-    assert not hasattr(task, "next_task_builder")
-    assert not hasattr(lifecycle, "_task_builder")
     assert "create_next_task" in instruction
     assert "todo" in instruction
     assert "repo_memory" not in instruction
@@ -1022,6 +1020,20 @@ async def test_user_task_lifecycle_run_keeps_done_task_for_compaction_when_neede
     assert lifecycle._session_state.next_task is user_task
     assert lifecycle._session_state.next_task_id_to_run == user_task.id
     assert db.get_managed_task(user_task.id).status == "done"
+
+
+@pytest.mark.asyncio
+async def test_user_task_lifecycle_run_routes_already_done_task_to_parent():
+    user_task = UserTask(id=1, title="Build feature", status="done")
+    lifecycle = _user_lifecycle(user_task)
+    agent_process = FakeAgentProcess(AssistantMessage(role="assistant", content=[TextContent(text="Done")]))
+
+    result = await lifecycle.run(agent_process=agent_process)
+
+    assert result is lifecycle._session_state
+    assert lifecycle._session_state.next_task is None
+    assert lifecycle._session_state.next_task_id_to_run is None
+    assert agent_process.llm_calls == []
 
 
 @pytest.mark.asyncio

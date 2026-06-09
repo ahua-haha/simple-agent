@@ -9,13 +9,13 @@ from typing import TYPE_CHECKING, Callable
 from pi.ai.types import TextContent, UserMessage
 
 from simple_agent.message_store import MessageEntry
-from simple_agent.task_manager.lifecycle import (
+from simple_agent.task_manager.base_lifecycle import (
     BaseTaskLifecycle,
     SessionState,
-    TodoTaskLifecycle,
-    UserTaskLifecycle,
 )
 from simple_agent.task_manager.repo_memory_lifecycle import RepoMemoryLifecycle
+from simple_agent.task_manager.todo_lifecycle import TodoTaskLifecycle
+from simple_agent.task_manager.user_lifecycle import UserTaskLifecycle
 from simple_agent.task_manager.models import ManagedTask, TodoTask, UserTask
 
 if TYPE_CHECKING:

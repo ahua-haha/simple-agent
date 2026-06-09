@@ -1,13 +1,13 @@
-"""Lifecycle for writing durable repo memory through AgentIndex tools."""
+"""Todo task lifecycle."""
 
 from __future__ import annotations
 
 import asyncio
 import time
-from typing import cast
+from typing import TYPE_CHECKING, cast
 
-from pi.agent import AgentTool
-from pi.ai.types import AssistantMessage, TextContent, ToolCall, ToolResultMessage, UserMessage
+from pi.agent import AgentTool, AgentToolResult
+from pi.ai.types import TextContent, ToolCall, ToolResultMessage, UserMessage
 
 from simple_agent.message_store import MessageEntry
 from simple_agent.run_log import runtime_logger
@@ -20,14 +20,15 @@ from simple_agent.task_manager.base_lifecycle import (
     _assistant_is_error,
     _next_task_action_text,
 )
-from simple_agent.task_manager.models import ManagedTask, RepoMemoryTask, ToolCallTask
+from simple_agent.task_manager.models import ManagedTask, TodoTask, ToolCallTask
 from simple_agent.tool.common_tools import create_all_coding_tools
 
+if TYPE_CHECKING:
+    from simple_agent.process.agent_process import AgentProcess
 
-class RepoMemoryLifecycle(BaseTaskLifecycle):
-    """Lifecycle that lets the agent inspect a repo and update AgentIndex."""
 
-    task: RepoMemoryTask | None
+class TodoTaskLifecycle(BaseTaskLifecycle):
+    task: TodoTask | None
 
     def set_data(self, session_state: SessionState) -> None:
         self._session_state = session_state
@@ -35,41 +36,70 @@ class RepoMemoryLifecycle(BaseTaskLifecycle):
         task = self._session_state.next_task
         if task is None:
             raise TaskLifecycleError("Session state has no next task")
-        if task.kind != "repo_memory":
-            raise TaskLifecycleError("Active lifecycle task is not a repo memory task")
-        self.task = cast(RepoMemoryTask, task)
+        if task.kind != "todo":
+            raise TaskLifecycleError("Active lifecycle task is not a todo task")
+        self.task = cast(TodoTask, task)
 
     def clear_data(self) -> None:
         super().clear_data()
         self.task = None
 
     def instruction_text(self) -> str:
+        task = self._require_todo_task_data()
+        if _count_tool_calls(task.children) > 10:
+            return (
+                "Runtime instruction for this turn:\n"
+                "- More than 10 tool calls have run for the active todo.\n"
+                "- Determine whether the active todo is finished.\n"
+                "- If it is finished, call finish_todo now with a concise result.\n"
+                "- If it is not finished, do only the next action needed to complete it."
+            )
         return (
-            "Runtime instruction for repo memory:\n"
-            "- Write durable repo memory for the current repository.\n"
-            f"- Repo path: {self.task.repo_path}\n"
-            f"- AgentIndex database: {self.task.index_db_path}\n"
-            "- Inspect files before writing memory.\n"
-            "- Use index_tree to review existing repo memory.\n"
-            "- Use index_upsert to record a short and concise description for each inspected entry.\n"
-            "- Each description should say what each entry does, not how you found it.\n"
-            "- Keep descriptions factual, specific, and brief enough to scan in the tree view.\n"
-            "- When enough useful repo memory is written, respond without tool calls with a concise summary."
+            "Runtime instruction for this turn:\n"
+            f"- Focus on the active todo: {task.title}\n"
+            "- Use tools only for work needed by this todo.\n"
+            "- Call finish_todo immediately when it is complete."
         )
+
+    def finish_task(self, *, result: str | None = None) -> TodoTask:
+        task = self._require_todo_task_data()
+        task.status = "done"
+        task.result = result
+        task.end_message_id = self._current_assistant_message_id
+        task.touch()
+        self._session_state.next_task_id_to_run = task.parent_id
+        self._session_state.next_task = None
+        return task
+
+    def error_task(self, *, error: str) -> TodoTask:
+        task = self._require_todo_task_data()
+        task.status = "error"
+        task.error = error
+        task.end_message_id = self._current_assistant_message_id
+        task.touch()
+        self._session_state.next_task_id_to_run = task.parent_id
+        self._session_state.next_task = None
+        return task
+
+    def _require_todo_task_data(self) -> TodoTask:
+        if self.task is None:
+            raise TaskLifecycleError("Task lifecycle has no todo task data")
+        return self.task
 
     def create_tools(self) -> list[AgentTool]:
         return [
-            *self.task.agent_index().create_tools(),
-            *create_all_coding_tools(self.task.repo_path),
+            self.create_finish_todo_tool(),
+            self.create_error_todo_tool(),
+            *create_all_coding_tools("."),
         ]
 
     async def run(
         self,
         *,
-        agent_process,
+        agent_process: AgentProcess,
         cancel_event: asyncio.Event | None = None,
     ) -> SessionState:
-        task = self.task
+        task = self._require_todo_task_data()
         if task.status != "active":
             self._session_state.next_task_id_to_run = task.parent_id
             self._session_state.next_task = None
@@ -82,10 +112,10 @@ class RepoMemoryLifecycle(BaseTaskLifecycle):
     async def run_one_turn(
         self,
         *,
-        agent_process,
+        agent_process: AgentProcess,
         cancel_event: asyncio.Event | None = None,
     ) -> SessionState:
-        task = self.task
+        task = self._require_todo_task_data()
         tools = self.create_tools()
         user_instruction_message = UserMessage(
             content=[TextContent(text=self.instruction_text())],
@@ -137,11 +167,12 @@ class RepoMemoryLifecycle(BaseTaskLifecycle):
         self._session_state.append_messages(new_messages)
 
         if not _assistant_has_tool_calls(assistant_message):
-            task.status = "done"
-            task.result = _assistant_text(assistant_message)
-            task.touch()
-            self._session_state.next_task_id_to_run = task.parent_id
-            self._session_state.next_task = None
+            self._current_assistant_message_id = assistant_entry.id
+            try:
+                if task.status == "active":
+                    self.finish_task()
+            finally:
+                self._current_assistant_message_id = None
         elif task.status == "active":
             self._session_state.set_next_task(task, keep_instance=True)
 
@@ -172,7 +203,56 @@ class RepoMemoryLifecycle(BaseTaskLifecycle):
             session.commit()
         return self._session_state
 
+    def create_finish_todo_tool(self) -> AgentTool:
+        tool = AgentTool(
+            name="finish_todo",
+            description=(
+                "Mark the active todo as completed. Call immediately when the "
+                "todo is done before moving to the next item."
+            ),
+            parameters={
+                "type": "object",
+                "properties": {
+                    "result": {"type": "string", "description": "Optional concise result for this todo"},
+                },
+                "required": [],
+            },
+        )
 
-def _assistant_text(message: AssistantMessage) -> str | None:
-    texts = [content.text for content in message.content if isinstance(content, TextContent)]
-    return "\n".join(texts) if texts else None
+        async def execute(tool_call_id, params, cancel_event=None, on_update=None):
+            task = self.finish_task(
+                result=params.get("result"),
+            )
+            return AgentToolResult(content=[TextContent(text=f"Todo finished: {task.result or task.title}")])
+
+        tool.execute = execute
+        return tool
+
+    def create_error_todo_tool(self) -> AgentTool:
+        tool = AgentTool(
+            name="error_todo",
+            description=(
+                "Cancel the active todo because it cannot be completed. If "
+                "there is a clear next step, create a revised todo after this."
+            ),
+            parameters={
+                "type": "object",
+                "properties": {
+                    "error": {"type": "string", "description": "Error details for the active todo"},
+                },
+                "required": ["error"],
+            },
+        )
+
+        async def execute(tool_call_id, params, cancel_event=None, on_update=None):
+            task = self.error_task(
+                error=params["error"],
+            )
+            return AgentToolResult(content=[TextContent(text=f"Todo errored: {task.error or task.title}")])
+
+        tool.execute = execute
+        return tool
+
+
+def _count_tool_calls(tasks: list[ManagedTask]) -> int:
+    return sum(1 for task in tasks if task.kind == "tool_call")

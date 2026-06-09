@@ -1,7 +1,8 @@
 """Task manager package."""
 
-from simple_agent.task_manager.lifecycle import TodoTaskLifecycle, UserTaskLifecycle
 from simple_agent.task_manager.repo_memory_lifecycle import RepoMemoryLifecycle
+from simple_agent.task_manager.todo_lifecycle import TodoTaskLifecycle
+from simple_agent.task_manager.user_lifecycle import UserTaskLifecycle
 from simple_agent.task_manager.models import (
     BaseTask,
     ManagedTask,

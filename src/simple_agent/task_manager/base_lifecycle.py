@@ -1,0 +1,416 @@
+"""Shared task lifecycle state and helpers."""
+
+from __future__ import annotations
+
+import asyncio
+from dataclasses import dataclass
+from typing import TYPE_CHECKING
+
+from pi.agent import AgentTool, AgentToolResult
+from pi.agent.types import AgentMessage
+from pi.ai.types import AssistantMessage, TextContent, ToolCall, ToolResultMessage
+
+from simple_agent.message_store import MessageEntry
+from simple_agent.task_manager.models import ManagedTask, RepoMemoryTask, TodoTask, ToolCallTask
+
+if TYPE_CHECKING:
+    from simple_agent.db.db import Database
+    from simple_agent.process.agent_process import AgentProcess
+    from sqlmodel import Session as SqlSession
+
+
+class TaskLifecycleError(RuntimeError):
+    """Raised when a task lifecycle cannot complete an operation."""
+
+
+USER_TASK_SYSTEM_PROMPT = """You are a helpful coding agent.
+
+Be concise, practical, and honest about uncertainty. Use available tools
+when they are needed, and explain outcomes clearly.
+"""
+
+USER_TASK_COMPACT_SYSTEM_PROMPT = """Compact the finished user task into one compacted user task.
+Use only the compact tools. Set the compacted user task result, record useful
+tool-call log IDs, then finish the compacted user task."""
+
+
+@dataclass
+class SessionState:
+    messages: list[MessageEntry]
+    session_id: str | None = None
+    database: Database | None = None
+    next_message_id: int = 1
+    next_tool_call_log_id: int = 0
+    next_task_id_to_allocate: int | None = None
+    next_task_id_to_run: int | None = None
+    next_task: ManagedTask | None = None
+
+    def allocate_message_id(self) -> int:
+        message_id = self.next_message_id
+        self.next_message_id += 1
+        return message_id
+
+    def allocate_task_id(self) -> int:
+        if self.next_task_id_to_allocate is None:
+            raise TaskLifecycleError("Session state is missing task allocation state")
+        task_id = self.next_task_id_to_allocate
+        self.next_task_id_to_allocate += 1
+        return task_id
+
+    def allocate_tool_call_log_id(self) -> int:
+        tool_call_log_id = self.next_tool_call_log_id
+        self.next_tool_call_log_id += 1
+        return tool_call_log_id
+
+    def message_values(self) -> list[AgentMessage]:
+        return [entry.message for entry in self.messages]
+
+    def append_message(self, message: AgentMessage) -> MessageEntry:
+        entry = MessageEntry(id=self.allocate_message_id(), message=message)
+        self.messages.append(entry)
+        return entry
+
+    def append_messages(self, messages: list[AgentMessage | MessageEntry]) -> list[MessageEntry]:
+        entries: list[MessageEntry] = []
+        for message in messages:
+            if isinstance(message, MessageEntry):
+                entry = message
+                self.messages.append(entry)
+                self.next_message_id = max(self.next_message_id, entry.id + 1)
+            else:
+                entry = self.append_message(message)
+            entries.append(entry)
+        return entries
+
+    def replace_message_range(
+        self,
+        *,
+        start_message_id: int,
+        end_message_id: int,
+        replacement_messages: list[AgentMessage],
+    ) -> list[MessageEntry]:
+        start_index = self._message_index(start_message_id)
+        end_index = self._message_index(end_message_id)
+        if end_index < start_index:
+            raise RuntimeError("Compact end message is before compact start message")
+        replacement_entries = [
+            MessageEntry(id=self.allocate_message_id(), message=message)
+            for message in replacement_messages
+        ]
+        self.messages = [
+            *self.messages[:start_index],
+            *replacement_entries,
+            *self.messages[end_index + 1:],
+        ]
+        return replacement_entries
+
+    def create_tool_call_record_task_entries(
+        self,
+        *,
+        assistant_message: AssistantMessage,
+        tool_result_messages: list[ToolResultMessage],
+        parent_task: ManagedTask,
+    ) -> tuple[list[tuple[int, ToolCall | None, ToolResultMessage]], list[ToolCallTask]]:
+        tool_call_records: list[tuple[int, ToolCall | None, ToolResultMessage]] = []
+        tool_call_tasks: list[ToolCallTask] = []
+        for tool_result_message in tool_result_messages:
+            log_id = self.allocate_tool_call_log_id()
+            tool_call = _tool_call_for_result(
+                assistant_message=assistant_message,
+                tool_result_message=tool_result_message,
+            )
+            tool_call_records.append((log_id, tool_call, tool_result_message))
+            tool_call_tasks.append(
+                ToolCallTask(
+                    id=self.allocate_task_id(),
+                    status="done",
+                    parent_id=parent_task.id,
+                    tool_call_log_id=log_id,
+                    tool_call_name=tool_call.name if tool_call is not None else tool_result_message.tool_name,
+                    tool_call_args=tool_call.arguments if tool_call is not None else None,
+                )
+            )
+        return tool_call_records, tool_call_tasks
+
+    def create_database_session(self) -> SqlSession:
+        return self._require_database().create_session()
+
+    def append_messages_to_database(
+        self,
+        *,
+        messages: list[MessageEntry],
+        session: SqlSession,
+    ) -> None:
+        database = self._require_database()
+        session_id = self._require_session_id()
+        for message in messages:
+            database.insert_runner_message(
+                session_id,
+                message.message,
+                id=message.id,
+                session=session,
+            )
+
+    def append_tool_calls_to_database(
+        self,
+        *,
+        tool_calls: list[tuple[int, ToolCall | None, ToolResultMessage]],
+        session: SqlSession,
+    ) -> None:
+        database = self._require_database()
+        session_id = self._require_session_id()
+        for log_id, tool_call, tool_result in tool_calls:
+            database.insert_runner_tool_call(
+                id=log_id,
+                session_id=session_id,
+                tool_call_id=tool_result.tool_call_id,
+                tool_name=tool_result.tool_name,
+                tool_call_json=tool_call.model_dump_json() if tool_call is not None else "null",
+                tool_result_json=tool_result.model_dump_json(),
+                session=session,
+            )
+
+    def append_tasks_to_database(
+        self,
+        *,
+        tasks: list[ManagedTask],
+        session: SqlSession,
+    ) -> None:
+        database = self._require_database()
+        for task in tasks:
+            database.upsert_managed_task(task, session=session)
+
+    def replace_messages_in_database(self, *, session: SqlSession) -> None:
+        database = self._require_database()
+        session_id = self._require_session_id()
+        database.replace_runner_messages(
+            session_id,
+            [entry.message for entry in self.messages],
+            ids=[entry.id for entry in self.messages],
+            session=session,
+        )
+
+    def replace_task_tree_in_database(
+        self,
+        *,
+        task: ManagedTask,
+        session: SqlSession,
+    ) -> None:
+        database = self._require_database()
+        database.replace_managed_task_tree(task, session=session)
+
+    def set_next_task(self, task: ManagedTask | None, *, keep_instance: bool = False) -> None:
+        self.next_task_id_to_run = task.id if task is not None else None
+        self.next_task = task if task is not None and keep_instance else None
+
+    def _message_index(self, message_id: int) -> int:
+        for index, entry in enumerate(self.messages):
+            if entry.id == message_id:
+                return index
+        raise RuntimeError(f"Could not find message id {message_id}")
+
+    def _require_database(self) -> Database:
+        if self.database is None:
+            raise TaskLifecycleError("Session state is missing database")
+        return self.database
+
+    def _require_session_id(self) -> str:
+        if self.session_id is None:
+            raise TaskLifecycleError("Session state is missing session id")
+        return self.session_id
+
+
+class BaseTaskLifecycle:
+    _session_state: SessionState
+    task: ManagedTask | None
+    _current_assistant_message_id: int | None
+
+    def clear_data(self) -> None:
+        self.task = None
+        self._current_assistant_message_id = None
+
+    def set_data(self, session_state: SessionState) -> None:
+        self._session_state = session_state
+        self.task = None
+        self._current_assistant_message_id = None
+        raise NotImplementedError(f"{type(self).__name__}.set_data is not implemented")
+
+    def create_next_task_tools(
+        self,
+        *,
+        enabled_task_kinds: list[str] | tuple[str, ...] | None = None,
+    ) -> list[AgentTool]:
+        return [self.build_create_next_task_tool(enabled_task_kinds=enabled_task_kinds)]
+
+    def next_task_instruction_text(
+        self,
+        *,
+        enabled_task_kinds: list[str] | tuple[str, ...] | None = None,
+    ) -> str:
+        enabled_kinds = self._validate_enabled_task_kinds(enabled_task_kinds)
+        lines = [
+            "Next task builder:",
+            "- Tool: create_next_task(kind, title, metadata).",
+            "- Use it before switching from the current task to a different unit of work.",
+            "- Enabled task kinds:",
+        ]
+        if "todo" in enabled_kinds:
+            lines.extend(
+                [
+                    "  - todo: use for the next small atomic implementation, debugging, inspection, or verification step.",
+                    "    metadata: omit it or pass {}. Put the concrete next action in title.",
+                    "    example: {\"kind\":\"todo\",\"title\":\"Inspect session runner state transitions\",\"metadata\":{}}",
+                ]
+            )
+        if "repo_memory" in enabled_kinds:
+            lines.extend(
+                [
+                    "  - repo_memory: use when the next step is to write durable repository memory with AgentIndex.",
+                    "    metadata: {\"repo_path\":\"<repo path>\",\"index_db_path\":\"<index database path>\"}.",
+                    "    repo_path may be omitted when the current repository root is correct.",
+                    "    index_db_path is required.",
+                    "    example: {\"kind\":\"repo_memory\",\"title\":\"Write memory for task lifecycle design\",\"metadata\":{\"repo_path\":\".\",\"index_db_path\":\".agent-index.db\"}}",
+                ]
+            )
+        lines.append("- Do not invent metadata keys unless the selected task kind asks for them.")
+        lines.append("- Create only one next task at a time.")
+        return "\n".join(lines)
+
+    def build_create_next_task_tool(
+        self,
+        *,
+        enabled_task_kinds: list[str] | tuple[str, ...] | None = None,
+    ) -> AgentTool:
+        enabled_kinds = self._validate_enabled_task_kinds(enabled_task_kinds)
+
+        tool = AgentTool(
+            name="create_next_task",
+            description=(
+                "Create the next task for this session. Use this before moving "
+                "from the current task to a todo or repo-memory task."
+            ),
+            parameters={
+                "type": "object",
+                "properties": {
+                    "kind": {
+                        "type": "string",
+                        "enum": enabled_kinds,
+                        "description": "The type of next task to create.",
+                    },
+                    "title": {
+                        "type": "string",
+                        "description": "Short title for the next task.",
+                    },
+                    "metadata": {
+                        "type": "object",
+                        "description": (
+                            "Task-specific metadata. For repo_memory include "
+                            "repo_path and index_db_path. Todo tasks usually omit this."
+                        ),
+                        "additionalProperties": True,
+                    },
+                },
+                "required": ["kind", "title"],
+            },
+        )
+
+        async def execute(tool_call_id, params, cancel_event=None, on_update=None):
+            task = self.create_next_task(
+                kind=params["kind"],
+                title=params["title"],
+                metadata=params.get("metadata"),
+                enabled_task_kinds=enabled_kinds,
+            )
+            return AgentToolResult(content=[TextContent(text=f"Created next task: {task.kind} {task.title}")])
+
+        tool.execute = execute
+        return tool
+
+    def create_next_task(
+        self,
+        *,
+        kind: str,
+        title: str,
+        metadata: dict | None = None,
+        enabled_task_kinds: list[str] | tuple[str, ...] | None = None,
+    ) -> ManagedTask:
+        enabled_kinds = self._validate_enabled_task_kinds(enabled_task_kinds)
+        if kind not in enabled_kinds:
+            raise TaskLifecycleError(f"Task kind is disabled: {kind}")
+        parent = self._require_task()
+        metadata = metadata or {}
+        if kind == "todo":
+            task: ManagedTask = TodoTask(
+                id=self._session_state.allocate_task_id(),
+                parent_id=parent.id,
+                title=title,
+                start_message_id=self._current_assistant_message_id,
+            )
+        elif kind == "repo_memory":
+            repo_path = metadata.get("repo_path")
+            index_db_path = metadata.get("index_db_path")
+            if index_db_path is None:
+                raise TaskLifecycleError("repo_memory task requires index_db_path")
+            task = RepoMemoryTask(
+                id=self._session_state.allocate_task_id(),
+                parent_id=parent.id,
+                title=title,
+                repo_path=repo_path or ".",
+                index_db_path=index_db_path,
+            )
+        else:
+            raise TaskLifecycleError(f"Unsupported next task kind: {kind}")
+
+        parent.children.append(task)
+        parent.touch()
+        self._session_state.set_next_task(task, keep_instance=True)
+        return task
+
+    def _validate_enabled_task_kinds(
+        self,
+        enabled_task_kinds: list[str] | tuple[str, ...] | None,
+    ) -> list[str]:
+        enabled_kinds = list(enabled_task_kinds or ("todo", "repo_memory"))
+        invalid = [kind for kind in enabled_kinds if kind not in ("todo", "repo_memory")]
+        if invalid:
+            raise TaskLifecycleError(f"Unsupported task kind enabled: {invalid[0]}")
+        return enabled_kinds
+
+    def _require_task(self) -> ManagedTask:
+        parent = self.task
+        if parent is None:
+            raise TaskLifecycleError("Lifecycle has no current task to attach next task")
+        if parent.id is None:
+            raise TaskLifecycleError("Current task must have an id before creating a next task")
+        return parent
+
+    async def run(
+        self,
+        *,
+        agent_process: AgentProcess,
+        cancel_event: asyncio.Event | None = None,
+    ) -> SessionState:
+        raise NotImplementedError(f"{type(self).__name__}.run is not implemented")
+
+
+def _next_task_action_text(session_state: SessionState) -> str:
+    return "next_task" if session_state.next_task_id_to_run is not None else "wait_user_input"
+
+
+def _assistant_has_tool_calls(message: AssistantMessage) -> bool:
+    return any(isinstance(content, ToolCall) for content in message.content)
+
+
+def _assistant_is_error(message: AssistantMessage) -> bool:
+    return message.stop_reason == "error" or bool(message.error_message)
+
+
+def _tool_call_for_result(
+    *,
+    assistant_message: AssistantMessage,
+    tool_result_message: ToolResultMessage,
+) -> ToolCall | None:
+    for content in assistant_message.content:
+        if isinstance(content, ToolCall) and content.id == tool_result_message.tool_call_id:
+            return content
+    return None
