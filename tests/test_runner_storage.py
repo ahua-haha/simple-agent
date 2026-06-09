@@ -102,6 +102,40 @@ def test_replace_runner_messages_rewrites_whole_message_table(tmp_path):
     assert [m.content[0].text for m in messages] == ["replacement", "two"]
 
 
+def test_delete_runner_message_seq_range_removes_only_matching_session_rows(tmp_path):
+    db_path = tmp_path / "session.db"
+    db = Database(str(db_path))
+    for message_id, text in [(10, "one"), (40, "two"), (20, "three"), (30, "four")]:
+        db.insert_runner_message(
+            "session_a",
+            AssistantMessage(role="assistant", content=[TextContent(text=text)]),
+            id=message_id,
+        )
+    db.insert_runner_message(
+        "session_b",
+        AssistantMessage(role="assistant", content=[TextContent(text="other")]),
+        id=5,
+    )
+
+    with sqlite3.connect(db_path) as conn:
+        rows = conn.execute(
+            """
+            SELECT seq, id
+            FROM runnermessagerecord
+            WHERE session_id = ?
+            ORDER BY seq
+            """,
+            ("session_a",),
+        ).fetchall()
+    start_seq = rows[1][0]
+    end_seq = rows[2][0]
+
+    db.delete_runner_message_seq_range("session_a", start_seq=start_seq, end_seq=end_seq)
+
+    assert [message.content[0].text for message in db.list_runner_messages("session_a")] == ["one", "four"]
+    assert [message.content[0].text for message in db.list_runner_messages("session_b")] == ["other"]
+
+
 def test_next_managed_task_id_uses_highest_existing_id(tmp_path):
     db = Database(str(tmp_path / "session.db"))
 

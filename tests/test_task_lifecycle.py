@@ -878,6 +878,37 @@ def test_session_state_replaces_messages_in_database(tmp_path):
     assert [message.content[0].text for _entry_id, message in entries] == ["compact"]
 
 
+def test_session_state_replaces_message_range_in_database(tmp_path):
+    db = _make_db(tmp_path)
+    messages = [
+        MessageEntry(id=10, message=UserMessage(content=[TextContent(text="one")], timestamp=1)),
+        MessageEntry(id=40, message=AssistantMessage(role="assistant", content=[TextContent(text="two")])),
+        MessageEntry(id=20, message=AssistantMessage(role="assistant", content=[TextContent(text="three")])),
+        MessageEntry(id=30, message=AssistantMessage(role="assistant", content=[TextContent(text="four")])),
+    ]
+    with db.create_session() as session:
+        for entry in messages:
+            db.insert_runner_message("session_a", entry.message, id=entry.id, session=session)
+        session.commit()
+    session_state = SessionState(messages=list(messages), database=db, session_id="session_a")
+    replacement = [
+        MessageEntry(id=50, message=AssistantMessage(role="assistant", content=[TextContent(text="compact")]))
+    ]
+
+    with session_state.create_database_session() as session:
+        session_state.replace_message_range_in_database(
+            start_message_id=40,
+            end_message_id=20,
+            replacement_messages=replacement,
+            session=session,
+        )
+        session.commit()
+
+    entries = db.list_runner_message_entries("session_a")
+    assert [entry_id for entry_id, _message in entries] == [10, 30, 50]
+    assert [message.content[0].text for _entry_id, message in entries] == ["one", "four", "compact"]
+
+
 def test_session_state_replaces_task_tree_in_database(tmp_path):
     db = _make_db(tmp_path)
     user_task = UserTask(id=1, title="Build feature")

@@ -190,6 +190,44 @@ class SessionState:
             session=session,
         )
 
+    def replace_message_range_in_database(
+        self,
+        *,
+        start_message_id: int,
+        end_message_id: int,
+        replacement_messages: list[MessageEntry],
+        session: SqlSession,
+    ) -> None:
+        database = self._require_database()
+        session_id = self._require_session_id()
+        start_index = self._message_index(start_message_id)
+        end_index = self._message_index(end_message_id)
+        if end_index < start_index:
+            raise RuntimeError("Compact end message is before compact start message")
+        start_seq = database.get_runner_message_seq(
+            session_id,
+            start_message_id,
+            session=session,
+        )
+        end_seq = database.get_runner_message_seq(
+            session_id,
+            end_message_id,
+            session=session,
+        )
+        database.delete_runner_message_seq_range(
+            session_id,
+            start_seq=start_seq,
+            end_seq=end_seq,
+            session=session,
+        )
+        for message in replacement_messages:
+            database.insert_runner_message(
+                session_id,
+                message.message,
+                id=message.id,
+                session=session,
+            )
+
     def replace_task_tree_in_database(
         self,
         *,

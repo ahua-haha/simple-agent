@@ -233,6 +233,43 @@ class Database:
             )
 
     @standalone_or_compose
+    def delete_runner_message_seq_range(
+        self,
+        session_id: str,
+        *,
+        start_seq: int,
+        end_seq: int,
+        session: Session | None = None,
+    ) -> None:
+        if end_seq < start_seq:
+            raise ValueError("End message seq is before start message seq")
+        session.exec(
+            delete(RunnerMessageRecord)
+            .where(RunnerMessageRecord.session_id == session_id)
+            .where(RunnerMessageRecord.seq >= start_seq)
+            .where(RunnerMessageRecord.seq <= end_seq)
+        )
+
+    @standalone_or_compose
+    def get_runner_message_seq(
+        self,
+        session_id: str,
+        message_id: int,
+        *,
+        session: Session | None = None,
+    ) -> int:
+        record = session.exec(
+            select(RunnerMessageRecord)
+            .where(RunnerMessageRecord.session_id == session_id)
+            .where(RunnerMessageRecord.id == message_id)
+        ).first()
+        if record is None:
+            raise ValueError(f"Runner message id does not exist: {message_id}")
+        if record.seq is None:
+            raise ValueError(f"Runner message id has no sequence: {message_id}")
+        return record.seq
+
+    @standalone_or_compose
     def list_runner_messages(
         self,
         session_id: str,
