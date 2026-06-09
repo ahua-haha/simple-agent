@@ -17,7 +17,7 @@ from pi.ai.types import AssistantMessage, TextContent, ToolCall, ToolResultMessa
 
 from simple_agent.message_store import MessageEntry
 from simple_agent.run_log import runtime_logger
-from simple_agent.task_manager.models import ManagedTask, TodoTask, ToolCallTask, UserTask
+from simple_agent.task_manager.models import ManagedTask, RepoMemoryTask, TodoTask, ToolCallTask, UserTask
 from simple_agent.task_manager.review import TaskTreeRenderer
 from simple_agent.tool.common_tools import create_all_coding_tools
 
@@ -230,15 +230,167 @@ class SessionState:
 
 class BaseTaskLifecycle:
     _session_state: SessionState
+    task: ManagedTask | None
     _current_assistant_message_id: int | None
 
     def clear_data(self) -> None:
+        self.task = None
         self._current_assistant_message_id = None
 
     def set_data(self, session_state: SessionState) -> None:
         self._session_state = session_state
+        self.task = None
         self._current_assistant_message_id = None
         raise NotImplementedError(f"{type(self).__name__}.set_data is not implemented")
+
+    def create_next_task_tools(
+        self,
+        *,
+        enabled_task_kinds: list[str] | tuple[str, ...] | None = None,
+    ) -> list[AgentTool]:
+        return [self.build_create_next_task_tool(enabled_task_kinds=enabled_task_kinds)]
+
+    def next_task_instruction_text(
+        self,
+        *,
+        enabled_task_kinds: list[str] | tuple[str, ...] | None = None,
+    ) -> str:
+        enabled_kinds = self._validate_enabled_task_kinds(enabled_task_kinds)
+        lines = [
+            "Next task builder:",
+            "- Tool: create_next_task(kind, title, metadata).",
+            "- Use it before switching from the current task to a different unit of work.",
+            "- Enabled task kinds:",
+        ]
+        if "todo" in enabled_kinds:
+            lines.extend(
+                [
+                    "  - todo: use for the next small atomic implementation, debugging, inspection, or verification step.",
+                    "    metadata: omit it or pass {}. Put the concrete next action in title.",
+                    "    example: {\"kind\":\"todo\",\"title\":\"Inspect session runner state transitions\",\"metadata\":{}}",
+                ]
+            )
+        if "repo_memory" in enabled_kinds:
+            lines.extend(
+                [
+                    "  - repo_memory: use when the next step is to write durable repository memory with AgentIndex.",
+                    "    metadata: {\"repo_path\":\"<repo path>\",\"index_db_path\":\"<index database path>\"}.",
+                    "    repo_path may be omitted when the current repository root is correct.",
+                    "    index_db_path is required.",
+                    "    example: {\"kind\":\"repo_memory\",\"title\":\"Write memory for task lifecycle design\",\"metadata\":{\"repo_path\":\".\",\"index_db_path\":\".agent-index.db\"}}",
+                ]
+            )
+        lines.append("- Do not invent metadata keys unless the selected task kind asks for them.")
+        lines.append("- Create only one next task at a time.")
+        return "\n".join(lines)
+
+    def build_create_next_task_tool(
+        self,
+        *,
+        enabled_task_kinds: list[str] | tuple[str, ...] | None = None,
+    ) -> AgentTool:
+        enabled_kinds = self._validate_enabled_task_kinds(enabled_task_kinds)
+
+        tool = AgentTool(
+            name="create_next_task",
+            description=(
+                "Create the next task for this session. Use this before moving "
+                "from the current task to a todo or repo-memory task."
+            ),
+            parameters={
+                "type": "object",
+                "properties": {
+                    "kind": {
+                        "type": "string",
+                        "enum": enabled_kinds,
+                        "description": "The type of next task to create.",
+                    },
+                    "title": {
+                        "type": "string",
+                        "description": "Short title for the next task.",
+                    },
+                    "metadata": {
+                        "type": "object",
+                        "description": (
+                            "Task-specific metadata. For repo_memory include "
+                            "repo_path and index_db_path. Todo tasks usually omit this."
+                        ),
+                        "additionalProperties": True,
+                    },
+                },
+                "required": ["kind", "title"],
+            },
+        )
+
+        async def execute(tool_call_id, params, cancel_event=None, on_update=None):
+            task = self.create_next_task(
+                kind=params["kind"],
+                title=params["title"],
+                metadata=params.get("metadata"),
+                enabled_task_kinds=enabled_kinds,
+            )
+            return AgentToolResult(content=[TextContent(text=f"Created next task: {task.kind} {task.title}")])
+
+        tool.execute = execute
+        return tool
+
+    def create_next_task(
+        self,
+        *,
+        kind: str,
+        title: str,
+        metadata: dict | None = None,
+        enabled_task_kinds: list[str] | tuple[str, ...] | None = None,
+    ) -> ManagedTask:
+        enabled_kinds = self._validate_enabled_task_kinds(enabled_task_kinds)
+        if kind not in enabled_kinds:
+            raise TaskLifecycleError(f"Task kind is disabled: {kind}")
+        parent = self._require_task()
+        metadata = metadata or {}
+        if kind == "todo":
+            task: ManagedTask = TodoTask(
+                id=self._session_state.allocate_task_id(),
+                parent_id=parent.id,
+                title=title,
+                start_message_id=self._current_assistant_message_id,
+            )
+        elif kind == "repo_memory":
+            repo_path = metadata.get("repo_path")
+            index_db_path = metadata.get("index_db_path")
+            if index_db_path is None:
+                raise TaskLifecycleError("repo_memory task requires index_db_path")
+            task = RepoMemoryTask(
+                id=self._session_state.allocate_task_id(),
+                parent_id=parent.id,
+                title=title,
+                repo_path=repo_path or ".",
+                index_db_path=index_db_path,
+            )
+        else:
+            raise TaskLifecycleError(f"Unsupported next task kind: {kind}")
+
+        parent.children.append(task)
+        parent.touch()
+        self._session_state.set_next_task(task, keep_instance=True)
+        return task
+
+    def _validate_enabled_task_kinds(
+        self,
+        enabled_task_kinds: list[str] | tuple[str, ...] | None,
+    ) -> list[str]:
+        enabled_kinds = list(enabled_task_kinds or ("todo", "repo_memory"))
+        invalid = [kind for kind in enabled_kinds if kind not in ("todo", "repo_memory")]
+        if invalid:
+            raise TaskLifecycleError(f"Unsupported task kind enabled: {invalid[0]}")
+        return enabled_kinds
+
+    def _require_task(self) -> ManagedTask:
+        parent = self.task
+        if parent is None:
+            raise TaskLifecycleError("Lifecycle has no current task to attach next task")
+        if parent.id is None:
+            raise TaskLifecycleError("Current task must have an id before creating a next task")
+        return parent
 
     async def run(
         self,
@@ -250,9 +402,9 @@ class BaseTaskLifecycle:
 
 
 class UserTaskLifecycle(BaseTaskLifecycle):
-    def set_data(self, session_state: SessionState) -> None:
-        from simple_agent.task_manager.task_builder import NextTaskBuilder
+    task: UserTask | None
 
+    def set_data(self, session_state: SessionState) -> None:
         self._session_state = session_state
         self._current_assistant_message_id = None
         task = self._session_state.next_task
@@ -261,19 +413,12 @@ class UserTaskLifecycle(BaseTaskLifecycle):
         if task.kind != "user_task":
             raise TaskLifecycleError("Active lifecycle task is not a user task")
         self.task = cast(UserTask, task)
-        self._task_builder = NextTaskBuilder(
-            self._session_state,
-            enabled_task_kinds=["todo", "repo_memory"],
-            current_assistant_message_id=lambda: self._current_assistant_message_id,
-        )
 
     def clear_data(self) -> None:
         super().clear_data()
-        self.task = None
-        self._task_builder = None
 
     def instruction_text(self) -> str:
-        builder_instruction = self._task_builder.instruction_text()
+        builder_instruction = self.next_task_instruction_text(enabled_task_kinds=["todo", "repo_memory"])
         if _count_user_task_tool_calls_after_latest_todo(self.task) > 5:
             return (
                 "Runtime instruction for this turn:\n"
@@ -323,7 +468,7 @@ class UserTaskLifecycle(BaseTaskLifecycle):
 
     def create_tools(self) -> list[AgentTool]:
         return [
-            *self._task_builder.create_tools(),
+            *self.create_next_task_tools(enabled_task_kinds=["todo", "repo_memory"]),
             self.create_finish_user_task_tool(),
             *create_all_coding_tools("."),
         ]
@@ -699,6 +844,8 @@ class UserTaskLifecycle(BaseTaskLifecycle):
 
 
 class TodoTaskLifecycle(BaseTaskLifecycle):
+    task: TodoTask | None
+
     def set_data(self, session_state: SessionState) -> None:
         self._session_state = session_state
         self._current_assistant_message_id = None

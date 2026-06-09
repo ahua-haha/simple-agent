@@ -414,15 +414,54 @@ def test_user_task_maintains_compaction_runtime_state():
     assert restored.compacted_user_task_finished is False
 
 
-def test_user_task_lifecycle_owns_next_task_builder():
+def test_base_lifecycle_provides_next_task_instruction_and_tool():
     task = UserTask(id=1, title="Build feature")
-    lifecycle = _user_lifecycle(task)
+    session_state = SessionState(
+        messages=[],
+        next_task=task,
+        next_task_id_to_run=task.id,
+        next_task_id_to_allocate=2,
+    )
+    lifecycle = _user_lifecycle(task, session_state=session_state)
 
-    first_builder = lifecycle._task_builder
-    second_builder = lifecycle._task_builder
+    instruction = lifecycle.next_task_instruction_text(enabled_task_kinds=["todo"])
+    next_task_tools = lifecycle.create_next_task_tools(enabled_task_kinds=["todo"])
 
-    assert first_builder is second_builder
     assert not hasattr(task, "next_task_builder")
+    assert not hasattr(lifecycle, "_task_builder")
+    assert "create_next_task" in instruction
+    assert "todo" in instruction
+    assert "repo_memory" not in instruction
+    assert [tool.name for tool in next_task_tools] == ["create_next_task"]
+    assert next_task_tools[0].parameters["properties"]["kind"]["enum"] == ["todo"]
+
+
+@pytest.mark.asyncio
+async def test_base_lifecycle_create_next_task_tool_mutates_session_state():
+    task = UserTask(id=1, title="Build feature")
+    stale_next_task = UserTask(id=99, title="Stale active pointer")
+    session_state = SessionState(
+        messages=[],
+        next_task=task,
+        next_task_id_to_run=task.id,
+        next_task_id_to_allocate=2,
+    )
+    lifecycle = _user_lifecycle(task, session_state=session_state)
+    session_state.next_task = stale_next_task
+    lifecycle._current_assistant_message_id = 42
+    tool = lifecycle.create_next_task_tools(enabled_task_kinds=["todo"])[0]
+
+    result = await tool.execute("call_1", {"kind": "todo", "title": "Inspect files"})
+
+    todo = task.children[0]
+    assert isinstance(todo, TodoTask)
+    assert todo.id == 2
+    assert todo.parent_id == task.id
+    assert todo.start_message_id == 42
+    assert stale_next_task.children == []
+    assert session_state.next_task is todo
+    assert session_state.next_task_id_to_run == todo.id
+    assert result.content[0].text == "Created next task: todo Inspect files"
 
 
 def test_task_models_do_not_own_runtime_message_id():

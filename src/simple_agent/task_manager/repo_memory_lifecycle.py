@@ -27,6 +27,8 @@ from simple_agent.tool.common_tools import create_all_coding_tools
 class RepoMemoryLifecycle(BaseTaskLifecycle):
     """Lifecycle that lets the agent inspect a repo and update AgentIndex."""
 
+    task: RepoMemoryTask | None
+
     def set_data(self, session_state: SessionState) -> None:
         self._session_state = session_state
         self._current_assistant_message_id = None
