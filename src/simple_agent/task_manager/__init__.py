@@ -10,17 +10,16 @@ from simple_agent.task_manager.models import (
     ToolCallTask,
     UserTask,
 )
-from simple_agent.task_manager.review import TaskTreeReview, ToolCallReview
+from simple_agent.task_manager.review import TaskTreeRenderer
 
 __all__ = [
     "BaseTask",
     "ManagedTask",
     "RepoMemoryLifecycle",
     "RepoMemoryTask",
-    "TaskTreeReview",
+    "TaskTreeRenderer",
     "TodoTaskLifecycle",
     "TodoTask",
-    "ToolCallReview",
     "ToolCallTask",
     "UserTaskLifecycle",
     "UserTask",

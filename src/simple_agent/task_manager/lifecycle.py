@@ -9,7 +9,7 @@ from __future__ import annotations
 import asyncio
 import time
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Any, Mapping, cast
+from typing import TYPE_CHECKING, Any, cast
 
 from pi.agent import AgentTool, AgentToolResult
 from pi.agent.types import AgentMessage
@@ -18,7 +18,7 @@ from pi.ai.types import AssistantMessage, TextContent, ToolCall, ToolResultMessa
 from simple_agent.message_store import MessageEntry
 from simple_agent.run_log import runtime_logger
 from simple_agent.task_manager.models import ManagedTask, TodoTask, ToolCallTask, UserTask
-from simple_agent.task_manager.review import TaskTreeReviewRenderer, ToolCallReview
+from simple_agent.task_manager.review import TaskTreeRenderer
 from simple_agent.tool.common_tools import create_all_coding_tools
 
 if TYPE_CHECKING:
@@ -131,10 +131,11 @@ class SessionState:
             tool_call_tasks.append(
                 ToolCallTask(
                     id=self.allocate_task_id(),
-                    title=f"Tool call {log_id}",
                     status="done",
                     parent_id=parent_task.id,
                     tool_call_log_id=log_id,
+                    tool_call_name=tool_call.name if tool_call is not None else tool_result_message.tool_name,
+                    tool_call_args=tool_call.arguments if tool_call is not None else None,
                 )
             )
         return tool_call_records, tool_call_tasks
@@ -485,11 +486,10 @@ class UserTaskLifecycle(BaseTaskLifecycle):
     # User-task compaction phase
     # ------------------------------------------------------------------
 
-    def compaction_instruction_text(self, *, tool_calls: Mapping[int, ToolCallReview]) -> str:
-        task_view = TaskTreeReviewRenderer(
+    def compaction_instruction_text(self) -> str:
+        task_view = TaskTreeRenderer(
             format="tree",
             depth=None,
-            tool_calls=tool_calls,
         ).render(self.task)
         return (
             "Runtime instruction for compacting phase:\n"
@@ -498,7 +498,7 @@ class UserTaskLifecycle(BaseTaskLifecycle):
             "- Use only compact tools: set the compacted user task result, record must-include tool calls, then finish it.\n"
             "\n"
             "Task view to compact:\n"
-            f"{task_view.text}"
+            f"{task_view}"
         )
 
     async def handle_compact(
@@ -517,7 +517,7 @@ class UserTaskLifecycle(BaseTaskLifecycle):
         self._compacted_tool_calls = []
         self._compacted_user_task_finished = False
 
-        compact_instruction = self.compaction_instruction_text(tool_calls={})
+        compact_instruction = self.compaction_instruction_text()
         compact_messages = [
             *self._session_state.message_values(),
             UserMessage(
@@ -639,7 +639,6 @@ class UserTaskLifecycle(BaseTaskLifecycle):
     def record_compacted_tool_call(self, *, tool_call_log_id: int) -> None:
         tool_call_task = ToolCallTask(
             id=self._session_state.allocate_task_id(),
-            title=f"Tool call {tool_call_log_id}",
             status="done",
             parent_id=self.task.id,
             tool_call_log_id=tool_call_log_id,

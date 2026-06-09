@@ -184,10 +184,7 @@ def test_user_task_instruction_asks_for_complexity_check_when_tool_count_is_smal
 
 def test_user_task_instruction_requires_next_task_after_many_tool_calls():
     task = UserTask(title="Build feature")
-    task.children = [
-        ToolCallTask(title=f"Tool call {index}", tool_call_log_id=index)
-        for index in range(6)
-    ]
+    task.children = [ToolCallTask(tool_call_log_id=index) for index in range(6)]
     lifecycle = _user_lifecycle(task)
 
     instruction = lifecycle.instruction_text()
@@ -209,10 +206,7 @@ def test_todo_task_instruction_focuses_active_todo_when_tool_count_is_small():
 
 def test_todo_task_instruction_prompts_finish_check_after_many_tool_calls():
     task = TodoTask(title="Inspect files")
-    task.children = [
-        ToolCallTask(title=f"Tool call {index}", tool_call_log_id=index)
-        for index in range(11)
-    ]
+    task.children = [ToolCallTask(tool_call_log_id=index) for index in range(11)]
     lifecycle = _todo_lifecycle(task)
 
     instruction = lifecycle.instruction_text()
@@ -222,7 +216,7 @@ def test_todo_task_instruction_prompts_finish_check_after_many_tool_calls():
 
 
 def test_tool_call_task_remains_data_only():
-    task = ToolCallTask(title="Tool call 1", tool_call_log_id=1)
+    task = ToolCallTask(tool_call_log_id=1)
 
     assert not hasattr(task, "instruction_text")
 
@@ -524,12 +518,43 @@ def test_session_state_creates_tool_call_records_and_tasks():
     assert records == [(7, tool_call, tool_result)]
     assert len(tasks) == 1
     assert tasks[0].id == 10
-    assert tasks[0].title == "Tool call 7"
     assert tasks[0].status == "done"
     assert tasks[0].parent_id == 1
     assert tasks[0].tool_call_log_id == 7
+    assert tasks[0].tool_call_name == "ls"
+    assert tasks[0].tool_call_args == {"path": "."}
     assert session_state.next_tool_call_log_id == 8
     assert session_state.next_task_id_to_allocate == 11
+
+
+def test_session_state_records_tool_call_args_for_rendering():
+    session_state = SessionState(
+        messages=[],
+        next_tool_call_log_id=7,
+        next_task_id_to_allocate=10,
+    )
+    parent_task = UserTask(id=1, title="Build feature")
+    long_value = "x" * 160
+    tool_call = ToolCall(id="call_1", name="bash", arguments={"command": long_value})
+    assistant_message = AssistantMessage(role="assistant", content=[tool_call])
+    tool_result = ToolResultMessage(
+        toolCallId="call_1",
+        toolName="bash",
+        content=[TextContent(text="done")],
+    )
+
+    _records, tasks = session_state.create_tool_call_record_task_entries(
+        assistant_message=assistant_message,
+        tool_result_messages=[tool_result],
+        parent_task=parent_task,
+    )
+
+    assert tasks[0].tool_call_name == "bash"
+    assert tasks[0].tool_call_args == {"command": long_value}
+    rendered = tasks[0].format_for_render(sequence=1)
+    assert rendered.startswith('tool_call 1. bash args: {"command":"')
+    assert rendered.endswith("...")
+    assert len(rendered) <= len("tool_call 1. bash args: ") + 120
 
 
 def test_session_state_appends_messages_to_database(tmp_path):
@@ -689,7 +714,7 @@ def test_session_state_replaces_task_tree_in_database(tmp_path):
     db = _make_db(tmp_path)
     user_task = UserTask(id=1, title="Build feature")
     stale_todo = TodoTask(id=2, parent_id=1, title="Old todo")
-    replacement_tool = ToolCallTask(id=3, parent_id=1, title="Tool call 7", status="done", tool_call_log_id=7)
+    replacement_tool = ToolCallTask(id=3, parent_id=1, status="done", tool_call_log_id=7)
     user_task.children = [replacement_tool]
     db.upsert_managed_task(user_task)
     db.upsert_managed_task(stale_todo)
@@ -922,7 +947,7 @@ def test_user_task_lifecycle_compaction_result_uses_user_task_boundaries():
         status="done",
         start_message_id=4,
         end_message_id=9,
-        children=[ToolCallTask(id=2, parent_id=1, title="Tool call 7", status="done", tool_call_log_id=7)],
+        children=[ToolCallTask(id=2, parent_id=1, status="done", tool_call_log_id=7)],
     )
     lifecycle = _user_lifecycle(user_task, allocate_task_id=allocate_task_id)
 
@@ -951,7 +976,7 @@ def test_user_task_lifecycle_compaction_requires_finished_compacted_user_task():
         status="done",
         start_message_id=1,
         end_message_id=2,
-        children=[ToolCallTask(id=2, parent_id=1, title="Tool call 1", status="done", tool_call_log_id=1)],
+        children=[ToolCallTask(id=2, parent_id=1, status="done", tool_call_log_id=1)],
     )
     lifecycle = _user_lifecycle(user_task, allocate_task_id=lambda: 3)
 
@@ -971,7 +996,7 @@ async def test_user_task_lifecycle_handle_compact_runs_loop_and_returns_state(tm
         start_message_id=1,
         end_message_id=3,
         children=[
-            ToolCallTask(id=2, parent_id=1, title="Tool call 7", status="done", tool_call_log_id=7),
+            ToolCallTask(id=2, parent_id=1, status="done", tool_call_log_id=7),
             TodoTask(id=3, parent_id=1, title="Old todo", status="done"),
         ],
     )

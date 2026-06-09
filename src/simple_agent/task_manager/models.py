@@ -2,8 +2,9 @@
 
 from __future__ import annotations
 
+import json
 import time
-from typing import Literal
+from typing import Any, Literal
 
 from pydantic import BaseModel, Field
 
@@ -28,6 +29,9 @@ class BaseTask(BaseModel):
     def metadata_json(self) -> str:
         return self.model_dump_json(exclude={"id", "parent_id", "kind", "status", "children"})
 
+    def format_for_render(self, *, tool_call: Any | None = None, sequence: int | None = None) -> str:
+        return f"{self.kind} [{self.status}] {_task_title(self)}"
+
 
 class UserTask(BaseTask):
     kind: Literal["user_task"] = "user_task"
@@ -36,6 +40,9 @@ class UserTask(BaseTask):
     error: str | None = None
     start_message_id: int | None = None
     end_message_id: int | None = None
+
+    def format_for_render(self, *, tool_call: Any | None = None, sequence: int | None = None) -> str:
+        return f"user_task [{self.status}] {self.title}"
 
     @classmethod
     def from_metadata(
@@ -57,6 +64,9 @@ class TodoTask(BaseTask):
     start_message_id: int | None = None
     end_message_id: int | None = None
 
+    def format_for_render(self, *, tool_call: Any | None = None, sequence: int | None = None) -> str:
+        return f"todo [{self.status}] {self.title}"
+
     @classmethod
     def from_metadata(
         cls,
@@ -71,8 +81,17 @@ class TodoTask(BaseTask):
 
 class ToolCallTask(BaseTask):
     kind: Literal["tool_call"] = "tool_call"
-    title: str
     tool_call_log_id: int | None = None
+    tool_call_name: str | None = None
+    tool_call_args: Any | None = None
+
+    def format_for_render(self, *, tool_call: Any | None = None, sequence: int | None = None) -> str:
+        seq = sequence if sequence is not None else "?"
+        tool_name = self.tool_call_name or "unknown_tool"
+        line = f"tool_call {seq}. {tool_name}"
+        if self.tool_call_args is not None:
+            line += f" args: {_truncate_text(_format_tool_call_args(self.tool_call_args), limit=120)}"
+        return line
 
     @classmethod
     def from_metadata(
@@ -93,6 +112,9 @@ class RepoMemoryTask(BaseTask):
     index_db_path: str
     result: str | None = None
     error: str | None = None
+
+    def format_for_render(self, *, tool_call: Any | None = None, sequence: int | None = None) -> str:
+        return f"repo_memory [{self.status}] {self.title}"
 
     @classmethod
     def from_metadata(
@@ -129,9 +151,26 @@ def task_from_metadata(
 
 
 def _metadata_dict(metadata: str) -> dict:
-    import json
-
     payload = json.loads(metadata or "{}")
     if not isinstance(payload, dict):
         raise ValueError("Task metadata must be a JSON object")
     return payload
+
+
+def _task_title(task: BaseTask) -> str:
+    title = getattr(task, "title", None)
+    return str(title) if title is not None else ""
+
+
+def _format_tool_call_args(arguments: Any) -> str:
+    if isinstance(arguments, str):
+        return arguments
+    if hasattr(arguments, "model_dump_json"):
+        return arguments.model_dump_json()
+    return json.dumps(arguments, separators=(",", ":"))
+
+
+def _truncate_text(text: str, *, limit: int) -> str:
+    if len(text) <= limit:
+        return text
+    return text[: limit - 3] + "..."
