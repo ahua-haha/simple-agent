@@ -6,9 +6,7 @@ import json
 import time
 from typing import Any, Literal
 
-from pydantic import BaseModel, Field, PrivateAttr
-
-from simple_agent.index.indexer import AgentIndex
+from pydantic import BaseModel, Field
 
 TaskKind = Literal["user_task", "todo", "tool_call", "repo_memory"]
 TaskStatus = Literal["active", "done", "error"]
@@ -115,18 +113,9 @@ class RepoMemoryTask(BaseTask):
     index_db_path: str
     result: str | None = None
     error: str | None = None
-    _agent_index: AgentIndex | None = PrivateAttr(default=None)
 
     def format_for_render(self, *, tool_call: Any | None = None, sequence: int | None = None) -> str:
         return f"repo_memory [{self.status}] {self.title}"
-
-    def agent_index(self) -> AgentIndex:
-        if self._agent_index is None:
-            self._agent_index = AgentIndex(
-                db_path=self.index_db_path,
-                base_dir=self.repo_path,
-            )
-        return self._agent_index
 
     @classmethod
     def from_metadata(

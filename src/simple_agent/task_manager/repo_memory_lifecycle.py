@@ -9,6 +9,7 @@ from typing import cast
 from pi.agent import AgentTool
 from pi.ai.types import AssistantMessage, TextContent, UserMessage
 
+from simple_agent.index.indexer import AgentIndex
 from simple_agent.run_log import runtime_logger
 from simple_agent.task_manager.base_lifecycle import (
     BaseTaskLifecycle,
@@ -25,6 +26,10 @@ class RepoMemoryLifecycle(BaseTaskLifecycle):
     """Lifecycle that lets the agent inspect a repo and update AgentIndex."""
 
     task: RepoMemoryTask | None
+    _agent_index: AgentIndex | None
+
+    def __init__(self) -> None:
+        self._agent_index = None
 
     def set_data(self, session_state: SessionState) -> None:
         self._session_state = session_state
@@ -36,6 +41,10 @@ class RepoMemoryLifecycle(BaseTaskLifecycle):
         if task.kind != "repo_memory":
             raise TaskLifecycleError("Active lifecycle task is not a repo memory task")
         self.task = cast(RepoMemoryTask, task)
+        self._agent_index = AgentIndex(
+            db_path=self.task.index_db_path,
+            base_dir=self.task.repo_path,
+        )
 
     def clear_data(self) -> None:
         super().clear_data()
@@ -57,7 +66,7 @@ class RepoMemoryLifecycle(BaseTaskLifecycle):
 
     def create_tools(self) -> list[AgentTool]:
         return [
-            *self.task.agent_index().create_tools(),
+            *self._agent_index.create_tools(),
             *create_all_coding_tools(self.task.repo_path),
         ]
 

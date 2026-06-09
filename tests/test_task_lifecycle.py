@@ -208,16 +208,13 @@ def test_repo_memory_task_roundtrips_metadata():
     assert restored == task
 
 
-def test_repo_memory_task_maintains_runtime_agent_index(tmp_path):
+def test_repo_memory_task_does_not_own_runtime_agent_index(tmp_path):
     task = RepoMemoryTask(
         id=3,
         title="Write repo memory",
         repo_path=str(tmp_path),
         index_db_path=str(tmp_path / "index.db"),
     )
-
-    first_index = task.agent_index()
-    second_index = task.agent_index()
     restored = task_from_metadata(
         id=task.id,
         parent_id=task.parent_id,
@@ -226,9 +223,8 @@ def test_repo_memory_task_maintains_runtime_agent_index(tmp_path):
         metadata=task.metadata_json(),
     )
 
-    assert isinstance(first_index, AgentIndex)
-    assert second_index is first_index
-    assert restored.agent_index() is not first_index
+    assert not hasattr(task, "agent_index")
+    assert not hasattr(restored, "agent_index")
     metadata = json.loads(task.metadata_json())
     assert "_agent_index" not in metadata
     assert "_current_assistant_message_id" not in metadata
@@ -259,39 +255,25 @@ def test_repo_memory_lifecycle_instruction_and_tools(tmp_path):
     assert "index_upsert" in [tool.name for tool in tools]
 
 
-def test_repo_memory_lifecycle_uses_task_owned_agent_index(tmp_path):
-    class FakeIndex:
-        def __init__(self):
-            self.create_tools_calls = 0
-
-        def create_tools(self):
-            self.create_tools_calls += 1
-            return [
-                type(
-                    "FakeTool",
-                    (),
-                    {"name": "fake_index_tool"},
-                )()
-            ]
-
+def test_repo_memory_lifecycle_owns_runtime_agent_index(tmp_path):
     task = RepoMemoryTask(
         id=3,
         title="Write repo memory",
         repo_path=str(tmp_path),
         index_db_path=str(tmp_path / "index.db"),
     )
-    fake_index = FakeIndex()
-    task._agent_index = fake_index
     session_state = SessionState(messages=[])
     session_state.next_task = task
     session_state.next_task_id_to_run = task.id
     lifecycle = RepoMemoryLifecycle()
     lifecycle.set_data(session_state)
 
+    first_index = lifecycle._agent_index
     tools = lifecycle.create_tools()
 
-    assert fake_index.create_tools_calls == 1
-    assert "fake_index_tool" in [tool.name for tool in tools]
+    assert isinstance(first_index, AgentIndex)
+    assert "index_tree" in [tool.name for tool in tools]
+    assert "index_upsert" in [tool.name for tool in tools]
 
 
 def test_user_task_persists_compacted_tool_call_task_ids():
