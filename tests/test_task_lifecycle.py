@@ -343,55 +343,6 @@ def test_repo_memory_lifecycle_uses_task_owned_agent_index(tmp_path):
     assert "fake_index_tool" in [tool.name for tool in tools]
 
 
-@pytest.mark.asyncio
-async def test_repo_memory_lifecycle_uses_task_private_current_message_id(tmp_path):
-    observed_message_ids: list[int | None] = []
-
-    class FakeIndex:
-        def create_tools(self):
-            tool = AgentTool(
-                name="index_tree",
-                description="Fake tree",
-                parameters={"type": "object", "properties": {}},
-            )
-
-            async def execute(tool_call_id, params, cancel_event=None, on_update=None):
-                observed_message_ids.append(lifecycle._current_assistant_message_id)
-                return AgentToolResult(content=[TextContent(text="tree")])
-
-            tool.execute = execute
-            return [tool]
-
-    db = _make_db(tmp_path)
-    task = RepoMemoryTask(
-        id=3,
-        title="Write repo memory",
-        repo_path=str(tmp_path),
-        index_db_path=str(tmp_path / "index.db"),
-    )
-    task._agent_index = FakeIndex()
-    session_state = SessionState(
-        messages=[],
-        database=db,
-        session_id="session_a",
-        next_task_id_to_allocate=4,
-    )
-    session_state.next_task = task
-    session_state.next_task_id_to_run = task.id
-    lifecycle = RepoMemoryLifecycle()
-    lifecycle.set_data(session_state)
-    assistant_message = AssistantMessage(
-        role="assistant",
-        content=[ToolCall(id="call_1", name="index_tree", arguments={})],
-    )
-    agent_process = ExecutingFakeAgentProcess(assistant_message)
-
-    await lifecycle.run(agent_process=agent_process)
-
-    assert observed_message_ids == [1]
-    assert lifecycle._current_assistant_message_id is None
-
-
 def test_user_task_maintains_compaction_runtime_state():
     task = UserTask(id=1, title="Build feature")
 
@@ -437,7 +388,6 @@ def test_base_lifecycle_provides_next_task_instruction_and_tool():
 @pytest.mark.asyncio
 async def test_base_lifecycle_create_next_task_tool_mutates_session_state():
     task = UserTask(id=1, title="Build feature")
-    stale_next_task = UserTask(id=99, title="Stale active pointer")
     session_state = SessionState(
         messages=[],
         next_task=task,
@@ -445,20 +395,18 @@ async def test_base_lifecycle_create_next_task_tool_mutates_session_state():
         next_task_id_to_allocate=2,
     )
     lifecycle = _user_lifecycle(task, session_state=session_state)
-    session_state.next_task = stale_next_task
-    lifecycle._current_assistant_message_id = 42
     tool = lifecycle.create_next_task_tools(enabled_task_kinds=["todo"])[0]
 
     result = await tool.execute("call_1", {"kind": "todo", "title": "Inspect files"})
 
-    todo = task.children[0]
+    todo = lifecycle.created_task
     assert isinstance(todo, TodoTask)
     assert todo.id == 2
     assert todo.parent_id == task.id
-    assert todo.start_message_id == 42
-    assert stale_next_task.children == []
-    assert session_state.next_task is todo
-    assert session_state.next_task_id_to_run == todo.id
+    assert todo.start_message_id is None
+    assert task.children == []
+    assert session_state.next_task is task
+    assert session_state.next_task_id_to_run == task.id
     assert result.content[0].text == "Created next task: todo Inspect files"
 
 
@@ -500,7 +448,6 @@ def test_user_task_lifecycle_uses_owned_allocator():
 
     user_task = UserTask(id=1, title="Build feature")
     lifecycle = _user_lifecycle(user_task, allocate_task_id=allocate_task_id)
-    lifecycle._current_assistant_message_id = 22
     lifecycle._session_state.next_tool_call_log_id = 7
     assistant_message = AssistantMessage(
         role="assistant",
@@ -513,6 +460,7 @@ def test_user_task_lifecycle_uses_owned_allocator():
     )
 
     todo = lifecycle.create_next_task(kind="todo", title="Inspect files", enabled_task_kinds=["todo"])
+    lifecycle.append_created_task(start_message_id=22)
     _tool_call_records, tool_call_tasks = lifecycle._session_state.create_tool_call_record_task_entries(
         assistant_message=assistant_message,
         tool_result_messages=[tool_result],
@@ -566,9 +514,9 @@ def test_user_task_lifecycle_creates_tool_call_record_task_entries_without_appen
 def test_todo_task_lifecycle_uses_owned_message_id_for_finish():
     todo = TodoTask(id=2, parent_id=1, title="Inspect files")
     lifecycle = _todo_lifecycle(todo, allocate_task_id=lambda: 3)
-    lifecycle._current_assistant_message_id = 44
 
     lifecycle.finish_task(result="Inspected files")
+    lifecycle.stamp_finished_task(end_message_id=44)
 
     assert todo.status == "done"
     assert todo.end_message_id == 44
@@ -683,6 +631,12 @@ def test_lifecycle_tracks_next_task_transition():
     user_lifecycle = _user_lifecycle(user_task, allocate_task_id=lambda: 2)
 
     todo = user_lifecycle.create_next_task(kind="todo", title="Inspect files", enabled_task_kinds=["todo"])
+
+    assert user_lifecycle._session_state.next_task_id_to_run == user_task.id
+    assert user_lifecycle._session_state.next_task is user_task
+
+    user_lifecycle.append_created_task(start_message_id=1)
+    user_lifecycle.set_next_task(todo, keep_instance=True)
 
     assert user_lifecycle._session_state.next_task_id_to_run == todo.id
     assert user_lifecycle._session_state.next_task is todo
@@ -1096,7 +1050,6 @@ async def test_user_task_lifecycle_run_executes_tools_and_returns_current_task(t
     assert lifecycle._session_state.next_tool_call_log_id == 8
     assert [child.tool_call_log_id for child in user_task.children] == [7]
     assert user_task.children[0].parent_id == user_task.id
-    assert lifecycle._current_assistant_message_id is None
     assert lifecycle._session_state.next_task is user_task
     assert [type(message).__name__ for message in db.list_runner_messages("session_a")] == [
         "AssistantMessage",

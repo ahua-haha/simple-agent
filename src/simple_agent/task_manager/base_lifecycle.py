@@ -223,16 +223,19 @@ class SessionState:
 class BaseTaskLifecycle:
     _session_state: SessionState
     task: ManagedTask | None
-    _current_assistant_message_id: int | None
+    created_task: ManagedTask | None
+    finished_task: ManagedTask | None
 
     def clear_data(self) -> None:
         self.task = None
-        self._current_assistant_message_id = None
+        self.created_task = None
+        self.finished_task = None
 
     def set_data(self, session_state: SessionState) -> None:
         self._session_state = session_state
         self.task = None
-        self._current_assistant_message_id = None
+        self.created_task = None
+        self.finished_task = None
         raise NotImplementedError(f"{type(self).__name__}.set_data is not implemented")
 
     def create_next_task_tools(
@@ -344,7 +347,6 @@ class BaseTaskLifecycle:
                 id=self._session_state.allocate_task_id(),
                 parent_id=parent.id,
                 title=title,
-                start_message_id=self._current_assistant_message_id,
             )
         elif kind == "repo_memory":
             repo_path = metadata.get("repo_path")
@@ -361,10 +363,35 @@ class BaseTaskLifecycle:
         else:
             raise TaskLifecycleError(f"Unsupported next task kind: {kind}")
 
+        self.created_task = task
+        return task
+
+    def append_created_task(self, *, start_message_id: int) -> ManagedTask | None:
+        task = self.created_task
+        if task is None:
+            return None
+        parent = self._require_task()
+        if hasattr(task, "start_message_id"):
+            task.start_message_id = start_message_id
         parent.children.append(task)
         parent.touch()
-        self._session_state.set_next_task(task, keep_instance=True)
         return task
+
+    def set_next_task(self, task: ManagedTask | None, *, keep_instance: bool = False) -> None:
+        self._session_state.set_next_task(task, keep_instance=keep_instance)
+
+    def stamp_finished_task(self, *, end_message_id: int) -> ManagedTask | None:
+        task = self.finished_task
+        if task is None:
+            return None
+        if hasattr(task, "end_message_id"):
+            task.end_message_id = end_message_id
+        task.touch()
+        return task
+
+    def clear_turn_indicators(self) -> None:
+        self.created_task = None
+        self.finished_task = None
 
     def _validate_enabled_task_kinds(
         self,

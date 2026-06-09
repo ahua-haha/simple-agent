@@ -34,7 +34,8 @@ class UserTaskLifecycle(BaseTaskLifecycle):
 
     def set_data(self, session_state: SessionState) -> None:
         self._session_state = session_state
-        self._current_assistant_message_id = None
+        self.created_task = None
+        self.finished_task = None
         task = self._session_state.next_task
         if task is None:
             raise TaskLifecycleError("Session state has no next task")
@@ -69,9 +70,8 @@ class UserTaskLifecycle(BaseTaskLifecycle):
     def finish_task(self, *, result: str | None = None) -> UserTask:
         self.task.status = "done"
         self.task.result = result
-        self.task.end_message_id = self._current_assistant_message_id
         self.task.touch()
-        self._session_state.set_next_task(self.task, keep_instance=True)
+        self.finished_task = self.task
         return self.task
 
     def todo_status_text(self) -> str:
@@ -136,23 +136,30 @@ class UserTaskLifecycle(BaseTaskLifecycle):
         tool_call_records: list[tuple[int, ToolCall | None, ToolResultMessage]] = []
         tool_call_tasks: list[ToolCallTask] = []
         if _assistant_has_tool_calls(assistant_message):
-            self._current_assistant_message_id = assistant_entry.id
-            try:
-                tool_results = await agent_process.run_tool_calls_step(
-                    tools=tools,
-                    assistant_message=assistant_message,
-                    cancel_event=cancel_event,
-                )
-            finally:
-                self._current_assistant_message_id = None
+            tool_results = await agent_process.run_tool_calls_step(
+                tools=tools,
+                assistant_message=assistant_message,
+                cancel_event=cancel_event,
+            )
             tool_call_records, tool_call_tasks = self._session_state.create_tool_call_record_task_entries(
                 assistant_message=assistant_message,
                 tool_result_messages=tool_results,
                 parent_task=task,
             )
+            created_task = self.append_created_task(start_message_id=assistant_entry.id)
+            if created_task is not None:
+                self.set_next_task(created_task, keep_instance=True)
+            self.stamp_finished_task(end_message_id=assistant_entry.id)
             task.children.extend(tool_call_tasks)
             if tool_call_tasks:
                 task.touch()
+
+            if self.finished_task is not None:
+                if self.should_compact_after_turn():
+                    self.set_next_task(task, keep_instance=True)
+                else:
+                    self._session_state.next_task_id_to_run = task.parent_id
+                    self._session_state.next_task = None
 
         tool_result_entries = [
             MessageEntry(id=self._session_state.allocate_message_id(), message=tool_result)
@@ -162,21 +169,18 @@ class UserTaskLifecycle(BaseTaskLifecycle):
         self._session_state.append_messages(new_messages)
 
         if not _assistant_has_tool_calls(assistant_message):
-            self._current_assistant_message_id = assistant_entry.id
-            try:
-                if task.status != "done":
-                    self.finish_task()
-                if self.should_compact_after_turn():
-                    self._session_state.set_next_task(task, keep_instance=True)
-                else:
-                    self._session_state.next_task_id_to_run = task.parent_id
-                    self._session_state.next_task = None
-            finally:
-                self._current_assistant_message_id = None
+            if task.status != "done":
+                self.finish_task()
+            self.stamp_finished_task(end_message_id=assistant_entry.id)
+            if self.should_compact_after_turn():
+                self.set_next_task(task, keep_instance=True)
+            else:
+                self._session_state.next_task_id_to_run = task.parent_id
+                self._session_state.next_task = None
         else:
             has_child_task = self._session_state.next_task is not None and self._session_state.next_task is not task
-            if not has_child_task and task.status == "active":
-                self._session_state.set_next_task(task, keep_instance=True)
+            if not has_child_task and self.finished_task is None and task.status == "active":
+                self.set_next_task(task, keep_instance=True)
 
         runtime_logger.log_handle_running(
             session_id=self._session_state._require_session_id(),
@@ -203,6 +207,7 @@ class UserTaskLifecycle(BaseTaskLifecycle):
                 session=session,
             )
             session.commit()
+        self.clear_turn_indicators()
         return self._session_state
 
     # ------------------------------------------------------------------

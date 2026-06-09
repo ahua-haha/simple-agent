@@ -31,7 +31,8 @@ class RepoMemoryLifecycle(BaseTaskLifecycle):
 
     def set_data(self, session_state: SessionState) -> None:
         self._session_state = session_state
-        self._current_assistant_message_id = None
+        self.created_task = None
+        self.finished_task = None
         task = self._session_state.next_task
         if task is None:
             raise TaskLifecycleError("Session state has no next task")
@@ -111,15 +112,11 @@ class RepoMemoryLifecycle(BaseTaskLifecycle):
         tool_call_records: list[tuple[int, ToolCall | None, ToolResultMessage]] = []
         tool_call_tasks: list[ToolCallTask] = []
         if _assistant_has_tool_calls(assistant_message):
-            self._current_assistant_message_id = assistant_entry.id
-            try:
-                tool_results = await agent_process.run_tool_calls_step(
-                    tools=tools,
-                    assistant_message=assistant_message,
-                    cancel_event=cancel_event,
-                )
-            finally:
-                self._current_assistant_message_id = None
+            tool_results = await agent_process.run_tool_calls_step(
+                tools=tools,
+                assistant_message=assistant_message,
+                cancel_event=cancel_event,
+            )
             tool_call_records, tool_call_tasks = self._session_state.create_tool_call_record_task_entries(
                 assistant_message=assistant_message,
                 tool_result_messages=tool_results,
@@ -143,7 +140,7 @@ class RepoMemoryLifecycle(BaseTaskLifecycle):
             self._session_state.next_task_id_to_run = task.parent_id
             self._session_state.next_task = None
         elif task.status == "active":
-            self._session_state.set_next_task(task, keep_instance=True)
+            self.set_next_task(task, keep_instance=True)
 
         runtime_logger.log_handle_running(
             session_id=self._session_state._require_session_id(),
