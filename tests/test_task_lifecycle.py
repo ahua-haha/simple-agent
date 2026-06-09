@@ -19,6 +19,7 @@ from simple_agent.task_manager.lifecycle import (
 )
 from simple_agent.task_manager.repo_memory_lifecycle import RepoMemoryLifecycle
 from simple_agent.task_manager.models import RepoMemoryTask, TodoTask, ToolCallTask, UserTask, task_from_metadata
+from simple_agent.task_manager.task_builder import NextTaskBuilder
 
 
 def _make_db(tmp_path):
@@ -392,6 +393,61 @@ async def test_repo_memory_lifecycle_uses_task_private_current_message_id(tmp_pa
     assert task.current_assistant_message_id is None
 
 
+def test_user_task_maintains_runtime_builder_and_compaction_state():
+    task = UserTask(id=1, title="Build feature")
+    session_state = SessionState(messages=[])
+
+    builder = task.next_task_builder(session_state)
+    task.compacted_tool_calls.append(ToolCallTask(id=2, parent_id=1, tool_call_log_id=7))
+    task.compacted_user_task_finished = True
+    restored = task_from_metadata(
+        id=task.id,
+        parent_id=task.parent_id,
+        kind=task.kind,
+        status=task.status,
+        metadata=task.metadata_json(),
+    )
+
+    assert isinstance(builder, NextTaskBuilder)
+    assert task.next_task_builder(session_state) is builder
+    assert [tool.tool_call_log_id for tool in task.compacted_tool_calls] == [7]
+    assert task.compacted_user_task_finished is True
+    metadata = json.loads(task.metadata_json())
+    assert "_task_builder" not in metadata
+    assert "_compacted_tool_calls" not in metadata
+    assert "_compacted_user_task_finished" not in metadata
+    assert restored.next_task_builder(session_state) is not builder
+    assert restored.compacted_tool_calls == []
+    assert restored.compacted_user_task_finished is False
+
+
+def test_user_and_todo_task_runtime_message_id_is_not_persisted():
+    user_task = UserTask(id=1, title="Build feature")
+    todo = TodoTask(id=2, parent_id=1, title="Inspect files")
+
+    user_task.current_assistant_message_id = 11
+    todo.current_assistant_message_id = 12
+    restored_user = task_from_metadata(
+        id=user_task.id,
+        parent_id=user_task.parent_id,
+        kind=user_task.kind,
+        status=user_task.status,
+        metadata=user_task.metadata_json(),
+    )
+    restored_todo = task_from_metadata(
+        id=todo.id,
+        parent_id=todo.parent_id,
+        kind=todo.kind,
+        status=todo.status,
+        metadata=todo.metadata_json(),
+    )
+
+    assert "_current_assistant_message_id" not in json.loads(user_task.metadata_json())
+    assert "_current_assistant_message_id" not in json.loads(todo.metadata_json())
+    assert restored_user.current_assistant_message_id is None
+    assert restored_todo.current_assistant_message_id is None
+
+
 def test_user_task_lifecycle_uses_owned_allocator():
     next_id = 10
 
@@ -403,7 +459,7 @@ def test_user_task_lifecycle_uses_owned_allocator():
 
     user_task = UserTask(id=1, title="Build feature")
     lifecycle = _user_lifecycle(user_task, allocate_task_id=allocate_task_id)
-    lifecycle.current_assistant_message_id = 22
+    user_task.current_assistant_message_id = 22
     lifecycle._session_state.next_tool_call_log_id = 7
     assistant_message = AssistantMessage(
         role="assistant",
@@ -469,7 +525,7 @@ def test_user_task_lifecycle_creates_tool_call_record_task_entries_without_appen
 def test_todo_task_lifecycle_uses_owned_message_id_for_finish():
     todo = TodoTask(id=2, parent_id=1, title="Inspect files")
     lifecycle = _todo_lifecycle(todo, allocate_task_id=lambda: 3)
-    lifecycle.current_assistant_message_id = 44
+    todo.current_assistant_message_id = 44
 
     lifecycle.finish_task(result="Inspected files")
 
@@ -985,7 +1041,7 @@ async def test_user_task_lifecycle_run_executes_tools_and_returns_current_task(t
     assert lifecycle._session_state.next_tool_call_log_id == 8
     assert [child.tool_call_log_id for child in user_task.children] == [7]
     assert user_task.children[0].parent_id == user_task.id
-    assert lifecycle.current_assistant_message_id is None
+    assert user_task.current_assistant_message_id is None
     assert lifecycle._session_state.next_task is user_task
     assert [type(message).__name__ for message in db.list_runner_messages("session_a")] == [
         "AssistantMessage",
