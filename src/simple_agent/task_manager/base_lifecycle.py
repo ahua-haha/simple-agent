@@ -200,10 +200,6 @@ class SessionState:
     ) -> None:
         database = self._require_database()
         session_id = self._require_session_id()
-        start_index = self._message_index(start_message_id)
-        end_index = self._message_index(end_message_id)
-        if end_index < start_index:
-            raise RuntimeError("Compact end message is before compact start message")
         start_seq = database.get_runner_message_seq(
             session_id,
             start_message_id,
@@ -214,6 +210,8 @@ class SessionState:
             end_message_id,
             session=session,
         )
+        if end_seq < start_seq:
+            raise RuntimeError("Compact end message is before compact start message")
         database.delete_runner_message_seq_range(
             session_id,
             start_seq=start_seq,

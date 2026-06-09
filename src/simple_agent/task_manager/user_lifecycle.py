@@ -7,7 +7,7 @@ import time
 from typing import TYPE_CHECKING, cast
 
 from pi.agent import AgentTool, AgentToolResult
-from pi.ai.types import TextContent, UserMessage
+from pi.ai.types import AssistantMessage, TextContent, UserMessage
 
 from simple_agent.run_log import runtime_logger
 from simple_agent.task_manager.base_lifecycle import (
@@ -88,9 +88,10 @@ class UserTaskLifecycle(BaseTaskLifecycle):
         cancel_event: asyncio.Event | None = None,
     ) -> SessionState:
         if self.task.status == "done":
-            self._session_state.next_task_id_to_run = self.task.parent_id
-            self._session_state.next_task = None
-            return self._session_state
+            return await self.run_compact_one_turn(
+                agent_process=agent_process,
+                cancel_event=cancel_event,
+            )
 
         return await self.run_one_turn(
             agent_process=agent_process,
@@ -239,9 +240,19 @@ class UserTaskLifecycle(BaseTaskLifecycle):
         if turn_result.tool_call_tasks:
             task.touch()
 
-        if not turn_result.has_tool_call:
-            # TODO: post-handle finished compact result.
-            pass
+        replacement_entries: list[MessageEntry] = []
+        if turn_result.has_tool_call:
+            self.set_next_task(task.id, task)
+        else:
+            if task.start_message_id is None:
+                raise TaskLifecycleError("Compact task is missing start message id")
+            compacted_messages = format_messages_from_user_task(task)
+            replacement_entries = self._session_state.replace_message_range(
+                start_message_id=task.start_message_id,
+                end_message_id=turn_result.assistant_entry.id,
+                replacement_messages=compacted_messages,
+            )
+            self.set_next_task(task.parent_id, None)
 
         tasks_to_sync: list[ManagedTask] = [task, *task.children]
         with self._session_state.create_database_session() as session:
@@ -257,6 +268,13 @@ class UserTaskLifecycle(BaseTaskLifecycle):
                 tasks=tasks_to_sync,
                 session=session,
             )
+            if replacement_entries:
+                self._session_state.replace_message_range_in_database(
+                    start_message_id=task.start_message_id,
+                    end_message_id=turn_result.assistant_entry.id,
+                    replacement_messages=replacement_entries,
+                    session=session,
+                )
             session.commit()
         return self._session_state
 
@@ -342,3 +360,13 @@ def _count_user_task_tool_calls_after_latest_todo(user_task: UserTask) -> int:
 
 def _count_tool_calls(tasks: list[ManagedTask]) -> int:
     return sum(1 for task in tasks if task.kind == "tool_call")
+
+
+def format_messages_from_user_task(user_task: UserTask) -> list[AssistantMessage]:
+    # TODO: format compacted messages from the user task result and selected
+    # compacted tool-call task ids.
+    text = (
+        f"Compacted user task: {user_task.result or user_task.title}\n"
+        f"Useful tool call tasks: {user_task.compacted_tool_call_task_ids}"
+    )
+    return [AssistantMessage(role="assistant", content=[TextContent(text=text)])]
