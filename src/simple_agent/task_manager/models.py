@@ -43,7 +43,6 @@ class UserTask(BaseTask):
     start_message_id: int | None = None
     end_message_id: int | None = None
     _current_assistant_message_id: int | None = PrivateAttr(default=None)
-    _task_builder: Any | None = PrivateAttr(default=None)
     _compacted_tool_calls: list["ToolCallTask"] = PrivateAttr(default_factory=list)
     _compacted_user_task_finished: bool = PrivateAttr(default=False)
 
@@ -58,20 +57,8 @@ class UserTask(BaseTask):
     def current_assistant_message_id(self, message_id: int | None) -> None:
         self._current_assistant_message_id = message_id
 
-    def next_task_builder(self, session_state: Any) -> Any:
-        if self._task_builder is None:
-            from simple_agent.task_manager.task_builder import NextTaskBuilder
-
-            self._task_builder = NextTaskBuilder(
-                session_state,
-                enabled_task_kinds=["todo", "repo_memory"],
-                current_assistant_message_id=lambda: self.current_assistant_message_id,
-            )
-        return self._task_builder
-
     def clear_runtime_state(self) -> None:
         self.current_assistant_message_id = None
-        self._task_builder = None
 
     @property
     def compacted_tool_calls(self) -> list["ToolCallTask"]:

@@ -249,6 +249,8 @@ class BaseTaskLifecycle:
 
 class UserTaskLifecycle(BaseTaskLifecycle):
     def set_data(self, session_state: SessionState) -> None:
+        from simple_agent.task_manager.task_builder import NextTaskBuilder
+
         self._session_state = session_state
         task = self._session_state.next_task
         if task is None:
@@ -256,14 +258,20 @@ class UserTaskLifecycle(BaseTaskLifecycle):
         if task.kind != "user_task":
             raise TaskLifecycleError("Active lifecycle task is not a user task")
         self.task = cast(UserTask, task)
+        self._task_builder = NextTaskBuilder(
+            self._session_state,
+            enabled_task_kinds=["todo", "repo_memory"],
+            current_assistant_message_id=lambda: self.task.current_assistant_message_id,
+        )
 
     def clear_data(self) -> None:
         if self.task is not None:
             self.task.clear_runtime_state()
         self.task = None
+        self._task_builder = None
 
     def instruction_text(self) -> str:
-        builder_instruction = self.task.next_task_builder(self._session_state).instruction_text()
+        builder_instruction = self._task_builder.instruction_text()
         if _count_user_task_tool_calls_after_latest_todo(self.task) > 5:
             return (
                 "Runtime instruction for this turn:\n"
@@ -313,7 +321,7 @@ class UserTaskLifecycle(BaseTaskLifecycle):
 
     def create_tools(self) -> list[AgentTool]:
         return [
-            *self.task.next_task_builder(self._session_state).create_tools(),
+            *self._task_builder.create_tools(),
             self.create_finish_user_task_tool(),
             *create_all_coding_tools("."),
         ]

@@ -19,7 +19,6 @@ from simple_agent.task_manager.lifecycle import (
 )
 from simple_agent.task_manager.repo_memory_lifecycle import RepoMemoryLifecycle
 from simple_agent.task_manager.models import RepoMemoryTask, TodoTask, ToolCallTask, UserTask, task_from_metadata
-from simple_agent.task_manager.task_builder import NextTaskBuilder
 
 
 def _make_db(tmp_path):
@@ -393,11 +392,9 @@ async def test_repo_memory_lifecycle_uses_task_private_current_message_id(tmp_pa
     assert task.current_assistant_message_id is None
 
 
-def test_user_task_maintains_runtime_builder_and_compaction_state():
+def test_user_task_maintains_compaction_runtime_state():
     task = UserTask(id=1, title="Build feature")
-    session_state = SessionState(messages=[])
 
-    builder = task.next_task_builder(session_state)
     task.compacted_tool_calls.append(ToolCallTask(id=2, parent_id=1, tool_call_log_id=7))
     task.compacted_user_task_finished = True
     restored = task_from_metadata(
@@ -408,17 +405,24 @@ def test_user_task_maintains_runtime_builder_and_compaction_state():
         metadata=task.metadata_json(),
     )
 
-    assert isinstance(builder, NextTaskBuilder)
-    assert task.next_task_builder(session_state) is builder
     assert [tool.tool_call_log_id for tool in task.compacted_tool_calls] == [7]
     assert task.compacted_user_task_finished is True
     metadata = json.loads(task.metadata_json())
-    assert "_task_builder" not in metadata
     assert "_compacted_tool_calls" not in metadata
     assert "_compacted_user_task_finished" not in metadata
-    assert restored.next_task_builder(session_state) is not builder
     assert restored.compacted_tool_calls == []
     assert restored.compacted_user_task_finished is False
+
+
+def test_user_task_lifecycle_owns_next_task_builder():
+    task = UserTask(id=1, title="Build feature")
+    lifecycle = _user_lifecycle(task)
+
+    first_builder = lifecycle._task_builder
+    second_builder = lifecycle._task_builder
+
+    assert first_builder is second_builder
+    assert not hasattr(task, "next_task_builder")
 
 
 def test_user_and_todo_task_runtime_message_id_is_not_persisted():
