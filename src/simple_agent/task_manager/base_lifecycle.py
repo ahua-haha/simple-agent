@@ -199,9 +199,9 @@ class SessionState:
         database = self._require_database()
         database.replace_managed_task_tree(task, session=session)
 
-    def set_next_task(self, task: ManagedTask | None, *, keep_instance: bool = False) -> None:
-        self.next_task_id_to_run = task.id if task is not None else None
-        self.next_task = task if task is not None and keep_instance else None
+    def set_next_task(self, task_id: int | None, task: ManagedTask | None) -> None:
+        self.next_task_id_to_run = task_id
+        self.next_task = task
 
     def _message_index(self, message_id: int) -> int:
         for index, entry in enumerate(self.messages):
@@ -344,7 +344,6 @@ class BaseTaskLifecycle:
         metadata = metadata or {}
         if kind == "todo":
             task: ManagedTask = TodoTask(
-                id=self._session_state.allocate_task_id(),
                 parent_id=parent.id,
                 title=title,
             )
@@ -354,7 +353,6 @@ class BaseTaskLifecycle:
             if index_db_path is None:
                 raise TaskLifecycleError("repo_memory task requires index_db_path")
             task = RepoMemoryTask(
-                id=self._session_state.allocate_task_id(),
                 parent_id=parent.id,
                 title=title,
                 repo_path=repo_path or ".",
@@ -366,19 +364,8 @@ class BaseTaskLifecycle:
         self.created_task = task
         return task
 
-    def append_created_task(self, *, start_message_id: int) -> ManagedTask | None:
-        task = self.created_task
-        if task is None:
-            return None
-        parent = self._require_task()
-        if hasattr(task, "start_message_id"):
-            task.start_message_id = start_message_id
-        parent.children.append(task)
-        parent.touch()
-        return task
-
-    def set_next_task(self, task: ManagedTask | None, *, keep_instance: bool = False) -> None:
-        self._session_state.set_next_task(task, keep_instance=keep_instance)
+    def set_next_task(self, task_id: int | None, task: ManagedTask | None) -> None:
+        self._session_state.set_next_task(task_id, task)
 
     def stamp_finished_task(self, *, end_message_id: int) -> ManagedTask | None:
         task = self.finished_task

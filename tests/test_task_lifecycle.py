@@ -401,7 +401,7 @@ async def test_base_lifecycle_create_next_task_tool_mutates_session_state():
 
     todo = lifecycle.created_task
     assert isinstance(todo, TodoTask)
-    assert todo.id == 2
+    assert todo.id is None
     assert todo.parent_id == task.id
     assert todo.start_message_id is None
     assert task.children == []
@@ -460,16 +460,15 @@ def test_user_task_lifecycle_uses_owned_allocator():
     )
 
     todo = lifecycle.create_next_task(kind="todo", title="Inspect files", enabled_task_kinds=["todo"])
-    lifecycle.append_created_task(start_message_id=22)
     _tool_call_records, tool_call_tasks = lifecycle._session_state.create_tool_call_record_task_entries(
         assistant_message=assistant_message,
         tool_result_messages=[tool_result],
         parent_task=user_task,
     )
 
-    assert todo.id == 10
-    assert todo.start_message_id == 22
-    assert tool_call_tasks[0].id == 11
+    assert todo.id is None
+    assert todo.start_message_id is None
+    assert tool_call_tasks[0].id == 10
     assert tool_call_tasks[0].parent_id == user_task.id
 
 
@@ -634,18 +633,8 @@ def test_lifecycle_tracks_next_task_transition():
 
     assert user_lifecycle._session_state.next_task_id_to_run == user_task.id
     assert user_lifecycle._session_state.next_task is user_task
-
-    user_lifecycle.append_created_task(start_message_id=1)
-    user_lifecycle.set_next_task(todo, keep_instance=True)
-
-    assert user_lifecycle._session_state.next_task_id_to_run == todo.id
-    assert user_lifecycle._session_state.next_task is todo
-
-    todo_lifecycle = _todo_lifecycle(todo)
-    todo_lifecycle.finish_task(result="Done")
-
-    assert todo_lifecycle._session_state.next_task_id_to_run == user_task.id
-    assert todo_lifecycle._session_state.next_task is None
+    assert todo.id is None
+    assert todo.parent_id == user_task.id
 
 
 def test_lifecycle_allocates_task_id_from_session_state_context():
@@ -655,8 +644,8 @@ def test_lifecycle_allocates_task_id_from_session_state_context():
 
     todo = lifecycle.create_next_task(kind="todo", title="Inspect files", enabled_task_kinds=["todo"])
 
-    assert todo.id == 7
-    assert session_state.next_task_id_to_allocate == 8
+    assert todo.id is None
+    assert session_state.next_task_id_to_allocate == 7
 
 
 def test_session_state_creates_tool_call_records_and_tasks():

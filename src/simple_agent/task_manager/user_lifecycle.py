@@ -163,24 +163,26 @@ class UserTaskLifecycle(BaseTaskLifecycle):
             self.finish_task()
 
         def route_after_turn() -> None:
-            created_task = self.append_created_task(start_message_id=assistant_entry.id)
+            created_task = self.created_task
             if created_task is not None:
-                self.set_next_task(created_task, keep_instance=True)
+                created_task.id = self._session_state.allocate_task_id()
+                if hasattr(created_task, "start_message_id"):
+                    created_task.start_message_id = assistant_entry.id
+                task.children.append(created_task)
+                task.touch()
+                self.set_next_task(created_task.id, created_task)
                 return
 
             if self.finished_task is not None:
                 self.stamp_finished_task(end_message_id=assistant_entry.id)
                 if self.should_compact_after_turn():
-                    self.set_next_task(task, keep_instance=True)
+                    self.set_next_task(task.id, task)
                     return
-                self._session_state.next_task_id_to_run = task.parent_id
-                self._session_state.next_task = None
+                self.set_next_task(task.parent_id, None)
                 return
 
             if has_tool_call:
-                has_child_task = self._session_state.next_task is not None and self._session_state.next_task is not task
-                if not has_child_task and task.status == "active":
-                    self.set_next_task(task, keep_instance=True)
+                self.set_next_task(task.id, task)
                 return
 
         route_after_turn()

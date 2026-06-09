@@ -169,7 +169,7 @@ class TodoTaskLifecycle(BaseTaskLifecycle):
                 self.finish_task()
             self.stamp_finished_task(end_message_id=assistant_entry.id)
         elif task.status == "active":
-            self.set_next_task(task, keep_instance=True)
+            self.set_next_task(task.id, task)
 
         runtime_logger.log_handle_running(
             session_id=self._session_state._require_session_id(),

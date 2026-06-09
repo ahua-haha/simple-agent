@@ -140,7 +140,7 @@ class RepoMemoryLifecycle(BaseTaskLifecycle):
             self._session_state.next_task_id_to_run = task.parent_id
             self._session_state.next_task = None
         elif task.status == "active":
-            self.set_next_task(task, keep_instance=True)
+            self.set_next_task(task.id, task)
 
         runtime_logger.log_handle_running(
             session_id=self._session_state._require_session_id(),
