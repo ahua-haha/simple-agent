@@ -7,9 +7,8 @@ import time
 from typing import TYPE_CHECKING, Any, cast
 
 from pi.agent import AgentTool, AgentToolResult
-from pi.ai.types import AssistantMessage, TextContent, ToolCall, ToolResultMessage, UserMessage
+from pi.ai.types import AssistantMessage, TextContent, UserMessage
 
-from simple_agent.message_store import MessageEntry
 from simple_agent.run_log import runtime_logger
 from simple_agent.task_manager.base_lifecycle import (
     BaseTaskLifecycle,
@@ -117,41 +116,20 @@ class UserTaskLifecycle(BaseTaskLifecycle):
             timestamp=int(time.time() * 1000),
         )
         context_messages = list(self._session_state.messages)
-        assistant_message = await agent_process.call_llm_step(
+        turn_result = await self.run_agent_turn(
+            agent_process=agent_process,
             system_prompt=USER_TASK_SYSTEM_PROMPT,
-            messages=[*self._session_state.message_values(), user_instruction_message],
+            user_instruction_message=user_instruction_message,
             tools=tools,
+            parent_task=task,
             cancel_event=cancel_event,
         )
-        if _assistant_is_error(assistant_message):
-            raise TaskLifecycleError(
-                assistant_message.error_message or "assistant response stopped with error"
-            )
-
-        assistant_entry = MessageEntry(
-            id=self._session_state.allocate_message_id(),
-            message=assistant_message,
-        )
-        tool_results: list[ToolResultMessage] = []
-        tool_call_records: list[tuple[int, ToolCall | None, ToolResultMessage]] = []
-        tool_call_tasks: list[ToolCallTask] = []
-        has_tool_call = _assistant_has_tool_calls(assistant_message)
-        if has_tool_call:
-            tool_results = await agent_process.run_tool_calls_step(
-                tools=tools,
-                assistant_message=assistant_message,
-                cancel_event=cancel_event,
-            )
-            tool_call_records, tool_call_tasks = self._session_state.create_tool_call_record_task_entries(
-                assistant_message=assistant_message,
-                tool_result_messages=tool_results,
-                parent_task=task,
-            )
-
-        tool_result_entries = [
-            MessageEntry(id=self._session_state.allocate_message_id(), message=tool_result)
-            for tool_result in tool_results
-        ]
+        assistant_message = turn_result.assistant_message
+        assistant_entry = turn_result.assistant_entry
+        tool_result_entries = turn_result.tool_result_entries
+        tool_call_records = turn_result.tool_call_records
+        tool_call_tasks = turn_result.tool_call_tasks
+        has_tool_call = turn_result.has_tool_call
         new_messages = [assistant_entry, *tool_result_entries]
         self._session_state.append_messages(new_messages)
 

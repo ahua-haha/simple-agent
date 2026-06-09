@@ -8,7 +8,7 @@ from typing import TYPE_CHECKING
 
 from pi.agent import AgentTool, AgentToolResult
 from pi.agent.types import AgentMessage
-from pi.ai.types import AssistantMessage, TextContent, ToolCall, ToolResultMessage
+from pi.ai.types import AssistantMessage, TextContent, ToolCall, ToolResultMessage, UserMessage
 
 from simple_agent.message_store import MessageEntry
 from simple_agent.task_manager.models import ManagedTask, RepoMemoryTask, TodoTask, ToolCallTask
@@ -220,6 +220,16 @@ class SessionState:
         return self.session_id
 
 
+@dataclass
+class AgentTurnResult:
+    assistant_message: AssistantMessage
+    assistant_entry: MessageEntry
+    tool_result_entries: list[MessageEntry]
+    tool_call_records: list[tuple[int, ToolCall | None, ToolResultMessage]]
+    tool_call_tasks: list[ToolCallTask]
+    has_tool_call: bool
+
+
 class BaseTaskLifecycle:
     _session_state: SessionState
     task: ManagedTask | None
@@ -237,6 +247,70 @@ class BaseTaskLifecycle:
         self.created_task = None
         self.finished_task = None
         raise NotImplementedError(f"{type(self).__name__}.set_data is not implemented")
+
+    async def run_agent_turn(
+        self,
+        *,
+        agent_process: AgentProcess,
+        system_prompt: str,
+        user_instruction_message: UserMessage,
+        tools: list[AgentTool],
+        parent_task: ManagedTask,
+        cancel_event: asyncio.Event | None = None,
+    ) -> AgentTurnResult:
+        """Run one LLM/tool turn and build transient records for post handling.
+
+        Mutates only allocation counters on SessionState while building message
+        entries, tool-call log records, and tool-call task records. Executed
+        tools may mutate lifecycle turn indicators such as created_task or
+        finished_task, but tool handlers must not allocate task ids, stamp
+        message metadata, append tasks, route next_task, or sync database data.
+        Those metadata and persistence changes belong in the caller's post-turn
+        handler so ordering stays deterministic.
+        """
+        assistant_message = await agent_process.call_llm_step(
+            system_prompt=system_prompt,
+            messages=[*self._session_state.message_values(), user_instruction_message],
+            tools=tools,
+            cancel_event=cancel_event,
+        )
+        if _assistant_is_error(assistant_message):
+            raise TaskLifecycleError(
+                assistant_message.error_message or "assistant response stopped with error"
+            )
+
+        assistant_entry = MessageEntry(
+            id=self._session_state.allocate_message_id(),
+            message=assistant_message,
+        )
+        tool_results: list[ToolResultMessage] = []
+        tool_call_records: list[tuple[int, ToolCall | None, ToolResultMessage]] = []
+        tool_call_tasks: list[ToolCallTask] = []
+        has_tool_call = _assistant_has_tool_calls(assistant_message)
+        if has_tool_call:
+            tool_results = await agent_process.run_tool_calls_step(
+                tools=tools,
+                assistant_message=assistant_message,
+                cancel_event=cancel_event,
+            )
+            tool_call_records, tool_call_tasks = self._session_state.create_tool_call_record_task_entries(
+                assistant_message=assistant_message,
+                tool_result_messages=tool_results,
+                parent_task=parent_task,
+            )
+
+        tool_result_entries = [
+            MessageEntry(id=self._session_state.allocate_message_id(), message=tool_result)
+            for tool_result in tool_results
+        ]
+        return AgentTurnResult(
+            assistant_message=assistant_message,
+            assistant_entry=assistant_entry,
+            tool_result_entries=tool_result_entries,
+            tool_call_records=tool_call_records,
+            tool_call_tasks=tool_call_tasks,
+            has_tool_call=has_tool_call,
+        )
 
     def create_next_task_tools(
         self,

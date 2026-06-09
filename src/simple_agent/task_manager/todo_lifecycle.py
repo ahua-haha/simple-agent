@@ -7,20 +7,17 @@ import time
 from typing import TYPE_CHECKING, cast
 
 from pi.agent import AgentTool, AgentToolResult
-from pi.ai.types import TextContent, ToolCall, ToolResultMessage, UserMessage
+from pi.ai.types import TextContent, UserMessage
 
-from simple_agent.message_store import MessageEntry
 from simple_agent.run_log import runtime_logger
 from simple_agent.task_manager.base_lifecycle import (
     BaseTaskLifecycle,
     SessionState,
     TaskLifecycleError,
     USER_TASK_SYSTEM_PROMPT,
-    _assistant_has_tool_calls,
-    _assistant_is_error,
     _next_task_action_text,
 )
-from simple_agent.task_manager.models import ManagedTask, TodoTask, ToolCallTask
+from simple_agent.task_manager.models import ManagedTask, TodoTask
 from simple_agent.tool.common_tools import create_all_coding_tools
 
 if TYPE_CHECKING:
@@ -123,48 +120,29 @@ class TodoTaskLifecycle(BaseTaskLifecycle):
             timestamp=int(time.time() * 1000),
         )
         context_messages = list(self._session_state.messages)
-        assistant_message = await agent_process.call_llm_step(
+        turn_result = await self.run_agent_turn(
+            agent_process=agent_process,
             system_prompt=USER_TASK_SYSTEM_PROMPT,
-            messages=[*self._session_state.message_values(), user_instruction_message],
+            user_instruction_message=user_instruction_message,
             tools=tools,
+            parent_task=task,
             cancel_event=cancel_event,
         )
-        if _assistant_is_error(assistant_message):
-            raise TaskLifecycleError(
-                assistant_message.error_message or "assistant response stopped with error"
-            )
-
-        assistant_entry = MessageEntry(
-            id=self._session_state.allocate_message_id(),
-            message=assistant_message,
-        )
-        tool_results: list[ToolResultMessage] = []
-        tool_call_records: list[tuple[int, ToolCall | None, ToolResultMessage]] = []
-        tool_call_tasks: list[ToolCallTask] = []
-        if _assistant_has_tool_calls(assistant_message):
-            tool_results = await agent_process.run_tool_calls_step(
-                tools=tools,
-                assistant_message=assistant_message,
-                cancel_event=cancel_event,
-            )
+        assistant_message = turn_result.assistant_message
+        assistant_entry = turn_result.assistant_entry
+        tool_result_entries = turn_result.tool_result_entries
+        tool_call_records = turn_result.tool_call_records
+        tool_call_tasks = turn_result.tool_call_tasks
+        if turn_result.has_tool_call:
             self.stamp_finished_task(end_message_id=assistant_entry.id)
-            tool_call_records, tool_call_tasks = self._session_state.create_tool_call_record_task_entries(
-                assistant_message=assistant_message,
-                tool_result_messages=tool_results,
-                parent_task=task,
-            )
             task.children.extend(tool_call_tasks)
             if tool_call_tasks:
                 task.touch()
 
-        tool_result_entries = [
-            MessageEntry(id=self._session_state.allocate_message_id(), message=tool_result)
-            for tool_result in tool_results
-        ]
         new_messages = [assistant_entry, *tool_result_entries]
         self._session_state.append_messages(new_messages)
 
-        if not _assistant_has_tool_calls(assistant_message):
+        if not turn_result.has_tool_call:
             if task.status == "active":
                 self.finish_task()
             self.stamp_finished_task(end_message_id=assistant_entry.id)
