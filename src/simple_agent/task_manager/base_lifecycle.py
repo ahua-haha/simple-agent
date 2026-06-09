@@ -180,16 +180,6 @@ class SessionState:
         for task in tasks:
             database.upsert_managed_task(task, session=session)
 
-    def replace_messages_in_database(self, *, session: SqlSession) -> None:
-        database = self._require_database()
-        session_id = self._require_session_id()
-        database.replace_runner_messages(
-            session_id,
-            [entry.message for entry in self.messages],
-            ids=[entry.id for entry in self.messages],
-            session=session,
-        )
-
     def replace_message_range_in_database(
         self,
         *,
@@ -225,15 +215,6 @@ class SessionState:
                 id=message.id,
                 session=session,
             )
-
-    def replace_task_tree_in_database(
-        self,
-        *,
-        task: ManagedTask,
-        session: SqlSession,
-    ) -> None:
-        database = self._require_database()
-        database.replace_managed_task_tree(task, session=session)
 
     def set_next_task(self, task_id: int | None, task: ManagedTask | None) -> None:
         self.next_task_id_to_run = task_id

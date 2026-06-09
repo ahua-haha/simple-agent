@@ -784,29 +784,6 @@ def test_lifecycle_replaces_message_range_and_syncs_explicit_message_list(tmp_pa
     assert [message.content[0].text for message in db.list_runner_messages("session_a")] == ["one", "compact"]
 
 
-def test_session_state_replaces_messages_in_database(tmp_path):
-    db = _make_db(tmp_path)
-    first = MessageEntry(id=1, message=AssistantMessage(role="assistant", content=[TextContent(text="one")]))
-    second = MessageEntry(id=2, message=AssistantMessage(role="assistant", content=[TextContent(text="two")]))
-    db.insert_runner_message("session_a", first.message, id=first.id)
-    db.insert_runner_message("session_a", second.message, id=second.id)
-    session_state = SessionState(
-        messages=[
-            MessageEntry(id=3, message=AssistantMessage(role="assistant", content=[TextContent(text="compact")])),
-        ],
-        database=db,
-        session_id="session_a",
-    )
-
-    with session_state.create_database_session() as session:
-        session_state.replace_messages_in_database(session=session)
-        session.commit()
-
-    entries = db.list_runner_message_entries("session_a")
-    assert [entry_id for entry_id, _message in entries] == [3]
-    assert [message.content[0].text for _entry_id, message in entries] == ["compact"]
-
-
 def test_session_state_replaces_message_range_in_database(tmp_path):
     db = _make_db(tmp_path)
     messages = [
@@ -836,24 +813,6 @@ def test_session_state_replaces_message_range_in_database(tmp_path):
     entries = db.list_runner_message_entries("session_a")
     assert [entry_id for entry_id, _message in entries] == [10, 30, 50]
     assert [message.content[0].text for _entry_id, message in entries] == ["one", "four", "compact"]
-
-
-def test_session_state_replaces_task_tree_in_database(tmp_path):
-    db = _make_db(tmp_path)
-    user_task = UserTask(id=1, title="Build feature")
-    stale_todo = TodoTask(id=2, parent_id=1, title="Old todo")
-    replacement_tool = ToolCallTask(id=3, parent_id=1, status="done", tool_call_log_id=7)
-    user_task.children = [replacement_tool]
-    db.upsert_managed_task(user_task)
-    db.upsert_managed_task(stale_todo)
-    session_state = SessionState(messages=[], database=db, session_id="session_a")
-
-    with session_state.create_database_session() as session:
-        session_state.replace_task_tree_in_database(task=user_task, session=session)
-        session.commit()
-
-    assert db.get_managed_task(stale_todo.id) is None
-    assert [child.tool_call_log_id for child in db.list_managed_task_children(user_task.id)] == [7]
 
 
 def test_lifecycle_syncs_explicit_tool_call_records_without_buffer(tmp_path):
