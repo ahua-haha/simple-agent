@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from simple_agent.task_manager.models import TodoTask, ToolCallTask, UserTask
-from simple_agent.task_manager.review import TaskTreeRenderer
+from simple_agent.task_manager.review import TaskTreeRenderer, build_task_tree
 
 
 def test_task_tree_renderer_uses_tool_call_metadata_from_task():
@@ -50,3 +50,15 @@ def test_task_tree_renderer_flat_mode_does_not_mutate_tree():
     assert '- tool_call 1. ls args: {"path":"."}' in output
     assert root.children == original_children
     assert todo.children == original_todo_children
+
+
+def test_build_task_tree_reconstructs_children_from_parent_id():
+    root = UserTask(id=1, title="Build feature")
+    todo = TodoTask(id=2, parent_id=1, title="Inspect files")
+    tool_call = ToolCallTask(id=3, parent_id=2, tool_call_log_id=7, tool_call_name="ls")
+
+    roots = build_task_tree([root, todo, tool_call])
+
+    assert roots == [root]
+    assert root.children == [todo]
+    assert todo.children == [tool_call]

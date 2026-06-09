@@ -73,3 +73,21 @@ def _flat_tool_calls(task: ManagedTask) -> list[ToolCallTask]:
             stack.extend(reversed(child.children))
     return tool_calls
 
+
+def build_task_tree(tasks: list[ManagedTask]) -> list[ManagedTask]:
+    """Build in-memory task trees from flat persisted tasks without changing order."""
+    by_id = {
+        task.id: task
+        for task in tasks
+        if task.id is not None
+    }
+    roots: list[ManagedTask] = []
+    for task in tasks:
+        task.children = []
+
+    for task in tasks:
+        if task.parent_id is not None and task.parent_id in by_id:
+            by_id[task.parent_id].children.append(task)
+        else:
+            roots.append(task)
+    return roots

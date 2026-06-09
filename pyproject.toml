@@ -22,7 +22,6 @@ dependencies = [
 ]
 
 [project.scripts]
-repo-index = "simple_agent.cli.repo_index:main"
 tool-inspect = "simple_agent.cli.tool_inspect:main"
 
 [dependency-groups]

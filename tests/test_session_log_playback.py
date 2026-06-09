@@ -2,13 +2,13 @@
 
 from __future__ import annotations
 
-from simple_agent.cli.session_log_playback import (
+from simple_agent.cli.session_inspect import (
     PlaybackContext,
     PlaybackState,
     brief_move,
-    build_context,
+    build_playback_context,
     format_tool_result_text,
-    handle_command,
+    handle_playback_command,
     tool_result_text,
 )
 from simple_agent.db.db import Database
@@ -68,7 +68,7 @@ def test_show_command_accepts_inline_tool_result_limit(capsys):
     }
     state = PlaybackState()
 
-    handle_command("show 1 5", [move], state)
+    handle_playback_command("show 1 5", [move], state)
 
     output = capsys.readouterr().out
     assert "abcde... [truncated 3 chars]" in output
@@ -87,7 +87,7 @@ def test_build_context_loads_tool_result_json_by_tool_call_id(tmp_path):
     )
     moves = [{"session_id": "session_a"}]
 
-    context = build_context(
+    context = build_playback_context(
         moves,
         db_path=db_path,
         sessions_dir=tmp_path,
@@ -107,7 +107,7 @@ def test_show_command_can_display_db_tool_result_content(capsys):
     }
     context = PlaybackContext(tool_results={"call_1": "abcdefgh"})
 
-    handle_command("show 1 5", [move], PlaybackState(), context)
+    handle_playback_command("show 1 5", [move], PlaybackState(), context)
 
     output = capsys.readouterr().out
     assert "abcde... [truncated 3 chars]" in output
@@ -130,7 +130,7 @@ def test_build_context_extracts_string_content_from_tool_result_json(tmp_path):
         tool_result_json='{"content":"plain text"}',
     )
 
-    context = build_context(
+    context = build_playback_context(
         [{"session_id": "session_a"}],
         db_path=db_path,
         sessions_dir=tmp_path,
