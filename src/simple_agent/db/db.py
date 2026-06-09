@@ -362,6 +362,20 @@ class Database:
             session.expunge(record)
         return records
 
+    @standalone_or_compose
+    def get_runner_tool_call(
+        self,
+        session_id: str,
+        tool_call_log_id: int,
+        *,
+        session: Session | None = None,
+    ) -> RunnerToolCallRecord | None:
+        record = session.get(RunnerToolCallRecord, tool_call_log_id)
+        if record is None or record.session_id != session_id:
+            return None
+        session.expunge(record)
+        return record
+
     # ------------------------------------------------------------------
     # Session metadata operations
     # ------------------------------------------------------------------

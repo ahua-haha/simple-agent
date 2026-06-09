@@ -7,7 +7,7 @@ import time
 from typing import TYPE_CHECKING, cast
 
 from pi.agent import AgentTool, AgentToolResult
-from pi.ai.types import AssistantMessage, TextContent, UserMessage
+from pi.ai.types import AssistantMessage, TextContent, ToolCall, ToolResultMessage, UserMessage
 
 from simple_agent.run_log import runtime_logger
 from simple_agent.task_manager.base_lifecycle import (
@@ -99,8 +99,7 @@ class UserTaskLifecycle(BaseTaskLifecycle):
         )
 
     def should_compact_after_turn(self) -> bool:
-        # TODO: implement compact trigger logic for completed user tasks.
-        return False
+        return _count_tool_calls(self.task.children) > 10
 
     async def run_one_turn(
         self,
@@ -247,7 +246,7 @@ class UserTaskLifecycle(BaseTaskLifecycle):
             if task.start_message_id is None:
                 raise TaskLifecycleError("Compact task is missing start message id")
             end_message_id = task.end_message_id or self._session_state.messages[-1].id
-            compacted_messages = format_messages_from_user_task(task)
+            compacted_messages = self.format_messages_from_user_task(task)
             replacement_entries = self._session_state.replace_message_range(
                 start_message_id=task.start_message_id,
                 end_message_id=end_message_id,
@@ -307,33 +306,62 @@ class UserTaskLifecycle(BaseTaskLifecycle):
 
     def create_compact_one_turn_tools(self) -> list[AgentTool]:
         record_tool = AgentTool(
-            name="record_compacted_tool_call_task",
-            description="Record one useful tool-call task id for the compacted user task.",
+            name="record_compacted_tool_call_log",
+            description="Record one useful tool-call log id for the compacted user task.",
             parameters={
                 "type": "object",
                 "properties": {
-                    "tool_call_task_id": {
+                    "tool_call_log_id": {
                         "type": "integer",
-                        "description": "Task id of the useful tool_call task to keep in compacted context.",
+                        "description": "Tool-call log id of the useful tool result to keep in compacted context.",
                     },
                 },
-                "required": ["tool_call_task_id"],
+                "required": ["tool_call_log_id"],
             },
         )
 
         async def record_execute(tool_call_id, params, cancel_event=None, on_update=None):
-            self.record_compacted_tool_call_task(
-                tool_call_task_id=params["tool_call_task_id"],
+            self.record_compacted_tool_call_log(
+                tool_call_log_id=params["tool_call_log_id"],
             )
-            return AgentToolResult(content=[TextContent(text="recorded compacted tool call task")])
+            return AgentToolResult(content=[TextContent(text="recorded compacted tool call log")])
 
         record_tool.execute = record_execute
         return [record_tool]
 
-    def record_compacted_tool_call_task(self, *, tool_call_task_id: int) -> None:
-        if tool_call_task_id not in self.task.compacted_tool_call_task_ids:
-            self.task.compacted_tool_call_task_ids.append(tool_call_task_id)
+    def record_compacted_tool_call_log(self, *, tool_call_log_id: int) -> None:
+        if tool_call_log_id not in self.task.compacted_tool_call_log_ids:
+            self.task.compacted_tool_call_log_ids.append(tool_call_log_id)
             self.task.touch()
+
+    def format_messages_from_user_task(self, user_task: UserTask) -> list[UserMessage | AssistantMessage | ToolResultMessage]:
+        compacted_tool_calls = self._session_state.compacted_tool_calls(
+            user_task.compacted_tool_call_log_ids,
+        )
+        tool_calls = [
+            tool_call
+            for tool_call, _tool_result_message in compacted_tool_calls
+            if tool_call is not None
+        ]
+        tool_result_messages = [
+            tool_result_message
+            for _tool_call, tool_result_message in compacted_tool_calls
+        ]
+        tool_refs = [
+            message.tool_call_id
+            for message in tool_result_messages
+        ]
+        result_text = user_task.result or user_task.title
+        assistant_text = (
+            f"Finished task: {user_task.title}\n"
+            f"Result: {result_text}\n"
+            f"Following tool calls preserve useful context: {tool_refs}"
+        )
+        return [
+            UserMessage(content=[TextContent(text=user_task.title)], timestamp=int(time.time() * 1000)),
+            AssistantMessage(role="assistant", content=[TextContent(text=assistant_text), *tool_calls]),
+            *tool_result_messages,
+        ]
 
 
 def todo_status_text(user_task: UserTask) -> str:
@@ -362,13 +390,3 @@ def _count_user_task_tool_calls_after_latest_todo(user_task: UserTask) -> int:
 
 def _count_tool_calls(tasks: list[ManagedTask]) -> int:
     return sum(1 for task in tasks if task.kind == "tool_call")
-
-
-def format_messages_from_user_task(user_task: UserTask) -> list[AssistantMessage]:
-    # TODO: format compacted messages from the user task result and selected
-    # compacted tool-call task ids.
-    text = (
-        f"Compacted user task: {user_task.result or user_task.title}\n"
-        f"Useful tool call tasks: {user_task.compacted_tool_call_task_ids}"
-    )
-    return [AssistantMessage(role="assistant", content=[TextContent(text=text)])]

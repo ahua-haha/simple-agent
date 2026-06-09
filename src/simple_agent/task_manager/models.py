@@ -40,7 +40,7 @@ class UserTask(BaseTask):
     error: str | None = None
     start_message_id: int | None = None
     end_message_id: int | None = None
-    compacted_tool_call_task_ids: list[int] = Field(default_factory=list)
+    compacted_tool_call_log_ids: list[int] = Field(default_factory=list)
 
     def format_for_render(self, *, tool_call: Any | None = None, sequence: int | None = None) -> str:
         return f"user_task [{self.status}] {self.title}"

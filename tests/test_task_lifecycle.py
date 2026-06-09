@@ -276,8 +276,8 @@ def test_repo_memory_lifecycle_owns_runtime_agent_index(tmp_path):
     assert "index_upsert" in [tool.name for tool in tools]
 
 
-def test_user_task_persists_compacted_tool_call_task_ids():
-    task = UserTask(id=1, title="Build feature", compacted_tool_call_task_ids=[2, 5])
+def test_user_task_persists_compacted_tool_call_log_ids():
+    task = UserTask(id=1, title="Build feature", compacted_tool_call_log_ids=[2, 5])
 
     restored = task_from_metadata(
         id=task.id,
@@ -287,7 +287,7 @@ def test_user_task_persists_compacted_tool_call_task_ids():
         metadata=task.metadata_json(),
     )
 
-    assert restored.compacted_tool_call_task_ids == [2, 5]
+    assert restored.compacted_tool_call_log_ids == [2, 5]
 
 
 def test_base_lifecycle_provides_next_task_instruction_and_tool():
@@ -636,6 +636,30 @@ def test_session_state_records_tool_call_args_for_rendering():
     assert len(rendered) <= len("tool_call 1. bash args: ") + 120
 
 
+def test_session_state_loads_compacted_tool_calls_by_log_id(tmp_path):
+    db = _make_db(tmp_path)
+    session_state = SessionState(messages=[], database=db, session_id="session_a")
+    tool_call = ToolCall(id="call_7", name="ls", arguments={"path": "."})
+    tool_result = ToolResultMessage(
+        toolCallId="call_7",
+        toolName="ls",
+        content=[TextContent(text="files")],
+    )
+    with db.create_session() as session:
+        db.insert_runner_tool_call(
+            id=7,
+            session_id="session_a",
+            tool_call_id="call_7",
+            tool_name="ls",
+            tool_call_json=tool_call.model_dump_json(),
+            tool_result_json=tool_result.model_dump_json(),
+            session=session,
+        )
+        session.commit()
+
+    assert session_state.compacted_tool_calls([7]) == [(tool_call, tool_result)]
+
+
 def test_session_state_appends_messages_to_database(tmp_path):
     db = _make_db(tmp_path)
     session_state = SessionState(messages=[], database=db, session_id="session_a")
@@ -906,9 +930,12 @@ async def test_user_task_lifecycle_run_compacts_already_done_task(tmp_path):
     assert lifecycle._session_state.next_task_id_to_run == 99
     assert agent_process.llm_calls[0]["system_prompt"] == USER_TASK_COMPACT_SYSTEM_PROMPT
     persisted_messages = db.list_runner_messages("session_a")
-    assert len(persisted_messages) == 1
-    assert persisted_messages[0].content[0].text == (
-        "Compacted user task: Build feature\nUseful tool call tasks: []"
+    assert [message.role for message in persisted_messages] == ["user", "assistant"]
+    assert persisted_messages[0].content[0].text == "Build feature"
+    assert persisted_messages[1].content[0].text == (
+        "Finished task: Build feature\n"
+        "Result: Build feature\n"
+        "Following tool calls preserve useful context: []"
     )
 
 
@@ -1022,7 +1049,7 @@ async def test_user_task_lifecycle_run_syncs_created_todo_task(tmp_path):
     assert lifecycle._session_state.next_task is user_task.children[1]
 
 
-def test_user_task_lifecycle_records_compacted_tool_call_task_id():
+def test_user_task_lifecycle_records_compacted_tool_call_log_id():
     user_task = UserTask(
         id=1,
         title="Build feature",
@@ -1031,14 +1058,14 @@ def test_user_task_lifecycle_records_compacted_tool_call_task_id():
     )
     lifecycle = _user_lifecycle(user_task)
 
-    lifecycle.record_compacted_tool_call_task(tool_call_task_id=2)
-    lifecycle.record_compacted_tool_call_task(tool_call_task_id=2)
+    lifecycle.record_compacted_tool_call_log(tool_call_log_id=7)
+    lifecycle.record_compacted_tool_call_log(tool_call_log_id=7)
 
-    assert user_task.compacted_tool_call_task_ids == [2]
+    assert user_task.compacted_tool_call_log_ids == [7]
 
 
 @pytest.mark.asyncio
-async def test_user_task_lifecycle_run_compact_one_turn_records_tool_call_task_id(tmp_path):
+async def test_user_task_lifecycle_run_compact_one_turn_records_tool_call_log_id(tmp_path):
     class OneTurnCompactAgentProcess:
         def __init__(self):
             self.llm_calls = []
@@ -1058,8 +1085,8 @@ async def test_user_task_lifecycle_run_compact_one_turn_records_tool_call_task_i
                 content=[
                     ToolCall(
                         id="compact_record",
-                        name="record_compacted_tool_call_task",
-                        arguments={"tool_call_task_id": 2},
+                        name="record_compacted_tool_call_log",
+                        arguments={"tool_call_log_id": 7},
                     )
                 ],
             )
@@ -1108,21 +1135,21 @@ async def test_user_task_lifecycle_run_compact_one_turn_records_tool_call_task_i
 
     assert result is lifecycle._session_state
     assert agent_process.llm_calls[0]["system_prompt"] == USER_TASK_COMPACT_SYSTEM_PROMPT
-    assert agent_process.llm_calls[0]["tools"] == ["record_compacted_tool_call_task"]
+    assert agent_process.llm_calls[0]["tools"] == ["record_compacted_tool_call_log"]
     assert agent_process.llm_calls[0]["messages"][0] == session_state.messages[0].message
     assert "Runtime instruction for compacting phase" in agent_process.llm_calls[0]["messages"][-1].content[0].text
-    assert agent_process.tool_calls[0]["tools"] == ["record_compacted_tool_call_task"]
-    assert user_task.compacted_tool_call_task_ids == [2]
+    assert agent_process.tool_calls[0]["tools"] == ["record_compacted_tool_call_log"]
+    assert user_task.compacted_tool_call_log_ids == [7]
     assert [entry.id for entry in lifecycle._session_state.messages] == [1, 2, 3]
     assert [record.tool_name for record in db.list_runner_tool_calls("session_a")] == [
-        "record_compacted_tool_call_task"
+        "record_compacted_tool_call_log"
     ]
     persisted_user_task = db.get_managed_task(user_task.id)
-    assert persisted_user_task.compacted_tool_call_task_ids == [2]
+    assert persisted_user_task.compacted_tool_call_log_ids == [7]
     persisted_children = db.list_managed_task_children(user_task.id)
     assert [child.tool_call_name for child in persisted_children] == [
         None,
-        "record_compacted_tool_call_task",
+        "record_compacted_tool_call_log",
     ]
 
 
@@ -1135,7 +1162,7 @@ async def test_user_task_lifecycle_run_compact_one_turn_finishes_and_replaces_me
         title="Build feature",
         status="done",
         start_message_id=1,
-        compacted_tool_call_task_ids=[2],
+        compacted_tool_call_log_ids=[7],
         children=[
             ToolCallTask(id=2, parent_id=1, status="done", tool_call_log_id=7),
             TodoTask(id=3, parent_id=1, title="Old todo", status="done"),
@@ -1160,6 +1187,19 @@ async def test_user_task_lifecycle_run_compact_one_turn_finishes_and_replaces_me
         for child in user_task.children:
             db.upsert_managed_task(child, session=session)
         db.replace_runner_messages("session_a", original_messages, ids=[1, 2], session=session)
+        db.insert_runner_tool_call(
+            id=7,
+            session_id="session_a",
+            tool_call_id="call_7",
+            tool_name="ls",
+            tool_call_json='{"id":"call_7","name":"ls","arguments":{"path":"."}}',
+            tool_result_json=ToolResultMessage(
+                toolCallId="call_7",
+                toolName="ls",
+                content=[TextContent(text="files")],
+            ).model_dump_json(),
+            session=session,
+        )
         session.commit()
     lifecycle = _user_lifecycle(user_task, session_state=session_state)
     agent_process = FakeAgentProcess(AssistantMessage(role="assistant", content=[TextContent(text="compact done")]))
@@ -1169,12 +1209,31 @@ async def test_user_task_lifecycle_run_compact_one_turn_finishes_and_replaces_me
     assert result is lifecycle._session_state
     assert lifecycle._session_state.next_task is None
     assert lifecycle._session_state.next_task_id_to_run == 99
-    assert [entry.id for entry in lifecycle._session_state.messages] == [4]
-    assert lifecycle._session_state.messages[0].message.content[0].text == (
-        "Compacted user task: Build feature\nUseful tool call tasks: [2]"
+    assert [entry.id for entry in lifecycle._session_state.messages] == [4, 5, 6]
+    assert [entry.message.role for entry in lifecycle._session_state.messages] == ["user", "assistant", "tool_result"]
+    assert lifecycle._session_state.messages[0].message.content[0].text == "Build feature"
+    assert lifecycle._session_state.messages[1].message.content[0].text == (
+        "Finished task: Build feature\n"
+        "Result: Build feature\n"
+        "Following tool calls preserve useful context: ['call_7']"
     )
+    compacted_tool_call = lifecycle._session_state.messages[1].message.content[1]
+    assert compacted_tool_call == ToolCall(id="call_7", name="ls", arguments={"path": "."})
+    assert lifecycle._session_state.messages[2].message.tool_call_id == "call_7"
     persisted_messages = db.list_runner_messages("session_a")
-    assert len(persisted_messages) == 1
-    assert persisted_messages[0].content[0].text == "Compacted user task: Build feature\nUseful tool call tasks: [2]"
+    assert [message.role for message in persisted_messages] == ["user", "assistant", "tool_result"]
+    assert persisted_messages[1].content[1] == ToolCall(id="call_7", name="ls", arguments={"path": "."})
+    assert persisted_messages[2].content[0].text == "files"
     persisted_children = db.list_managed_task_children(user_task.id)
     assert [child.id for child in persisted_children] == [2, 3]
+
+
+def test_user_task_lifecycle_should_compact_after_more_than_ten_tool_calls():
+    user_task = UserTask(
+        id=1,
+        title="Build feature",
+        children=[ToolCallTask(id=index + 2, parent_id=1, tool_call_log_id=index) for index in range(11)],
+    )
+    lifecycle = _user_lifecycle(user_task)
+
+    assert lifecycle.should_compact_after_turn() is True

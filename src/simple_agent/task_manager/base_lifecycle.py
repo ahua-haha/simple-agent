@@ -132,6 +132,25 @@ class SessionState:
             )
         return tool_call_records, tool_call_tasks
 
+    def compacted_tool_calls(self, tool_call_log_ids: list[int]) -> list[tuple[ToolCall | None, ToolResultMessage]]:
+        database = self._require_database()
+        session_id = self._require_session_id()
+        records: list[tuple[ToolCall | None, ToolResultMessage]] = []
+        with self.create_database_session() as session:
+            for tool_call_log_id in tool_call_log_ids:
+                record = database.get_runner_tool_call(
+                    session_id,
+                    tool_call_log_id,
+                    session=session,
+                )
+                if record is None:
+                    continue
+                tool_call = None
+                if record.tool_call_json != "null":
+                    tool_call = ToolCall.model_validate_json(record.tool_call_json)
+                records.append((tool_call, ToolResultMessage.model_validate_json(record.tool_result_json)))
+        return records
+
     def create_database_session(self) -> SqlSession:
         return self._require_database().create_session()
 
