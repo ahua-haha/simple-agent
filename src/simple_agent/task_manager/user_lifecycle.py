@@ -214,6 +214,54 @@ class UserTaskLifecycle(BaseTaskLifecycle):
             f"{task_view}"
         )
 
+    async def run_compact_one_turn(
+        self,
+        *,
+        agent_process: AgentProcess,
+        cancel_event: asyncio.Event | None = None,
+    ) -> SessionState:
+        task = self.task
+        tools = self.create_compact_one_turn_tools()
+        user_instruction_message = UserMessage(
+            content=[TextContent(text=self.compaction_instruction_text())],
+            timestamp=int(time.time() * 1000),
+        )
+        turn_result = await self.run_agent_turn(
+            agent_process=agent_process,
+            system_prompt=USER_TASK_COMPACT_SYSTEM_PROMPT,
+            user_instruction_message=user_instruction_message,
+            tools=tools,
+            parent_task=task,
+            cancel_event=cancel_event,
+        )
+        new_messages = [turn_result.assistant_entry, *turn_result.tool_result_entries]
+        self._session_state.append_messages(new_messages)
+
+        task.children.extend(turn_result.tool_call_tasks)
+        if turn_result.tool_call_tasks:
+            task.touch()
+
+        if not turn_result.has_tool_call:
+            # TODO: post-handle finished compact result.
+            pass
+
+        tasks_to_sync: list[ManagedTask] = [task, *task.children]
+        with self._session_state.create_database_session() as session:
+            self._session_state.append_messages_to_database(
+                messages=new_messages,
+                session=session,
+            )
+            self._session_state.append_tool_calls_to_database(
+                tool_calls=turn_result.tool_call_records,
+                session=session,
+            )
+            self._session_state.append_tasks_to_database(
+                tasks=tasks_to_sync,
+                session=session,
+            )
+            session.commit()
+        return self._session_state
+
     async def handle_compact(
         self,
         *,
@@ -411,6 +459,36 @@ class UserTaskLifecycle(BaseTaskLifecycle):
 
         tool.execute = execute
         return tool
+
+    def create_compact_one_turn_tools(self) -> list[AgentTool]:
+        record_tool = AgentTool(
+            name="record_compacted_tool_call_task",
+            description="Record one useful tool-call task id for the compacted user task.",
+            parameters={
+                "type": "object",
+                "properties": {
+                    "tool_call_task_id": {
+                        "type": "integer",
+                        "description": "Task id of the useful tool_call task to keep in compacted context.",
+                    },
+                },
+                "required": ["tool_call_task_id"],
+            },
+        )
+
+        async def record_execute(tool_call_id, params, cancel_event=None, on_update=None):
+            self.record_compacted_tool_call_task(
+                tool_call_task_id=params["tool_call_task_id"],
+            )
+            return AgentToolResult(content=[TextContent(text="recorded compacted tool call task")])
+
+        record_tool.execute = record_execute
+        return [record_tool]
+
+    def record_compacted_tool_call_task(self, *, tool_call_task_id: int) -> None:
+        if tool_call_task_id not in self.task.compacted_tool_call_task_ids:
+            self.task.compacted_tool_call_task_ids.append(tool_call_task_id)
+            self.task.touch()
 
 
 def todo_status_text(user_task: UserTask) -> str:

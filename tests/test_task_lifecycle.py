@@ -365,6 +365,20 @@ def test_user_task_maintains_compaction_runtime_state():
     assert restored.compacted_user_task_finished is False
 
 
+def test_user_task_persists_compacted_tool_call_task_ids():
+    task = UserTask(id=1, title="Build feature", compacted_tool_call_task_ids=[2, 5])
+
+    restored = task_from_metadata(
+        id=task.id,
+        parent_id=task.parent_id,
+        kind=task.kind,
+        status=task.status,
+        metadata=task.metadata_json(),
+    )
+
+    assert restored.compacted_tool_call_task_ids == [2, 5]
+
+
 def test_base_lifecycle_provides_next_task_instruction_and_tool():
     task = UserTask(id=1, title="Build feature")
     session_state = SessionState(
@@ -1150,6 +1164,110 @@ def test_user_task_lifecycle_compaction_requires_finished_compacted_user_task():
 
     with pytest.raises(RuntimeError, match="No compacted user task result"):
         lifecycle.compaction_result()
+
+
+def test_user_task_lifecycle_records_compacted_tool_call_task_id():
+    user_task = UserTask(
+        id=1,
+        title="Build feature",
+        status="done",
+        children=[ToolCallTask(id=2, parent_id=1, status="done", tool_call_log_id=7)],
+    )
+    lifecycle = _user_lifecycle(user_task)
+
+    lifecycle.record_compacted_tool_call_task(tool_call_task_id=2)
+    lifecycle.record_compacted_tool_call_task(tool_call_task_id=2)
+
+    assert user_task.compacted_tool_call_task_ids == [2]
+
+
+@pytest.mark.asyncio
+async def test_user_task_lifecycle_run_compact_one_turn_records_tool_call_task_id(tmp_path):
+    class OneTurnCompactAgentProcess:
+        def __init__(self):
+            self.llm_calls = []
+            self.tool_calls = []
+
+        async def call_llm_step(self, system_prompt, messages, tools, cancel_event=None):
+            self.llm_calls.append(
+                {
+                    "system_prompt": system_prompt,
+                    "messages": list(messages),
+                    "tools": [tool.name for tool in tools],
+                    "cancel_event": cancel_event,
+                }
+            )
+            return AssistantMessage(
+                role="assistant",
+                content=[
+                    ToolCall(
+                        id="compact_record",
+                        name="record_compacted_tool_call_task",
+                        arguments={"tool_call_task_id": 2},
+                    )
+                ],
+            )
+
+        async def run_tool_calls_step(self, tools, assistant_message, cancel_event=None):
+            self.tool_calls.append(
+                {
+                    "tools": [tool.name for tool in tools],
+                    "assistant_message": assistant_message,
+                    "cancel_event": cancel_event,
+                }
+            )
+            tools_by_name = {tool.name: tool for tool in tools}
+            results = []
+            for content in assistant_message.content:
+                if not isinstance(content, ToolCall):
+                    continue
+                result = await tools_by_name[content.name].execute(content.id, content.arguments)
+                results.append(
+                    ToolResultMessage(
+                        toolCallId=content.id,
+                        toolName=content.name,
+                        content=result.content,
+                    )
+                )
+            return results
+
+    user_task = UserTask(
+        id=1,
+        title="Build feature",
+        status="done",
+        children=[ToolCallTask(id=2, parent_id=1, status="done", tool_call_log_id=7)],
+    )
+    db = _make_db(tmp_path)
+    session_state = SessionState(
+        messages=[MessageEntry(id=1, message=UserMessage(content=[TextContent(text="go")], timestamp=1))],
+        database=db,
+        session_id="session_a",
+        next_message_id=2,
+        next_task_id_to_allocate=10,
+    )
+    lifecycle = _user_lifecycle(user_task, session_state=session_state)
+    agent_process = OneTurnCompactAgentProcess()
+
+    result = await lifecycle.run_compact_one_turn(agent_process=agent_process)
+
+    assert result is lifecycle._session_state
+    assert agent_process.llm_calls[0]["system_prompt"] == USER_TASK_COMPACT_SYSTEM_PROMPT
+    assert agent_process.llm_calls[0]["tools"] == ["record_compacted_tool_call_task"]
+    assert agent_process.llm_calls[0]["messages"][0] == session_state.messages[0].message
+    assert "Runtime instruction for compacting phase" in agent_process.llm_calls[0]["messages"][-1].content[0].text
+    assert agent_process.tool_calls[0]["tools"] == ["record_compacted_tool_call_task"]
+    assert user_task.compacted_tool_call_task_ids == [2]
+    assert [entry.id for entry in lifecycle._session_state.messages] == [1, 2, 3]
+    assert [record.tool_name for record in db.list_runner_tool_calls("session_a")] == [
+        "record_compacted_tool_call_task"
+    ]
+    persisted_user_task = db.get_managed_task(user_task.id)
+    assert persisted_user_task.compacted_tool_call_task_ids == [2]
+    persisted_children = db.list_managed_task_children(user_task.id)
+    assert [child.tool_call_name for child in persisted_children] == [
+        None,
+        "record_compacted_tool_call_task",
+    ]
 
 
 @pytest.mark.asyncio

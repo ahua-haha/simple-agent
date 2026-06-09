@@ -42,6 +42,7 @@ class UserTask(BaseTask):
     error: str | None = None
     start_message_id: int | None = None
     end_message_id: int | None = None
+    compacted_tool_call_task_ids: list[int] = Field(default_factory=list)
     _compacted_tool_calls: list["ToolCallTask"] = PrivateAttr(default_factory=list)
     _compacted_user_task_finished: bool = PrivateAttr(default=False)
 
