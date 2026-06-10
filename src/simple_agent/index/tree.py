@@ -60,7 +60,7 @@ def build_tree(
     return root
 
 
-def render_tree(node: BaseNode | None) -> str:
+def render_tree(node: BaseNode | None, *, depth: int | None = None) -> str:
     """Render a ``BaseNode`` tree as an ASCII tree."""
     if node is None:
         return "(empty)"
@@ -70,6 +70,7 @@ def render_tree(node: BaseNode | None) -> str:
         prefix: str = "",
         is_last: bool = True,
         is_root: bool = True,
+        current_depth: int = 0,
     ) -> str:
         output = ""
 
@@ -85,7 +86,7 @@ def render_tree(node: BaseNode | None) -> str:
         else:
             output += f"{current_prefix}{current.format_node()}\n"
 
-        if current.children:
+        if current.children and (depth is None or current_depth < depth):
             sorted_children = sorted(
                 current.children,
                 key=lambda child: (0 if child.is_dir else 1, child.name.lower()),
@@ -101,6 +102,7 @@ def render_tree(node: BaseNode | None) -> str:
                     prefix=next_prefix,
                     is_last=is_child_last,
                     is_root=False,
+                    current_depth=current_depth + 1,
                 )
 
         return output

@@ -6,6 +6,7 @@ import json
 import os
 import time
 
+from collections import deque
 from collections.abc import Callable
 from pathlib import Path
 
@@ -91,6 +92,13 @@ class AgentIndex:
                         "type": "integer",
                         "description": "Optional maximum depth to render.",
                     },
+                    "entry_limit": {
+                        "type": "integer",
+                        "description": (
+                            "Optional maximum number of tree entries to render. "
+                            "If exceeded, render depth is reduced until the entry count fits."
+                        ),
+                    },
                 },
             },
         )
@@ -99,6 +107,7 @@ class AgentIndex:
             output = self.tree(
                 path=params.get("path", ""),
                 depth=params.get("depth"),
+                entry_limit=params.get("entry_limit"),
             )
             return AgentToolResult(content=[TextContent(text=output)])
 
@@ -318,6 +327,7 @@ class AgentIndex:
         self,
         path: str = "",
         depth: int | None = None,
+        entry_limit: int | None = 48,
     ) -> str:
         """Render the index as a tree with # descriptions.
 
@@ -336,7 +346,34 @@ class AgentIndex:
         root = build_tree(root, WalkOptions(depth=depth, filter_fn=filter_fn))
         entries = self._load_entries()
         self._fill_tree_metadata(root, entries)
-        return render_tree(root)
+        render_depth = (
+            _max_render_depth_for_entry_limit(root, entry_limit)
+            if entry_limit is not None
+            else None
+        )
+        return render_tree(root, depth=render_depth)
+
+
+def _max_render_depth_for_entry_limit(root: BaseNode, entry_limit: int) -> int:
+    if entry_limit <= 0:
+        return 0
+    counts_by_depth: dict[int, int] = {}
+    queue = deque([(root, 0)])
+    while queue:
+        node, depth = queue.popleft()
+        counts_by_depth[depth] = counts_by_depth.get(depth, 0) + 1
+        for child in node.children:
+            queue.append((child, depth + 1))
+
+    total = 0
+    best_depth = 0
+    for depth in sorted(counts_by_depth):
+        next_total = total + counts_by_depth[depth]
+        if next_total > entry_limit:
+            return best_depth
+        total = next_total
+        best_depth = depth
+    return best_depth
 
 
 def _metadata_dict(metadata_json: str) -> dict:

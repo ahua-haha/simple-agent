@@ -218,7 +218,7 @@ def print_selected_task_tree(args: list[str], state: InspectState) -> None:
 
 def handle_index_command(args: list[str], state: InspectState) -> None:
     if not args:
-        print("[error] use: index list | index use <index-number> | index tree [path] [--depth N] [--db PATH] [--repo PATH]")
+        print("[error] use: index list | index use <index-number> | index tree [path] [--depth N] [--entry-limit N] [--db PATH] [--repo PATH]")
         return
     command = args[0]
     rest = args[1:]
@@ -230,7 +230,7 @@ def handle_index_command(args: list[str], state: InspectState) -> None:
         print_index_tree(rest, state)
     else:
         print(f"[unknown index command] {command}")
-        print("[error] use: index list | index use <index-number> | index tree [path] [--depth N] [--db PATH] [--repo PATH]")
+        print("[error] use: index list | index use <index-number> | index tree [path] [--depth N] [--entry-limit N] [--db PATH] [--repo PATH]")
 
 
 def print_index_tasks(state: InspectState) -> None:
@@ -260,10 +260,10 @@ def select_index_task(args: list[str], state: InspectState) -> None:
 
 def print_index_tree(args: list[str], state: InspectState) -> None:
     try:
-        path, depth, db_path, repo_path = parse_index_tree_args(args)
+        path, depth, entry_limit, db_path, repo_path = parse_index_tree_args(args)
     except ValueError as exc:
         print(f"[error] {exc}")
-        print("[error] use: index tree [path] [--depth N] [--db PATH] [--repo PATH]")
+        print("[error] use: index tree [path] [--depth N] [--entry-limit N] [--db PATH] [--repo PATH]")
         return
     selected_task = state.selected_index_task
     if db_path is None or repo_path is None:
@@ -280,13 +280,14 @@ def print_index_tree(args: list[str], state: InspectState) -> None:
                 return
         db_path = db_path or selected_task.index_db_path
         repo_path = repo_path or selected_task.repo_path
-    output = AgentIndex(db_path, base_dir=repo_path).tree(path=path, depth=depth)
+    output = AgentIndex(db_path, base_dir=repo_path).tree(path=path, depth=depth, entry_limit=entry_limit)
     print(output)
 
 
-def parse_index_tree_args(args: list[str]) -> tuple[str, int | None, str | None, str | None]:
+def parse_index_tree_args(args: list[str]) -> tuple[str, int | None, int | None, str | None, str | None]:
     path = ""
     depth = None
+    entry_limit = None
     db_path = None
     repo_path = None
     index = 0
@@ -294,6 +295,9 @@ def parse_index_tree_args(args: list[str]) -> tuple[str, int | None, str | None,
         value = args[index]
         if value == "--depth" and index + 1 < len(args):
             depth = int(args[index + 1])
+            index += 2
+        elif value == "--entry-limit" and index + 1 < len(args):
+            entry_limit = int(args[index + 1])
             index += 2
         elif value == "--db" and index + 1 < len(args):
             db_path = args[index + 1]
@@ -308,7 +312,7 @@ def parse_index_tree_args(args: list[str]) -> tuple[str, int | None, str | None,
             index += 1
         else:
             raise ValueError(f"Unexpected index tree argument: {value}")
-    return path, depth, db_path, repo_path
+    return path, depth, entry_limit, db_path, repo_path
 
 
 def load_index_tasks(state: InspectState) -> list[RepoMemoryTask]:
@@ -662,7 +666,7 @@ def print_repl_help() -> None:
     print("  tasks [tree|flat] [--depth N] [--root-id ID]")
     print("  index list")
     print("  index use <index-number>")
-    print("  index tree [path] [--depth N] [--db PATH] [--repo PATH]")
+    print("  index tree [path] [--depth N] [--entry-limit N] [--db PATH] [--repo PATH]")
     print("  quit")
 
 

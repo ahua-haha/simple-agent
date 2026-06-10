@@ -171,7 +171,7 @@ def test_repl_index_tree_accepts_explicit_db_and_repo(tmp_path, capsys):
 
     handle_repl_command("use 1", state)
     handle_repl_command(
-        f"index tree src --db {index_db_path} --repo {repo_dir} --depth 2",
+        f"index tree src --db {index_db_path} --repo {repo_dir} --depth 2 --entry-limit 10",
         state,
     )
 

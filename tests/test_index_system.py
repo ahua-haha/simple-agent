@@ -106,6 +106,7 @@ class TestAgentIndexCRUD:
         assert [tool.name for tool in tools] == ["index_tree", "index_upsert"]
         assert "Explore the repository tree" in tools[0].description
         assert "inspect the corresponding AgentIndex memory" in tools[0].description
+        assert "entry_limit" in tools[0].parameters["properties"]
 
     @pytest.mark.asyncio
     async def test_index_upsert_tool_updates_entry_metadata(self, tmp_path):
@@ -223,6 +224,24 @@ class TestAgentIndexCRUD:
         assert "src/" in output
         assert "process/" not in output
         assert "file.py" not in output
+
+    def test_tree_entry_limit_reduces_render_depth(self, tmp_path):
+        db_path = str(tmp_path / "index.db")
+        ws = str(tmp_path / "ws")
+        self._make_workspace(ws, {
+            "src/a.py": "",
+            "src/nested/b.py": "",
+            "tests/test_app.py": "",
+        })
+
+        idx = self._make_index(db_path, base_dir=ws)
+        output = idx.tree(entry_limit=3)
+
+        assert "src/" in output
+        assert "tests/" in output
+        assert "a.py" not in output
+        assert "nested/" not in output
+        assert "test_app.py" not in output
 
     def test_tree_hides_gitignore_ignored_directories(self, tmp_path):
         """tree() should not render directories ignored by .gitignore."""
@@ -787,6 +806,21 @@ class TestTreeRenderPython:
 
         assert node.format_node() == "app.py:run()  # Runs the app [function]"
         assert "# Runs the app [function]" in render_tree(node)
+
+    def test_render_tree_accepts_depth_option(self):
+        from simple_agent.index.models import DirectoryNode, FileNode
+        from simple_agent.index.tree import render_tree
+
+        root = DirectoryNode(path="repo")
+        child = DirectoryNode(path="repo/src")
+        grandchild = FileNode(path="repo/src/app.py")
+        child.children.append(grandchild)
+        root.children.append(child)
+
+        output = render_tree(root, depth=1)
+
+        assert "src/" in output
+        assert "app.py" not in output
 
     def test_walk_file_accepts_root_node_and_returns_same_node(self):
         from pathlib import Path
