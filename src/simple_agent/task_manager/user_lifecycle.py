@@ -6,18 +6,18 @@ import asyncio
 import time
 from typing import TYPE_CHECKING, cast
 
-from jinja2 import Environment, StrictUndefined
 from pi.agent import AgentTool, AgentToolResult
 from pi.ai.types import AssistantMessage, TextContent, ToolCall, ToolResultMessage, UserMessage
 
 from simple_agent.run_log import runtime_logger
 from simple_agent.task_manager.base_lifecycle import (
-    AVAILABLE_INSTRUCTION_TEMPLATE,
     BaseTaskLifecycle,
     SessionState,
     TaskLifecycleError,
     USER_TASK_COMPACT_SYSTEM_PROMPT,
     USER_TASK_SYSTEM_PROMPT,
+    available_instruction_text,
+    render_prompt_template,
 )
 from simple_agent.task_manager.models import ManagedTask, TodoTask, ToolCallTask, UserTask
 from simple_agent.task_manager.review import TaskTreeRenderer
@@ -27,14 +27,7 @@ if TYPE_CHECKING:
     from simple_agent.process.agent_process import AgentProcess
 
 
-_PROMPT_ENV = Environment(
-    undefined=StrictUndefined,
-    trim_blocks=True,
-    lstrip_blocks=True,
-)
-
-_USER_TASK_INSTRUCTION_TEMPLATE = _PROMPT_ENV.from_string(
-    """\
+USER_TASK_INSTRUCTION_TEMPLATE = """\
 <system-instruction>
 {% if task_info %}
 ## Current task process information
@@ -58,7 +51,17 @@ _USER_TASK_INSTRUCTION_TEMPLATE = _PROMPT_ENV.from_string(
 - Always finish the current task as soon as the requested work is complete.
 </system-instruction>
 """
-)
+
+
+USER_COMPACTION_INSTRUCTION_TEMPLATE = """\
+Runtime instruction for compacting phase:
+- Complete the compacted user task information first: define the task result.
+- Record every must-include tool call based on the compacted task result to avoid context loss.
+- Use only compact tools: set the compacted user task result, record must-include tool calls, then finish it.
+
+Task view to compact:
+{{ task_view }}
+"""
 
 
 class UserTaskLifecycle(BaseTaskLifecycle):
@@ -83,15 +86,16 @@ class UserTaskLifecycle(BaseTaskLifecycle):
         task_info = None
         if _count_tool_calls(self.task.children) > 10:
             task_info = TaskTreeRenderer(format="tree", depth=1).render(self.task)
-        return _USER_TASK_INSTRUCTION_TEMPLATE.render(
+        return render_prompt_template(
+            USER_TASK_INSTRUCTION_TEMPLATE,
             task_info=task_info,
-            available_instruction=AVAILABLE_INSTRUCTION_TEMPLATE.render(
+            available_instruction=available_instruction_text(
                 has_todo_task=True,
                 has_repo_memory_task=True,
-            ).strip(),
+            ),
             is_early_run=tool_calls_after_latest_todo == 0,
             is_mid_run=0 < tool_calls_after_latest_todo <= 5,
-        ).strip()
+        )
 
     def finish_task(self, *, result: str | None = None) -> UserTask:
         self.task.status = "done"
@@ -231,14 +235,9 @@ class UserTaskLifecycle(BaseTaskLifecycle):
             format="tree",
             depth=None,
         ).render(self.task)
-        return (
-            "Runtime instruction for compacting phase:\n"
-            "- Complete the compacted user task information first: define the task result.\n"
-            "- Record every must-include tool call based on the compacted task result to avoid context loss.\n"
-            "- Use only compact tools: set the compacted user task result, record must-include tool calls, then finish it.\n"
-            "\n"
-            "Task view to compact:\n"
-            f"{task_view}"
+        return render_prompt_template(
+            USER_COMPACTION_INSTRUCTION_TEMPLATE,
+            task_view=task_view,
         )
 
     async def run_compact_one_turn(

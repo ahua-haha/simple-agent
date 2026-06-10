@@ -15,12 +15,28 @@ from simple_agent.task_manager.base_lifecycle import (
     SessionState,
     TaskLifecycleError,
     USER_TASK_SYSTEM_PROMPT,
+    render_prompt_template,
 )
 from simple_agent.task_manager.models import ManagedTask, TodoTask
 from simple_agent.tool.common_tools import create_all_coding_tools
 
 if TYPE_CHECKING:
     from simple_agent.process.agent_process import AgentProcess
+
+
+TODO_INSTRUCTION_TEMPLATE = """\
+Runtime instruction for this turn:
+{% if should_check_completion %}
+- More than 10 tool calls have run for the active todo.
+- Determine whether the active todo is finished.
+- If it is finished, call finish_todo now with a concise result.
+- If it is not finished, do only the next action needed to complete it.
+{% else %}
+- Focus on the active todo: {{ title }}
+- Use tools only for work needed by this todo.
+- Call finish_todo immediately when it is complete.
+{% endif %}
+"""
 
 
 class TodoTaskLifecycle(BaseTaskLifecycle):
@@ -43,19 +59,10 @@ class TodoTaskLifecycle(BaseTaskLifecycle):
 
     def instruction_text(self) -> str:
         task = self._require_todo_task_data()
-        if _count_tool_calls(task.children) > 10:
-            return (
-                "Runtime instruction for this turn:\n"
-                "- More than 10 tool calls have run for the active todo.\n"
-                "- Determine whether the active todo is finished.\n"
-                "- If it is finished, call finish_todo now with a concise result.\n"
-                "- If it is not finished, do only the next action needed to complete it."
-            )
-        return (
-            "Runtime instruction for this turn:\n"
-            f"- Focus on the active todo: {task.title}\n"
-            "- Use tools only for work needed by this todo.\n"
-            "- Call finish_todo immediately when it is complete."
+        return render_prompt_template(
+            TODO_INSTRUCTION_TEMPLATE,
+            title=task.title,
+            should_check_completion=_count_tool_calls(task.children) > 10,
         )
 
     def finish_task(self, *, result: str | None = None) -> TodoTask:

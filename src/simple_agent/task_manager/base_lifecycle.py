@@ -30,8 +30,12 @@ _PROMPT_ENV = Environment(
     lstrip_blocks=True,
 )
 
-AVAILABLE_INSTRUCTION_TEMPLATE = _PROMPT_ENV.from_string(
-    """\
+
+def render_prompt_template(template: str, **context) -> str:
+    return _PROMPT_ENV.from_string(template).render(**context).strip()
+
+
+AVAILABLE_INSTRUCTION_TEMPLATE = """\
 ## Next Task Builder
 Use `create_next_task(kind, title, metadata)` before switching from the current task to a different unit of work.
 Create only one next task at a time.
@@ -69,7 +73,14 @@ How to create:
 - Do not invent metadata keys unless the selected task kind asks for them.
 - Keep the created task focused on the next unit of work, not the whole user request.
 """
-)
+
+
+def available_instruction_text(*, has_todo_task: bool, has_repo_memory_task: bool) -> str:
+    return render_prompt_template(
+        AVAILABLE_INSTRUCTION_TEMPLATE,
+        has_todo_task=has_todo_task,
+        has_repo_memory_task=has_repo_memory_task,
+    )
 
 
 USER_TASK_SYSTEM_PROMPT = """You are a helpful coding agent.

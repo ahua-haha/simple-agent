@@ -16,9 +16,24 @@ from simple_agent.task_manager.base_lifecycle import (
     SessionState,
     TaskLifecycleError,
     USER_TASK_SYSTEM_PROMPT,
+    render_prompt_template,
 )
 from simple_agent.task_manager.models import ManagedTask, RepoMemoryTask
 from simple_agent.tool.common_tools import create_all_coding_tools
+
+
+REPO_MEMORY_INSTRUCTION_TEMPLATE = """\
+Runtime instruction for repo memory:
+- Write durable repo memory for the current repository.
+- Repo path: {{ repo_path }}
+- AgentIndex database: {{ index_db_path }}
+- Inspect files before writing memory.
+- Use index_tree to review existing repo memory.
+- Use index_upsert to record a short and concise description for each inspected entry.
+- Each description should say what each entry does, not how you found it.
+- Keep descriptions factual, specific, and brief enough to scan in the tree view.
+- When enough useful repo memory is written, respond without tool calls with a concise summary.
+"""
 
 
 class RepoMemoryLifecycle(BaseTaskLifecycle):
@@ -50,17 +65,10 @@ class RepoMemoryLifecycle(BaseTaskLifecycle):
         self.task = None
 
     def instruction_text(self) -> str:
-        return (
-            "Runtime instruction for repo memory:\n"
-            "- Write durable repo memory for the current repository.\n"
-            f"- Repo path: {self.task.repo_path}\n"
-            f"- AgentIndex database: {self.task.index_db_path}\n"
-            "- Inspect files before writing memory.\n"
-            "- Use index_tree to review existing repo memory.\n"
-            "- Use index_upsert to record a short and concise description for each inspected entry.\n"
-            "- Each description should say what each entry does, not how you found it.\n"
-            "- Keep descriptions factual, specific, and brief enough to scan in the tree view.\n"
-            "- When enough useful repo memory is written, respond without tool calls with a concise summary."
+        return render_prompt_template(
+            REPO_MEMORY_INSTRUCTION_TEMPLATE,
+            repo_path=self.task.repo_path,
+            index_db_path=self.task.index_db_path,
         )
 
     def create_tools(self) -> list[AgentTool]:
