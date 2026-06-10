@@ -12,7 +12,7 @@ from simple_agent.cli.session_inspect import (
     discover_sessions,
     handle_repl_command,
 )
-from simple_agent.task_manager.models import RepoMemoryTask, ToolCallTask, UserTask
+from simple_agent.task_manager.models import RepoMemoryTask, ToolCallTask, CommonTask
 
 
 def test_session_inspect_parses_repl_directories(monkeypatch):
@@ -76,7 +76,7 @@ def test_repl_can_select_session_and_route_log_command(tmp_path, capsys):
 def test_repl_task_command_renders_selected_task_tree(tmp_path, capsys):
     db_path = tmp_path / "session_a.db"
     db = Database(str(db_path))
-    db.upsert_managed_task(UserTask(id=1, title="Build feature"))
+    db.upsert_managed_task(CommonTask(id=1, title="Build feature"))
     db.upsert_managed_task(
         ToolCallTask(
             id=2,

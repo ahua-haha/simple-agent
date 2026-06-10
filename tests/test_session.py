@@ -120,7 +120,7 @@ def test_session_initializes_runner_without_task_manager(tmp_path):
 def test_session_runner_input_transition_creates_and_persists_user_task(tmp_path):
     from simple_agent.session.session import Session
     from pi.ai.types import UserMessage
-    from simple_agent.task_manager.models import UserTask
+    from simple_agent.task_manager.models import CommonTask
 
     session = Session(base_dir=str(tmp_path))
     runner = session._runner
@@ -129,7 +129,7 @@ def test_session_runner_input_transition_creates_and_persists_user_task(tmp_path
     runner.run_input_transition("Build feature")
 
     task = runner._session_state.next_task
-    assert isinstance(task, UserTask)
+    assert isinstance(task, CommonTask)
     assert runner.user_task is task
     assert task.id == 1
     assert task.title == "Build feature"
@@ -155,14 +155,14 @@ def test_session_runner_input_transition_creates_and_persists_user_task(tmp_path
     assert persisted_messages[0].content[0].text == "Build feature"
 
     persisted_task = session._db.get_managed_task(task.id)
-    assert isinstance(persisted_task, UserTask)
+    assert isinstance(persisted_task, CommonTask)
     assert persisted_task.start_message_id == message_entry.id
 
 
 @pytest.mark.asyncio
 async def test_session_runner_does_not_resolve_next_task_after_lifecycle_run(tmp_path):
     from simple_agent.session.session import Session
-    from simple_agent.task_manager.models import UserTask
+    from simple_agent.task_manager.models import CommonTask
 
     class ShiftLifecycle:
         def set_data(self, session_state):
@@ -179,7 +179,7 @@ async def test_session_runner_does_not_resolve_next_task_after_lifecycle_run(tmp
     session = Session(base_dir=str(tmp_path))
     runner = session._runner
     runner.load()
-    task = UserTask(id=1, title="Build feature")
+    task = CommonTask(id=1, title="Build feature")
     runner._session_state.next_task_id_to_run = task.id
     runner._session_state.next_task = task
     runner._lifecycles["user_task"] = ShiftLifecycle()
@@ -194,7 +194,7 @@ async def test_session_runner_does_not_resolve_next_task_after_lifecycle_run(tmp
 @pytest.mark.asyncio
 async def test_session_runner_continues_when_lifecycle_sets_next_task_id_without_instance(tmp_path):
     from simple_agent.session.session import Session
-    from simple_agent.task_manager.models import TodoTask, UserTask
+    from simple_agent.task_manager.models import TodoTask, CommonTask
 
     class ChildLifecycle:
         def __init__(self, parent_id):
@@ -229,7 +229,7 @@ async def test_session_runner_continues_when_lifecycle_sets_next_task_id_without
 
     session = Session(base_dir=str(tmp_path))
     runner = session._runner
-    parent = UserTask(id=1, title="Build feature")
+    parent = CommonTask(id=1, title="Build feature")
     child = TodoTask(id=2, parent_id=parent.id, title="Inspect files")
     with session._db.create_session() as db_session:
         session._db.upsert_managed_task(parent, session=db_session)

@@ -1,10 +1,10 @@
 """Compatibility tests for the retired task tree runtime."""
 
-from simple_agent.task_manager.models import UserTask
+from simple_agent.task_manager.models import CommonTask
 
 
 def test_replacement_task_model_uses_parent_without_seq():
-    task = UserTask(
+    task = CommonTask(
         title="Build feature",
         parent_id=1,
     )

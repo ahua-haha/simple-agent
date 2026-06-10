@@ -33,7 +33,7 @@ class BaseTask(BaseModel):
         return f"{self.kind} [{self.status}] {_task_title(self)}"
 
 
-class UserTask(BaseTask):
+class CommonTask(BaseTask):
     kind: Literal["user_task"] = "user_task"
     title: str
     result: str | None = None
@@ -53,7 +53,7 @@ class UserTask(BaseTask):
         parent_id: int | None,
         status: str,
         metadata: str,
-    ) -> "UserTask":
+    ) -> "CommonTask":
         return cls(id=id, parent_id=parent_id, status=status, **_metadata_dict(metadata))
 
 
@@ -129,7 +129,7 @@ class RepoMemoryTask(BaseTask):
         return cls(id=id, parent_id=parent_id, status=status, **_metadata_dict(metadata))
 
 
-ManagedTask = UserTask | TodoTask | ToolCallTask | RepoMemoryTask
+ManagedTask = CommonTask | TodoTask | ToolCallTask | RepoMemoryTask
 
 
 def task_from_metadata(
@@ -141,7 +141,7 @@ def task_from_metadata(
     metadata: str,
 ) -> ManagedTask:
     if kind == "user_task":
-        return UserTask.from_metadata(id=id, parent_id=parent_id, status=status, metadata=metadata)
+        return CommonTask.from_metadata(id=id, parent_id=parent_id, status=status, metadata=metadata)
     if kind == "todo":
         return TodoTask.from_metadata(id=id, parent_id=parent_id, status=status, metadata=metadata)
     if kind == "tool_call":

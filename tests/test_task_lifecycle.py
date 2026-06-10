@@ -18,7 +18,7 @@ from simple_agent.task_manager.lifecycle import (
     UserTaskLifecycle,
 )
 from simple_agent.task_manager.repo_memory_lifecycle import RepoMemoryLifecycle
-from simple_agent.task_manager.models import RepoMemoryTask, TodoTask, ToolCallTask, UserTask, task_from_metadata
+from simple_agent.task_manager.models import RepoMemoryTask, TodoTask, ToolCallTask, CommonTask, task_from_metadata
 
 
 def _make_db(tmp_path):
@@ -36,7 +36,7 @@ def _read_log_records(tmp_path, session_id="session_a"):
 
 
 def _user_lifecycle(
-    task: UserTask,
+    task: CommonTask,
     *,
     allocate_task_id=None,
     session_state: SessionState | None = None,
@@ -122,7 +122,7 @@ class ExecutingFakeAgentProcess(FakeAgentProcess):
 
 
 def test_user_task_instruction_asks_for_complexity_check_when_tool_count_is_small():
-    task = UserTask(title="Build feature")
+    task = CommonTask(title="Build feature")
     lifecycle = _user_lifecycle(task)
 
     instruction = lifecycle.instruction_text()
@@ -140,7 +140,7 @@ def test_user_task_instruction_asks_for_complexity_check_when_tool_count_is_smal
 
 
 def test_user_task_instruction_recommends_sub_task_mid_run():
-    task = UserTask(title="Build feature")
+    task = CommonTask(title="Build feature")
     task.children = [ToolCallTask(tool_call_log_id=index) for index in range(2)]
     lifecycle = _user_lifecycle(task)
 
@@ -151,7 +151,7 @@ def test_user_task_instruction_recommends_sub_task_mid_run():
 
 
 def test_user_task_instruction_requires_next_task_after_six_tool_calls():
-    task = UserTask(title="Build feature")
+    task = CommonTask(title="Build feature")
     task.children = [ToolCallTask(tool_call_log_id=index) for index in range(6)]
     lifecycle = _user_lifecycle(task)
 
@@ -167,7 +167,7 @@ def test_user_task_instruction_requires_next_task_after_six_tool_calls():
 
 
 def test_user_task_instruction_renders_task_tree_after_ten_tool_calls():
-    task = UserTask(title="Build feature")
+    task = CommonTask(title="Build feature")
     task.children = [
         TodoTask(title="Inspect files"),
         *[
@@ -216,7 +216,7 @@ def test_tool_call_task_remains_data_only():
 
 
 def test_task_data_objects_do_not_expose_lifecycle_methods():
-    user_task = UserTask(title="Build feature")
+    user_task = CommonTask(title="Build feature")
     todo = TodoTask(title="Inspect files")
     repo_memory = RepoMemoryTask(
         title="Write repo memory",
@@ -318,7 +318,7 @@ def test_repo_memory_lifecycle_owns_runtime_agent_index(tmp_path):
 
 
 def test_user_task_persists_compacted_tool_call_log_ids():
-    task = UserTask(id=1, title="Build feature", compacted_tool_call_log_ids=[2, 5])
+    task = CommonTask(id=1, title="Build feature", compacted_tool_call_log_ids=[2, 5])
 
     restored = task_from_metadata(
         id=task.id,
@@ -332,7 +332,7 @@ def test_user_task_persists_compacted_tool_call_log_ids():
 
 
 def test_base_lifecycle_provides_next_task_instruction_and_tool():
-    task = UserTask(id=1, title="Build feature")
+    task = CommonTask(id=1, title="Build feature")
     session_state = SessionState(
         messages=[],
         next_task=task,
@@ -349,7 +349,7 @@ def test_base_lifecycle_provides_next_task_instruction_and_tool():
 
 @pytest.mark.asyncio
 async def test_base_lifecycle_create_next_task_tool_mutates_session_state():
-    task = UserTask(id=1, title="Build feature")
+    task = CommonTask(id=1, title="Build feature")
     session_state = SessionState(
         messages=[],
         next_task=task,
@@ -373,7 +373,7 @@ async def test_base_lifecycle_create_next_task_tool_mutates_session_state():
 
 
 def test_task_models_do_not_own_runtime_message_id():
-    user_task = UserTask(id=1, title="Build feature")
+    user_task = CommonTask(id=1, title="Build feature")
     todo = TodoTask(id=2, parent_id=1, title="Inspect files")
 
     restored_user = task_from_metadata(
@@ -408,7 +408,7 @@ def test_user_task_lifecycle_uses_owned_allocator():
         next_id += 1
         return task_id
 
-    user_task = UserTask(id=1, title="Build feature")
+    user_task = CommonTask(id=1, title="Build feature")
     lifecycle = _user_lifecycle(user_task, allocate_task_id=allocate_task_id)
     lifecycle._session_state.next_tool_call_log_id = 7
     assistant_message = AssistantMessage(
@@ -443,7 +443,7 @@ def test_user_task_lifecycle_creates_tool_call_record_task_entries_without_appen
         next_task_id += 1
         return task_id
 
-    user_task = UserTask(id=1, title="Build feature")
+    user_task = CommonTask(id=1, title="Build feature")
     lifecycle = _user_lifecycle(user_task, allocate_task_id=allocate_task_id)
     lifecycle._session_state.next_tool_call_log_id = 7
     assistant_message = AssistantMessage(
@@ -587,7 +587,7 @@ async def test_todo_task_lifecycle_run_routes_to_parent_when_finish_tool_called(
 
 
 def test_lifecycle_tracks_next_task_transition():
-    user_task = UserTask(id=1, title="Build feature")
+    user_task = CommonTask(id=1, title="Build feature")
     user_lifecycle = _user_lifecycle(user_task, allocate_task_id=lambda: 2)
 
     todo = user_lifecycle.create_next_task(kind="todo", title="Inspect files", enabled_task_kinds=["todo"])
@@ -600,7 +600,7 @@ def test_lifecycle_tracks_next_task_transition():
 
 def test_lifecycle_allocates_task_id_from_session_state_context():
     session_state = SessionState(messages=[], next_task_id_to_allocate=7)
-    user_task = UserTask(id=1, title="Build feature")
+    user_task = CommonTask(id=1, title="Build feature")
     lifecycle = _user_lifecycle(user_task, session_state=session_state)
 
     todo = lifecycle.create_next_task(kind="todo", title="Inspect files", enabled_task_kinds=["todo"])
@@ -615,7 +615,7 @@ def test_session_state_creates_tool_call_records_and_tasks():
         next_task_id_to_allocate=10,
         next_tool_call_log_id=7,
     )
-    parent_task = UserTask(id=1, title="Build feature")
+    parent_task = CommonTask(id=1, title="Build feature")
     tool_call = ToolCall(id="call_1", name="ls", arguments={"path": "."})
     assistant_message = AssistantMessage(role="assistant", content=[tool_call])
     tool_result = ToolResultMessage(
@@ -648,7 +648,7 @@ def test_session_state_records_tool_call_args_for_rendering():
         next_tool_call_log_id=7,
         next_task_id_to_allocate=10,
     )
-    parent_task = UserTask(id=1, title="Build feature")
+    parent_task = CommonTask(id=1, title="Build feature")
     long_value = "x" * 160
     tool_call = ToolCall(id="call_1", name="bash", arguments={"command": long_value})
     assistant_message = AssistantMessage(role="assistant", content=[tool_call])
@@ -747,7 +747,7 @@ def test_session_state_appends_tool_calls_to_database(tmp_path):
 def test_session_state_appends_tasks_to_database(tmp_path):
     db = _make_db(tmp_path)
     session_state = SessionState(messages=[], database=db, session_id="session_a")
-    user_task = UserTask(id=1, title="Build feature")
+    user_task = CommonTask(id=1, title="Build feature")
     todo = TodoTask(id=2, parent_id=1, title="Inspect files")
 
     with session_state.create_database_session() as session:
@@ -764,7 +764,7 @@ def test_session_state_appends_tasks_to_database(tmp_path):
 def test_lifecycle_appends_messages_in_memory_until_explicit_sync(tmp_path):
     db = _make_db(tmp_path)
     session_state = SessionState(messages=[], database=db, session_id="session_a")
-    _user_lifecycle(UserTask(id=1, title="Build feature"), session_state=session_state)
+    _user_lifecycle(CommonTask(id=1, title="Build feature"), session_state=session_state)
     seed = MessageEntry(id=1, message=UserMessage(content=[TextContent(text="hello")], timestamp=1))
     session_state.messages = [seed]
     session_state.next_message_id = 2
@@ -788,7 +788,7 @@ def test_lifecycle_appends_messages_in_memory_until_explicit_sync(tmp_path):
 def test_lifecycle_replaces_message_range_and_syncs_explicit_message_list(tmp_path):
     db = _make_db(tmp_path)
     session_state = SessionState(messages=[], database=db, session_id="session_a")
-    _user_lifecycle(UserTask(id=1, title="Build feature"), session_state=session_state)
+    _user_lifecycle(CommonTask(id=1, title="Build feature"), session_state=session_state)
     first = MessageEntry(id=1, message=UserMessage(content=[TextContent(text="one")], timestamp=1))
     second = MessageEntry(id=2, message=AssistantMessage(role="assistant", content=[TextContent(text="two")]))
     third = MessageEntry(id=3, message=AssistantMessage(role="assistant", content=[TextContent(text="three")]))
@@ -860,7 +860,7 @@ def test_session_state_replaces_message_range_in_database(tmp_path):
 def test_lifecycle_syncs_explicit_tool_call_records_without_buffer(tmp_path):
     db = _make_db(tmp_path)
     session_state = SessionState(messages=[], database=db, session_id="session_a")
-    _user_lifecycle(UserTask(id=1, title="Build feature"), session_state=session_state)
+    _user_lifecycle(CommonTask(id=1, title="Build feature"), session_state=session_state)
     tool_call = ToolCall(id="call_1", name="ls", arguments={"path": "."})
     tool_result = ToolResultMessage(
         toolCallId="call_1",
@@ -884,7 +884,7 @@ def test_lifecycle_syncs_explicit_tool_call_records_without_buffer(tmp_path):
 @pytest.mark.asyncio
 async def test_user_task_lifecycle_run_calls_llm_appends_message_and_returns_state(tmp_path):
     db = _make_db(tmp_path)
-    user_task = UserTask(id=1, title="Build feature")
+    user_task = CommonTask(id=1, title="Build feature")
     session_state = SessionState(
         messages=[],
         database=db,
@@ -919,7 +919,7 @@ async def test_user_task_lifecycle_run_calls_llm_appends_message_and_returns_sta
 @pytest.mark.asyncio
 async def test_user_task_lifecycle_run_keeps_done_task_for_compaction_when_needed(tmp_path):
     db = _make_db(tmp_path)
-    user_task = UserTask(id=1, title="Build feature")
+    user_task = CommonTask(id=1, title="Build feature")
     session_state = SessionState(
         messages=[],
         database=db,
@@ -943,7 +943,7 @@ async def test_user_task_lifecycle_run_keeps_done_task_for_compaction_when_neede
 @pytest.mark.asyncio
 async def test_user_task_lifecycle_run_compacts_already_done_task(tmp_path):
     db = _make_db(tmp_path)
-    user_task = UserTask(id=1, parent_id=99, title="Build feature", status="done", start_message_id=1)
+    user_task = CommonTask(id=1, parent_id=99, title="Build feature", status="done", start_message_id=1)
     user_message = UserMessage(content=[TextContent(text="Build feature")], timestamp=1)
     session_state = SessionState(
         messages=[MessageEntry(id=1, message=user_message)],
@@ -978,7 +978,7 @@ async def test_user_task_lifecycle_run_compacts_already_done_task(tmp_path):
 @pytest.mark.asyncio
 async def test_user_task_lifecycle_run_raises_on_assistant_error(tmp_path):
     _db = _make_db(tmp_path)
-    user_task = UserTask(id=1, title="Build feature")
+    user_task = CommonTask(id=1, title="Build feature")
     lifecycle = _user_lifecycle(user_task)
     assistant_message = AssistantMessage(
         role="assistant",
@@ -996,7 +996,7 @@ async def test_user_task_lifecycle_run_raises_on_assistant_error(tmp_path):
 async def test_user_task_lifecycle_run_executes_tools_and_returns_current_task(tmp_path):
     db = _make_db(tmp_path)
     runtime_logger.set_log_dir(tmp_path / "logs")
-    user_task = UserTask(id=1, title="Build feature")
+    user_task = CommonTask(id=1, title="Build feature")
     session_state = SessionState(
         messages=[],
         database=db,
@@ -1056,7 +1056,7 @@ async def test_user_task_lifecycle_run_executes_tools_and_returns_current_task(t
 @pytest.mark.asyncio
 async def test_user_task_lifecycle_run_syncs_created_todo_task(tmp_path):
     db = _make_db(tmp_path)
-    user_task = UserTask(id=1, title="Build feature")
+    user_task = CommonTask(id=1, title="Build feature")
     session_state = SessionState(
         messages=[],
         database=db,
@@ -1085,7 +1085,7 @@ async def test_user_task_lifecycle_run_syncs_created_todo_task(tmp_path):
 
 
 def test_user_task_lifecycle_records_compacted_tool_call_log_id():
-    user_task = UserTask(
+    user_task = CommonTask(
         id=1,
         title="Build feature",
         status="done",
@@ -1149,7 +1149,7 @@ async def test_user_task_lifecycle_run_compact_one_turn_records_tool_call_log_id
                 )
             return results
 
-    user_task = UserTask(
+    user_task = CommonTask(
         id=1,
         title="Build feature",
         status="done",
@@ -1191,7 +1191,7 @@ async def test_user_task_lifecycle_run_compact_one_turn_records_tool_call_log_id
 @pytest.mark.asyncio
 async def test_user_task_lifecycle_run_compact_one_turn_finishes_and_replaces_messages(tmp_path):
     db = _make_db(tmp_path)
-    user_task = UserTask(
+    user_task = CommonTask(
         id=1,
         parent_id=99,
         title="Build feature",
@@ -1264,7 +1264,7 @@ async def test_user_task_lifecycle_run_compact_one_turn_finishes_and_replaces_me
 
 
 def test_user_task_lifecycle_should_compact_after_more_than_ten_tool_calls():
-    user_task = UserTask(
+    user_task = CommonTask(
         id=1,
         title="Build feature",
         children=[ToolCallTask(id=index + 2, parent_id=1, tool_call_log_id=index) for index in range(11)],
@@ -1284,7 +1284,7 @@ def test_user_task_lifecycle_should_compact_after_nested_tool_calls():
             for index in range(11)
         ],
     )
-    user_task = UserTask(id=1, title="Build feature", children=[todo])
+    user_task = CommonTask(id=1, title="Build feature", children=[todo])
     lifecycle = _user_lifecycle(user_task)
 
     assert lifecycle.should_compact_after_turn() is True

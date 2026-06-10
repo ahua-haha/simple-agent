@@ -16,7 +16,7 @@ from simple_agent.task_manager.base_lifecycle import (
 from simple_agent.task_manager.repo_memory_lifecycle import RepoMemoryLifecycle
 from simple_agent.task_manager.todo_lifecycle import TodoTaskLifecycle
 from simple_agent.task_manager.user_lifecycle import UserTaskLifecycle
-from simple_agent.task_manager.models import ManagedTask, TodoTask, UserTask
+from simple_agent.task_manager.models import ManagedTask, TodoTask, CommonTask
 
 if TYPE_CHECKING:
     from simple_agent.db.db import Database
@@ -32,7 +32,7 @@ class SessionRunner:
     _agent_process: AgentProcess
     _cancel_event: asyncio.Event
     _last_error: str | None
-    _user_task: UserTask | None
+    _user_task: CommonTask | None
     _lifecycles: dict[str, BaseTaskLifecycle]
     _session_state: SessionState
     _user_paused: bool
@@ -123,7 +123,7 @@ class SessionRunner:
         )
         message_entry = self._session_state.append_message(user_message)
 
-        task = UserTask(
+        task = CommonTask(
             id=self._session_state.allocate_task_id(),
             title=user_input,
             start_message_id=message_entry.id,
@@ -214,7 +214,7 @@ class SessionRunner:
         )
 
     @property
-    def user_task(self) -> UserTask | None:
+    def user_task(self) -> CommonTask | None:
         return self._user_task
 
     def _current_active_user_task_id(self) -> int | None:

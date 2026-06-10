@@ -19,7 +19,7 @@ from simple_agent.task_manager.base_lifecycle import (
     available_instruction_text,
     render_prompt_template,
 )
-from simple_agent.task_manager.models import ManagedTask, TodoTask, ToolCallTask, UserTask
+from simple_agent.task_manager.models import ManagedTask, TodoTask, ToolCallTask, CommonTask
 from simple_agent.task_manager.review import TaskTreeRenderer
 from simple_agent.tool.common_tools import create_all_coding_tools
 
@@ -65,7 +65,7 @@ Task view to compact:
 
 
 class UserTaskLifecycle(BaseTaskLifecycle):
-    task: UserTask | None
+    task: CommonTask | None
 
     def set_data(self, session_state: SessionState) -> None:
         self._session_state = session_state
@@ -76,7 +76,7 @@ class UserTaskLifecycle(BaseTaskLifecycle):
             raise TaskLifecycleError("Session state has no next task")
         if task.kind != "user_task":
             raise TaskLifecycleError("Active lifecycle task is not a user task")
-        self.task = cast(UserTask, task)
+        self.task = cast(CommonTask, task)
 
     def clear_data(self) -> None:
         super().clear_data()
@@ -97,7 +97,7 @@ class UserTaskLifecycle(BaseTaskLifecycle):
             is_mid_run=0 < tool_calls_after_latest_todo <= 5,
         )
 
-    def finish_task(self, *, result: str | None = None) -> UserTask:
+    def finish_task(self, *, result: str | None = None) -> CommonTask:
         self.task.status = "done"
         self.task.result = result
         self.task.touch()
@@ -363,7 +363,7 @@ class UserTaskLifecycle(BaseTaskLifecycle):
             self.task.compacted_tool_call_log_ids.append(tool_call_log_id)
             self.task.touch()
 
-    def format_messages_from_user_task(self, user_task: UserTask) -> list[UserMessage | AssistantMessage | ToolResultMessage]:
+    def format_messages_from_user_task(self, user_task: CommonTask) -> list[UserMessage | AssistantMessage | ToolResultMessage]:
         compacted_tool_calls = self._session_state.compacted_tool_calls(
             user_task.compacted_tool_call_log_ids,
         )
@@ -393,7 +393,7 @@ class UserTaskLifecycle(BaseTaskLifecycle):
         ]
 
 
-def todo_status_text(user_task: UserTask) -> str:
+def todo_status_text(user_task: CommonTask) -> str:
     todos = [child for child in user_task.children if child.kind == "todo"]
     if not todos:
         return "Todos: []"
@@ -409,7 +409,7 @@ def todo_status_text(user_task: UserTask) -> str:
     return "\n".join(lines)
 
 
-def _count_user_task_tool_calls_after_latest_todo(user_task: UserTask) -> int:
+def _count_user_task_tool_calls_after_latest_todo(user_task: CommonTask) -> int:
     latest_todo_index = -1
     for index, child in enumerate(user_task.children):
         if child.kind == "todo":
