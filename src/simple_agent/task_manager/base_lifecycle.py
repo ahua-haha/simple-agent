@@ -6,6 +6,7 @@ import asyncio
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
+from jinja2 import Environment, StrictUndefined
 from pi.agent import AgentTool, AgentToolResult
 from pi.agent.types import AgentMessage
 from pi.ai.types import AssistantMessage, TextContent, ToolCall, ToolResultMessage, UserMessage
@@ -21,6 +22,54 @@ if TYPE_CHECKING:
 
 class TaskLifecycleError(RuntimeError):
     """Raised when a task lifecycle cannot complete an operation."""
+
+
+_PROMPT_ENV = Environment(
+    undefined=StrictUndefined,
+    trim_blocks=True,
+    lstrip_blocks=True,
+)
+
+AVAILABLE_INSTRUCTION_TEMPLATE = _PROMPT_ENV.from_string(
+    """\
+## Next Task Builder
+Use `create_next_task(kind, title, metadata)` before switching from the current task to a different unit of work.
+Create only one next task at a time.
+
+{% if has_todo_task %}
+## Todo Task
+When to use:
+- Use a todo task for the next small implementation, debugging, inspection, or verification step.
+- Use it when the current task needs decomposition before more work.
+- The todo task must be small, concise, atomic, and directly tied to finishing the current task.
+
+How to create:
+- Call `create_next_task(kind="todo", title="<small atomic next action>", metadata={})`.
+- Put the concrete next action in the title.
+- Omit metadata or pass an empty object.
+- Example: {"kind":"todo","title":"Inspect session runner state transitions","metadata":{}}
+
+{% endif %}
+{% if has_repo_memory_task %}
+## Repo Memory Task
+When to use:
+- Use a repo memory task when the next step is to write durable repository memory with AgentIndex.
+- Use it after exploring or changing repository structure when the useful result should be saved for future runs.
+- Use it when the task is about recording concise descriptions of files, modules, or architecture.
+
+How to create:
+- Call `create_next_task(kind="repo_memory", title="<memory writing goal>", metadata={...})`.
+- Metadata must include `index_db_path`.
+- Metadata may include `repo_path`; omit it when the current repository root is correct.
+- Metadata shape: {"repo_path":"<repo path>","index_db_path":"<index database path>"}.
+- Example: {"kind":"repo_memory","title":"Write memory for task lifecycle design","metadata":{"repo_path":".","index_db_path":".agent-index.db"}}
+
+{% endif %}
+## Task Creation Rules
+- Do not invent metadata keys unless the selected task kind asks for them.
+- Keep the created task focused on the next unit of work, not the whole user request.
+"""
+)
 
 
 USER_TASK_SYSTEM_PROMPT = """You are a helpful coding agent.
@@ -358,40 +407,6 @@ class BaseTaskLifecycle:
         enabled_task_kinds: list[str] | tuple[str, ...] | None = None,
     ) -> list[AgentTool]:
         return [self.build_create_next_task_tool(enabled_task_kinds=enabled_task_kinds)]
-
-    def next_task_instruction_text(
-        self,
-        *,
-        enabled_task_kinds: list[str] | tuple[str, ...] | None = None,
-    ) -> str:
-        enabled_kinds = self._validate_enabled_task_kinds(enabled_task_kinds)
-        lines = [
-            "Next task builder:",
-            "- Tool: create_next_task(kind, title, metadata).",
-            "- Use it before switching from the current task to a different unit of work.",
-            "- Enabled task kinds:",
-        ]
-        if "todo" in enabled_kinds:
-            lines.extend(
-                [
-                    "  - todo: use for the next small atomic implementation, debugging, inspection, or verification step.",
-                    "    metadata: omit it or pass {}. Put the concrete next action in title.",
-                    "    example: {\"kind\":\"todo\",\"title\":\"Inspect session runner state transitions\",\"metadata\":{}}",
-                ]
-            )
-        if "repo_memory" in enabled_kinds:
-            lines.extend(
-                [
-                    "  - repo_memory: use when the next step is to write durable repository memory with AgentIndex.",
-                    "    metadata: {\"repo_path\":\"<repo path>\",\"index_db_path\":\"<index database path>\"}.",
-                    "    repo_path may be omitted when the current repository root is correct.",
-                    "    index_db_path is required.",
-                    "    example: {\"kind\":\"repo_memory\",\"title\":\"Write memory for task lifecycle design\",\"metadata\":{\"repo_path\":\".\",\"index_db_path\":\".agent-index.db\"}}",
-                ]
-            )
-        lines.append("- Do not invent metadata keys unless the selected task kind asks for them.")
-        lines.append("- Create only one next task at a time.")
-        return "\n".join(lines)
 
     def build_create_next_task_tool(
         self,

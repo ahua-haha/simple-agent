@@ -12,6 +12,7 @@ from pi.ai.types import AssistantMessage, TextContent, ToolCall, ToolResultMessa
 
 from simple_agent.run_log import runtime_logger
 from simple_agent.task_manager.base_lifecycle import (
+    AVAILABLE_INSTRUCTION_TEMPLATE,
     BaseTaskLifecycle,
     SessionState,
     TaskLifecycleError,
@@ -79,13 +80,15 @@ class UserTaskLifecycle(BaseTaskLifecycle):
 
     def instruction_text(self) -> str:
         tool_calls_after_latest_todo = _count_user_task_tool_calls_after_latest_todo(self.task)
-        should_create_next_task = tool_calls_after_latest_todo > 5
         task_info = None
         if _count_tool_calls(self.task.children) > 10:
             task_info = TaskTreeRenderer(format="tree", depth=1).render(self.task)
         return _USER_TASK_INSTRUCTION_TEMPLATE.render(
             task_info=task_info,
-            available_instruction="TODO",
+            available_instruction=AVAILABLE_INSTRUCTION_TEMPLATE.render(
+                has_todo_task=True,
+                has_repo_memory_task=True,
+            ).strip(),
             is_early_run=tool_calls_after_latest_todo == 0,
             is_mid_run=0 < tool_calls_after_latest_todo <= 5,
         ).strip()
