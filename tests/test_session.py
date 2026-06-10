@@ -157,3 +157,35 @@ def test_session_runner_input_transition_creates_and_persists_user_task(tmp_path
     persisted_task = session._db.get_managed_task(task.id)
     assert isinstance(persisted_task, UserTask)
     assert persisted_task.start_message_id == message_entry.id
+
+
+@pytest.mark.asyncio
+async def test_session_runner_does_not_resolve_next_task_after_lifecycle_run(tmp_path):
+    from simple_agent.session.session import Session
+    from simple_agent.task_manager.models import UserTask
+
+    class ShiftLifecycle:
+        def set_data(self, session_state):
+            self.session_state = session_state
+
+        async def run(self, *, agent_process, cancel_event=None):
+            self.session_state.next_task_id_to_run = 999
+            self.session_state.next_task = None
+            return self.session_state
+
+        def clear_data(self):
+            pass
+
+    session = Session(base_dir=str(tmp_path))
+    runner = session._runner
+    runner.load()
+    task = UserTask(id=1, title="Build feature")
+    runner._session_state.next_task_id_to_run = task.id
+    runner._session_state.next_task = task
+    runner._lifecycles["user_task"] = ShiftLifecycle()
+
+    result = await runner.run_active_lifecycle()
+
+    assert result is runner._session_state
+    assert runner._session_state.next_task_id_to_run == 999
+    assert runner._session_state.next_task is None

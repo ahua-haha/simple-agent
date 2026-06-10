@@ -163,7 +163,6 @@ class SessionRunner:
             )
         finally:
             lifecycle.clear_data()
-        self._resolve_next_task()
         return result
 
     def _resolve_next_task(self) -> ManagedTask | None:
