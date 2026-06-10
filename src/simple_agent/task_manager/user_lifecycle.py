@@ -143,10 +143,11 @@ class UserTaskLifecycle(BaseTaskLifecycle):
             timestamp=int(time.time() * 1000),
         )
         context_messages = list(self._session_state.messages)
+        run_messages = [*self._session_state.message_values(), user_instruction_message]
         turn_result = await self.run_agent_turn(
             agent_process=agent_process,
             system_prompt=USER_TASK_SYSTEM_PROMPT,
-            user_instruction_message=user_instruction_message,
+            messages=run_messages,
             tools=tools,
             parent_task=task,
             cancel_event=cancel_event,
@@ -252,10 +253,11 @@ class UserTaskLifecycle(BaseTaskLifecycle):
             content=[TextContent(text=self.compaction_instruction_text())],
             timestamp=int(time.time() * 1000),
         )
+        run_messages = [*self._session_state.message_values(), user_instruction_message]
         turn_result = await self.run_agent_turn(
             agent_process=agent_process,
             system_prompt=USER_TASK_COMPACT_SYSTEM_PROMPT,
-            user_instruction_message=user_instruction_message,
+            messages=run_messages,
             tools=tools,
             parent_task=task,
             cancel_event=cancel_event,

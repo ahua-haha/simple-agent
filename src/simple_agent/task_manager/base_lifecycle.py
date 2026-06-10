@@ -9,7 +9,7 @@ from typing import TYPE_CHECKING
 from jinja2 import Environment, StrictUndefined
 from pi.agent import AgentTool, AgentToolResult
 from pi.agent.types import AgentMessage
-from pi.ai.types import AssistantMessage, TextContent, ToolCall, ToolResultMessage, UserMessage
+from pi.ai.types import AssistantMessage, TextContent, ToolCall, ToolResultMessage
 
 from simple_agent.message_store import MessageEntry
 from simple_agent.task_manager.models import ManagedTask, RepoMemoryTask, TodoTask, ToolCallTask
@@ -342,7 +342,7 @@ class BaseTaskLifecycle:
         *,
         agent_process: AgentProcess,
         system_prompt: str,
-        user_instruction_message: UserMessage,
+        messages: list[AgentMessage],
         tools: list[AgentTool],
         parent_task: ManagedTask,
         cancel_event: asyncio.Event | None = None,
@@ -359,7 +359,7 @@ class BaseTaskLifecycle:
         """
         assistant_message = await agent_process.call_llm_step(
             system_prompt=system_prompt,
-            messages=[*self._session_state.message_values(), user_instruction_message],
+            messages=messages,
             tools=tools,
             cancel_event=cancel_event,
         )
