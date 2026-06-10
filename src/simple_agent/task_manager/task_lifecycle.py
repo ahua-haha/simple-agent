@@ -1,4 +1,4 @@
-"""User task lifecycle."""
+"""Common task lifecycle."""
 
 from __future__ import annotations
 
@@ -19,7 +19,7 @@ from simple_agent.task_manager.base_lifecycle import (
     available_instruction_text,
     render_prompt_template,
 )
-from simple_agent.task_manager.models import ManagedTask, TodoTask, ToolCallTask, CommonTask
+from simple_agent.task_manager.models import ManagedTask, ToolCallTask, CommonTask
 from simple_agent.task_manager.review import TaskTreeRenderer
 from simple_agent.tool.common_tools import create_all_coding_tools
 
@@ -82,20 +82,19 @@ class CommonTaskLifecycle(BaseTaskLifecycle):
         super().clear_data()
 
     def instruction_text(self) -> str:
-        tool_calls_after_latest_todo = _count_user_task_tool_calls_after_latest_todo(self.task)
+        tool_call_count = _count_tool_calls(self.task.children)
         task_info = None
-        if _count_tool_calls(self.task.children) > 10:
+        if tool_call_count > 10:
             task_info = TaskTreeRenderer(format="tree", depth=1).render(self.task)
         return render_prompt_template(
             USER_TASK_INSTRUCTION_TEMPLATE,
             task_info=task_info,
             available_instruction=available_instruction_text(
-                has_todo_task=True,
                 has_common_task=True,
                 has_repo_memory_task=True,
             ),
-            is_early_run=tool_calls_after_latest_todo == 0,
-            is_mid_run=0 < tool_calls_after_latest_todo <= 5,
+            is_early_run=tool_call_count == 0,
+            is_mid_run=0 < tool_call_count <= 5,
         )
 
     def finish_task(self, *, result: str | None = None) -> CommonTask:
@@ -105,13 +104,10 @@ class CommonTaskLifecycle(BaseTaskLifecycle):
         self.finished_task = self.task
         return self.task
 
-    def todo_status_text(self) -> str:
-        return todo_status_text(self.task)
-
     def create_tools(self) -> list[AgentTool]:
         return [
-            *self.create_next_task_tools(enabled_task_kinds=["common", "todo", "repo_memory"]),
-            self.create_finish_user_task_tool(),
+            *self.create_next_task_tools(enabled_task_kinds=["common", "repo_memory"]),
+            self.create_finish_common_task_tool(),
             *create_all_coding_tools("."),
         ]
 
@@ -309,17 +305,17 @@ class CommonTaskLifecycle(BaseTaskLifecycle):
             session.commit()
         return self._session_state
 
-    def create_finish_user_task_tool(self) -> AgentTool:
+    def create_finish_common_task_tool(self) -> AgentTool:
         tool = AgentTool(
-            name="finish_user_task",
+            name="finish_common_task",
             description=(
-                "Mark the current user task as completed. Call when the user's "
-                "request is fully satisfied and no todo is active."
+                "Mark the current common task as completed. Call when this "
+                "task is fully satisfied and no child task is active."
             ),
             parameters={
                 "type": "object",
                 "properties": {
-                    "result": {"type": "string", "description": "Optional concise result for this user task"},
+                    "result": {"type": "string", "description": "Optional concise result for this common task"},
                 },
                 "required": [],
             },
@@ -329,7 +325,7 @@ class CommonTaskLifecycle(BaseTaskLifecycle):
             task = self.finish_task(
                 result=params.get("result"),
             )
-            return AgentToolResult(content=[TextContent(text=f"User task finished: {task.result or task.title}")])
+            return AgentToolResult(content=[TextContent(text=f"Common task finished: {task.result or task.title}")])
 
         tool.execute = execute
         return tool
@@ -392,30 +388,6 @@ class CommonTaskLifecycle(BaseTaskLifecycle):
             AssistantMessage(role="assistant", content=[TextContent(text=assistant_text), *tool_calls]),
             *tool_result_messages,
         ]
-
-
-def todo_status_text(user_task: CommonTask) -> str:
-    todos = [child for child in user_task.children if child.kind == "todo"]
-    if not todos:
-        return "Todos: []"
-
-    lines = ["Todos:"]
-    for todo in todos:
-        line = f"- [{todo.status}] {todo.title}"
-        if todo.result:
-            line += f" result={todo.result}"
-        if todo.error:
-            line += f" error={todo.error}"
-        lines.append(line)
-    return "\n".join(lines)
-
-
-def _count_user_task_tool_calls_after_latest_todo(user_task: CommonTask) -> int:
-    latest_todo_index = -1
-    for index, child in enumerate(user_task.children):
-        if child.kind == "todo":
-            latest_todo_index = index
-    return _count_tool_calls(user_task.children[latest_todo_index + 1:])
 
 
 def _count_tool_calls(tasks: list[ManagedTask]) -> int:

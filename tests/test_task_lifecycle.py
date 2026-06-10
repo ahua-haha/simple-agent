@@ -770,7 +770,7 @@ async def test_user_task_lifecycle_run_calls_llm_appends_message_and_returns_sta
 
     assert agent_process.llm_calls[0]["system_prompt"] == USER_TASK_SYSTEM_PROMPT
     tool_names = [tool.name for tool in agent_process.llm_calls[0]["tools"]]
-    assert tool_names[:2] == ["create_next_task", "finish_user_task"]
+    assert tool_names[:2] == ["create_next_task", "finish_common_task"]
     assert "read" in tool_names
     assert agent_process.llm_calls[0]["messages"][:-1] == [seed.message]
     assert "<system-instruction>" in agent_process.llm_calls[0]["messages"][-1].content[0].text
@@ -893,7 +893,7 @@ async def test_user_task_lifecycle_run_executes_tools_and_returns_current_task(t
     assert agent_process.llm_calls[0]["system_prompt"] == USER_TASK_SYSTEM_PROMPT
     assert agent_process.tool_calls[0]["assistant_message"] is assistant_message
     tool_names = [tool.name for tool in agent_process.tool_calls[0]["tools"]]
-    assert tool_names[:2] == ["create_next_task", "finish_user_task"]
+    assert tool_names[:2] == ["create_next_task", "finish_common_task"]
     assert "read" in tool_names
     assert result is lifecycle._session_state
     assert lifecycle._session_state.messages == [
