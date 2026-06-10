@@ -341,7 +341,7 @@ class AgentIndex:
         elif full_path.is_file():
             root = FileNode(path=str(full_path))
         else:
-            return "(empty)"
+            return f'Error: path not found in repo: "{path or "."}"'
 
         root = build_tree(root, WalkOptions(depth=depth, filter_fn=filter_fn))
         entries = self._load_entries()

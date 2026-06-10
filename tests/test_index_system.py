@@ -298,6 +298,19 @@ class TestAgentIndexCRUD:
         assert "models.py" in output
         assert "Test suite" not in output
 
+    def test_tree_invalid_path_returns_error(self, tmp_path):
+        db_path = str(tmp_path / "index.db")
+        ws = str(tmp_path / "ws")
+        self._make_workspace(ws, {
+            "src/simple_agent/indexer.py": "",
+        })
+
+        idx = self._make_index(db_path, base_dir=ws)
+
+        output = idx.tree(path="src/simple-agent")
+
+        assert output == 'Error: path not found in repo: "src/simple-agent"'
+
     def test_tree_fills_existing_nodes_with_database_metadata(self, tmp_path):
         db_path = str(tmp_path / "index.db")
         ws = str(tmp_path / "ws")
