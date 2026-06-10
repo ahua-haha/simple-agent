@@ -27,14 +27,13 @@ class Session:
 
     Usage::
 
-        session = Session()                         # new session, auto ID
+        session = Session(base_dir="./sessions")    # new session, auto ID
         queue = session.run("build a test suite")
 
         session2 = Session(session_id=s._id)        # reload existing
     """
 
-    def __init__(self, session_id: str | None = None,
-                 base_dir: str = "./sessions"):
+    def __init__(self, base_dir: str, session_id: str | None = None):
         self._id = session_id or f"session_{uuid.uuid4().hex[:12]}"
         self._base_dir = base_dir
         self._db_path = os.path.join(base_dir, f"{self._id}.db")
@@ -46,6 +45,7 @@ class Session:
             db=self._db,
             agent_process=self._agent_process,
             cancel_event=asyncio.Event(),
+            base_dir=base_dir,
         )
         self._running = False
         self._run_task: asyncio.Task | None = None

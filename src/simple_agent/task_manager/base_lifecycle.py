@@ -97,6 +97,7 @@ tool-call log IDs, then finish the compacted user task."""
 @dataclass
 class SessionState:
     messages: list[MessageEntry]
+    base_dir: str
     session_id: str | None = None
     database: Database | None = None
     next_message_id: int = 1

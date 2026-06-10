@@ -126,6 +126,8 @@ def test_session_runner_input_transition_creates_and_persists_user_task(tmp_path
     runner = session._runner
     runner.load()
 
+    assert runner._session_state.base_dir == os.getcwd()
+
     runner.run_input_transition("Build feature")
 
     task = runner._session_state.next_task

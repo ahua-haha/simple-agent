@@ -81,7 +81,7 @@ class CommonTaskLifecycle(BaseTaskLifecycle):
         if task.kind != "user_task":
             raise TaskLifecycleError("Active lifecycle task is not a user task")
         self.task = cast(CommonTask, task)
-        self._agent_index = AgentIndex()
+        self._agent_index = AgentIndex(base_dir=self._session_state.base_dir)
 
     def clear_data(self) -> None:
         super().clear_data()
