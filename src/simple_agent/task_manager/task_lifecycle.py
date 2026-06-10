@@ -116,7 +116,7 @@ class CommonTaskLifecycle(BaseTaskLifecycle):
             *self.create_next_task_tools(enabled_task_kinds=["common", "repo_memory"]),
             self.create_finish_common_task_tool(),
             self._agent_index.create_tree_tool(),
-            *create_all_coding_tools("."),
+            *create_all_coding_tools(self._session_state.base_dir),
         ]
 
     async def run(

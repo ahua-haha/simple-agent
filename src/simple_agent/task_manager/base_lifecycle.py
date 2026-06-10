@@ -492,7 +492,7 @@ class BaseTaskLifecycle:
             task = RepoMemoryTask(
                 parent_id=parent.id,
                 title=title,
-                repo_path=repo_path or ".",
+                repo_path=repo_path or self._session_state.base_dir,
                 index_db_path=index_db_path,
             )
         else:
