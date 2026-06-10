@@ -39,6 +39,7 @@ class RunnerStateMetadataRecord(SQLModel, table=True):
     """SQLite model for session-runner lifecycle metadata."""
 
     session_id: str = Field(primary_key=True)
+    workspace_dir: str | None = None
     active_user_task_id: int | None = Field(default=None, index=True)
     last_error: str | None = None
     version: int = Field(default=1)

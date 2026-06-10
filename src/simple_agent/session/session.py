@@ -22,22 +22,23 @@ class Session:
     """A user-facing session wrapper.
 
     Each session is identified by a unique ID.  The DB file is
-    ``{session_id}.db`` inside *base_dir*. Runtime state is owned by
+    ``{session_id}.db`` inside *sessions_dir*. Runtime state is owned by
     ``SessionRunner``.
 
     Usage::
 
-        session = Session(base_dir="./sessions")    # new session, auto ID
+        session = Session(sessions_dir="./sessions", workspace_dir=".")  # new session, auto ID
         queue = session.run("build a test suite")
 
-        session2 = Session(session_id=s._id)        # reload existing
+        session2 = Session(session_id=s._id, sessions_dir="./sessions")  # reload existing
     """
 
-    def __init__(self, base_dir: str, session_id: str | None = None):
+    def __init__(self, *, sessions_dir: str, workspace_dir: str | None = None, session_id: str | None = None):
         self._id = session_id or f"session_{uuid.uuid4().hex[:12]}"
-        self._base_dir = base_dir
-        self._db_path = os.path.join(base_dir, f"{self._id}.db")
+        self._sessions_dir = sessions_dir
+        self._db_path = os.path.join(sessions_dir, f"{self._id}.db")
         self._db = Database(self._db_path)
+        self._workspace_dir = workspace_dir
         register_custom_models()
         self._agent_process = AgentProcess(get_model("deepseek", "deepseek-v4-pro"))
         self._runner = SessionRunner(
@@ -45,7 +46,7 @@ class Session:
             db=self._db,
             agent_process=self._agent_process,
             cancel_event=asyncio.Event(),
-            base_dir=base_dir,
+            workspace_dir=self._workspace_dir,
         )
         self._running = False
         self._run_task: asyncio.Task | None = None
@@ -98,3 +99,15 @@ class Session:
     @property
     def id(self) -> str:
         return self._id
+
+    def _resolve_workspace_dir(self, *, workspace_dir: str | None) -> str:
+        metadata = self._db.get_runner_state_metadata(self._id)
+        if metadata is not None and metadata.workspace_dir:
+            return metadata.workspace_dir
+        if workspace_dir is None:
+            raise RuntimeError("Session workspace_dir is missing from database")
+        self._db.upsert_runner_state_metadata(
+            self._id,
+            workspace_dir=workspace_dir,
+        )
+        return workspace_dir

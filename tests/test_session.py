@@ -13,15 +13,17 @@ class TestSessionInit:
     """Tests for Session initialization."""
 
     def test_new_session_has_id(self, tmp_path):
-        session = Session(base_dir=str(tmp_path))
+        session = Session(sessions_dir=str(tmp_path), workspace_dir=os.getcwd())
         assert session.id.startswith("session_")
 
     def test_existing_session_uses_provided_id(self, tmp_path):
-        session = Session(session_id="test", base_dir=str(tmp_path))
+        Session(session_id="test", sessions_dir=str(tmp_path), workspace_dir=os.getcwd())
+        session = Session(session_id="test", sessions_dir=str(tmp_path))
         assert session.id == "test"
+        assert session._runner._session_state.workspace_dir == os.getcwd()
 
     def test_new_session_initializes_runner(self, tmp_path):
-        session = Session(base_dir=str(tmp_path))
+        session = Session(sessions_dir=str(tmp_path), workspace_dir=os.getcwd())
         assert session._runner is not None
 
 
@@ -61,7 +63,7 @@ class TestSessionEventQueue:
 
     @pytest.mark.asyncio
     async def test_queue_created_in_run(self, tmp_path):
-        session = Session(base_dir=str(tmp_path))
+        session = Session(sessions_dir=str(tmp_path), workspace_dir=os.getcwd())
 
         async def fake_run(user_input):
             return None
@@ -76,14 +78,14 @@ class TestSessionEventQueue:
 
     @pytest.mark.asyncio
     async def test_queue_none_after_run(self, tmp_path):
-        session = Session(base_dir=str(tmp_path))
+        session = Session(sessions_dir=str(tmp_path), workspace_dir=os.getcwd())
 
         assert session._run_task is None
 
     @pytest.mark.asyncio
     async def test_agent_event_pushed_to_queue(self, tmp_path):
         import asyncio
-        session = Session(base_dir=str(tmp_path))
+        session = Session(sessions_dir=str(tmp_path), workspace_dir=os.getcwd())
 
         async def fake_run(user_input):
             from pi.agent.types import AgentEndEvent
@@ -101,7 +103,7 @@ class TestSessionEventQueue:
 
 
 def test_session_pause_delegates_to_runner(tmp_path):
-    session = Session(base_dir=str(tmp_path))
+    session = Session(sessions_dir=str(tmp_path), workspace_dir=os.getcwd())
 
     session.pause()
 
@@ -111,7 +113,7 @@ def test_session_pause_delegates_to_runner(tmp_path):
 def test_session_initializes_runner_without_task_manager(tmp_path):
     from simple_agent.session.session import Session
 
-    session = Session(base_dir=str(tmp_path))
+    session = Session(sessions_dir=str(tmp_path), workspace_dir=os.getcwd())
 
     assert not hasattr(session, "_task_manager")
     assert session._runner is not None
@@ -122,11 +124,11 @@ def test_session_runner_input_transition_creates_and_persists_user_task(tmp_path
     from pi.ai.types import UserMessage
     from simple_agent.task_manager.models import CommonTask
 
-    session = Session(base_dir=str(tmp_path))
+    session = Session(sessions_dir=str(tmp_path), workspace_dir=os.getcwd())
     runner = session._runner
     runner.load()
 
-    assert runner._session_state.base_dir == os.getcwd()
+    assert runner._session_state.workspace_dir == os.getcwd()
 
     runner.run_input_transition("Build feature")
 
@@ -178,7 +180,7 @@ async def test_session_runner_does_not_resolve_next_task_after_lifecycle_run(tmp
         def clear_data(self):
             pass
 
-    session = Session(base_dir=str(tmp_path))
+    session = Session(sessions_dir=str(tmp_path), workspace_dir=os.getcwd())
     runner = session._runner
     runner.load()
     task = CommonTask(id=1, title="Build feature")
@@ -229,7 +231,7 @@ async def test_session_runner_continues_when_lifecycle_sets_next_task_id_without
         def clear_data(self):
             pass
 
-    session = Session(base_dir=str(tmp_path))
+    session = Session(sessions_dir=str(tmp_path), workspace_dir=os.getcwd())
     runner = session._runner
     parent = CommonTask(id=1, title="Build feature")
     child = RepoMemoryTask(id=2, parent_id=parent.id, title="Inspect files", index_db_path=".agent-index.db")

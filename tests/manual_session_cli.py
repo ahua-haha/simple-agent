@@ -11,6 +11,7 @@ Use /exit or /quit to stop.
 from __future__ import annotations
 
 import asyncio
+import os
 import sys
 import tempfile
 
@@ -115,7 +116,7 @@ async def run_session_from_command_line() -> None:
     pending_inputs = [initial_input] if initial_input else []
 
     with tempfile.TemporaryDirectory(prefix="simple-agent-session-") as sessions_dir:
-        session = Session(base_dir=sessions_dir)
+        session = Session(sessions_dir=sessions_dir, workspace_dir=os.getcwd())
 
         while True:
             if pending_inputs:

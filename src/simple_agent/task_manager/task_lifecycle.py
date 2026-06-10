@@ -81,7 +81,7 @@ class CommonTaskLifecycle(BaseTaskLifecycle):
         if task.kind != "user_task":
             raise TaskLifecycleError("Active lifecycle task is not a user task")
         self.task = cast(CommonTask, task)
-        self._agent_index = AgentIndex(base_dir=self._session_state.base_dir)
+        self._agent_index = AgentIndex(base_dir=self._session_state.workspace_dir)
 
     def clear_data(self) -> None:
         super().clear_data()
@@ -116,7 +116,7 @@ class CommonTaskLifecycle(BaseTaskLifecycle):
             *self.create_next_task_tools(enabled_task_kinds=["common", "repo_memory"]),
             self.create_finish_common_task_tool(),
             self._agent_index.create_tree_tool(),
-            *create_all_coding_tools(self._session_state.base_dir),
+            *create_all_coding_tools(self._session_state.workspace_dir),
         ]
 
     async def run(

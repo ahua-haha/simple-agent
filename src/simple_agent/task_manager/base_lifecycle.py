@@ -97,7 +97,7 @@ tool-call log IDs, then finish the compacted user task."""
 @dataclass
 class SessionState:
     messages: list[MessageEntry]
-    base_dir: str
+    workspace_dir: str
     session_id: str | None = None
     database: Database | None = None
     next_message_id: int = 1
@@ -492,7 +492,7 @@ class BaseTaskLifecycle:
             task = RepoMemoryTask(
                 parent_id=parent.id,
                 title=title,
-                repo_path=repo_path or self._session_state.base_dir,
+                repo_path=repo_path or self._session_state.workspace_dir,
                 index_db_path=index_db_path,
             )
         else:

@@ -23,6 +23,10 @@ def _get_session_manager(request: Request) -> SessionManager:
     return request.app.state.session_manager
 
 
+def _get_workspace_dir(request: Request) -> str:
+    return request.app.state.workspace_dir
+
+
 # ── router ─────────────────────────────────────────────────────────────
 
 router = APIRouter()
@@ -34,7 +38,7 @@ router = APIRouter()
 @router.post("/sessions", status_code=201)
 async def create_session(request: Request):
     sm = _get_session_manager(request)
-    session = sm.create()
+    session = sm.create(workspace_dir=_get_workspace_dir(request))
     return {
         "id": session.id,
     }

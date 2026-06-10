@@ -28,7 +28,7 @@ class SessionRunner:
 
     _session_id: str
     _db: Database
-    _base_dir: str
+    _workspace_dir: str
     _agent_process: AgentProcess
     _cancel_event: asyncio.Event
     _last_error: str | None
@@ -44,11 +44,11 @@ class SessionRunner:
         db: Database,
         agent_process: AgentProcess,
         cancel_event: asyncio.Event,
-        base_dir: str,
+        workspace_dir: str,
     ):
         self._session_id = session_id
         self._db = db
-        self._base_dir = base_dir
+        self._workspace_dir = workspace_dir
         self._agent_process = agent_process
         self._cancel_event = cancel_event
         self._last_error = None
@@ -61,7 +61,7 @@ class SessionRunner:
             messages=[],
             session_id=self._session_id,
             database=self._db,
-            base_dir=self._base_dir,
+            workspace_dir=self._workspace_dir,
         )
         self._user_paused = False
 
@@ -210,7 +210,7 @@ class SessionRunner:
             ],
             session_id=self._session_id,
             database=self._db,
-            base_dir=self._base_dir,
+            workspace_dir=self._workspace_dir,
             next_message_id=self._db.next_runner_message_id(session=session),
             next_tool_call_log_id=self._db.next_runner_tool_call_id(self._session_id, session=session),
             next_task_id_to_allocate=self._db.next_managed_task_id(session=session),

@@ -22,7 +22,7 @@ class SessionManager:
     Usage::
 
         sm = SessionManager(sessions_dir="./sessions")
-        s = sm.create()
+        s = sm.create(workspace_dir=".")
         queue = sm.run(s.id, "build a test suite")
         # read events from queue for SSE streaming
     """
@@ -35,9 +35,9 @@ class SessionManager:
     # create / get / list / remove
     # ------------------------------------------------------------------
 
-    def create(self) -> Session:
+    def create(self, *, workspace_dir: str) -> Session:
         """Create a new session and register it in memory."""
-        session = Session(base_dir=self._sessions_dir)
+        session = Session(sessions_dir=self._sessions_dir, workspace_dir=workspace_dir)
         self._sessions[session.id] = session
         return session
 
@@ -52,7 +52,10 @@ class SessionManager:
 
         db_path = os.path.join(self._sessions_dir, f"{session_id}.db")
         if os.path.isfile(db_path):
-            session = Session(session_id=session_id, base_dir=self._sessions_dir)
+            session = Session(
+                session_id=session_id,
+                sessions_dir=self._sessions_dir,
+            )
             self._sessions[session_id] = session
             return session
 

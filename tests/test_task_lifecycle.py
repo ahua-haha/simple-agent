@@ -40,7 +40,7 @@ def _user_lifecycle(
     allocate_task_id=None,
     session_state: SessionState | None = None,
 ) -> CommonTaskLifecycle:
-    session_state = session_state or SessionState(messages=[], base_dir=".")
+    session_state = session_state or SessionState(messages=[], workspace_dir=".")
     session_state.next_task = task
     session_state.next_task_id_to_run = task.id
     if allocate_task_id is not None and session_state.next_task_id_to_allocate is None:
@@ -241,7 +241,7 @@ def test_repo_memory_lifecycle_instruction_and_tools(tmp_path):
         repo_path=str(tmp_path),
         index_db_path=str(tmp_path / "index.db"),
     )
-    session_state = SessionState(messages=[], base_dir=".")
+    session_state = SessionState(messages=[], workspace_dir=".")
     session_state.next_task = task
     session_state.next_task_id_to_run = task.id
     lifecycle = RepoMemoryLifecycle()
@@ -265,7 +265,7 @@ async def test_common_task_lifecycle_exposes_index_tree_tool(tmp_path):
     repo_src.mkdir()
     (repo_src / "app.py").write_text("print('hi')\n", encoding="utf-8")
     task = CommonTask(id=1, title="Build feature")
-    session_state = SessionState(messages=[], base_dir=str(tmp_path))
+    session_state = SessionState(messages=[], workspace_dir=str(tmp_path))
     lifecycle = _user_lifecycle(task, session_state=session_state)
 
     tools = {tool.name: tool for tool in lifecycle.create_tools()}
@@ -283,7 +283,7 @@ def test_repo_memory_lifecycle_owns_runtime_agent_index(tmp_path):
         repo_path=str(tmp_path),
         index_db_path=str(tmp_path / "index.db"),
     )
-    session_state = SessionState(messages=[], base_dir=".")
+    session_state = SessionState(messages=[], workspace_dir=".")
     session_state.next_task = task
     session_state.next_task_id_to_run = task.id
     lifecycle = RepoMemoryLifecycle()
@@ -314,7 +314,7 @@ def test_user_task_persists_compacted_tool_call_log_ids():
 def test_base_lifecycle_provides_next_task_instruction_and_tool():
     task = CommonTask(id=1, title="Build feature")
     session_state = SessionState(
-        base_dir=".",
+        workspace_dir=".",
         messages=[],
         next_task=task,
         next_task_id_to_run=task.id,
@@ -331,7 +331,7 @@ def test_base_lifecycle_provides_next_task_instruction_and_tool():
 def test_base_lifecycle_create_next_task_supports_common_task():
     parent = CommonTask(id=1, title="Build feature")
     session_state = SessionState(
-        base_dir=".",
+        workspace_dir=".",
         messages=[],
         next_task=parent,
         next_task_id_to_run=parent.id,
@@ -356,7 +356,7 @@ def test_base_lifecycle_create_next_task_supports_common_task():
 async def test_base_lifecycle_create_next_task_tool_mutates_session_state():
     task = CommonTask(id=1, title="Build feature")
     session_state = SessionState(
-        base_dir=".",
+        workspace_dir=".",
         messages=[],
         next_task=task,
         next_task_id_to_run=task.id,
@@ -491,7 +491,7 @@ def test_lifecycle_tracks_next_task_transition():
 
 
 def test_lifecycle_allocates_task_id_from_session_state_context():
-    session_state = SessionState(messages=[], base_dir=".", next_task_id_to_allocate=7)
+    session_state = SessionState(messages=[], workspace_dir=".", next_task_id_to_allocate=7)
     user_task = CommonTask(id=1, title="Build feature")
     lifecycle = _user_lifecycle(user_task, session_state=session_state)
 
@@ -503,7 +503,7 @@ def test_lifecycle_allocates_task_id_from_session_state_context():
 
 def test_session_state_creates_tool_call_records_and_tasks():
     session_state = SessionState(
-        base_dir=".",
+        workspace_dir=".",
         messages=[],
         next_task_id_to_allocate=10,
         next_tool_call_log_id=7,
@@ -537,7 +537,7 @@ def test_session_state_creates_tool_call_records_and_tasks():
 
 def test_session_state_records_tool_call_args_for_rendering():
     session_state = SessionState(
-        base_dir=".",
+        workspace_dir=".",
         messages=[],
         next_tool_call_log_id=7,
         next_task_id_to_allocate=10,
@@ -568,7 +568,7 @@ def test_session_state_records_tool_call_args_for_rendering():
 
 def test_session_state_loads_compacted_tool_calls_by_log_id(tmp_path):
     db = _make_db(tmp_path)
-    session_state = SessionState(messages=[], base_dir=".", database=db, session_id="session_a")
+    session_state = SessionState(messages=[], workspace_dir=".", database=db, session_id="session_a")
     tool_call = ToolCall(id="call_7", name="ls", arguments={"path": "."})
     tool_result = ToolResultMessage(
         toolCallId="call_7",
@@ -592,7 +592,7 @@ def test_session_state_loads_compacted_tool_calls_by_log_id(tmp_path):
 
 def test_session_state_appends_messages_to_database(tmp_path):
     db = _make_db(tmp_path)
-    session_state = SessionState(messages=[], base_dir=".", database=db, session_id="session_a")
+    session_state = SessionState(messages=[], workspace_dir=".", database=db, session_id="session_a")
     entry = MessageEntry(
         id=5,
         message=AssistantMessage(role="assistant", content=[TextContent(text="hello")]),
@@ -614,7 +614,7 @@ def test_session_state_appends_messages_to_database(tmp_path):
 
 def test_session_state_appends_tool_calls_to_database(tmp_path):
     db = _make_db(tmp_path)
-    session_state = SessionState(messages=[], base_dir=".", database=db, session_id="session_a")
+    session_state = SessionState(messages=[], workspace_dir=".", database=db, session_id="session_a")
     tool_call = ToolCall(id="call_1", name="ls", arguments={"path": "."})
     tool_result = ToolResultMessage(
         toolCallId="call_1",
@@ -640,7 +640,7 @@ def test_session_state_appends_tool_calls_to_database(tmp_path):
 
 def test_session_state_appends_tasks_to_database(tmp_path):
     db = _make_db(tmp_path)
-    session_state = SessionState(messages=[], base_dir=".", database=db, session_id="session_a")
+    session_state = SessionState(messages=[], workspace_dir=".", database=db, session_id="session_a")
     user_task = CommonTask(id=1, title="Build feature")
     child_task = CommonTask(id=2, parent_id=1, title="Inspect files")
 
@@ -657,7 +657,7 @@ def test_session_state_appends_tasks_to_database(tmp_path):
 
 def test_lifecycle_appends_messages_in_memory_until_explicit_sync(tmp_path):
     db = _make_db(tmp_path)
-    session_state = SessionState(messages=[], base_dir=".", database=db, session_id="session_a")
+    session_state = SessionState(messages=[], workspace_dir=".", database=db, session_id="session_a")
     _user_lifecycle(CommonTask(id=1, title="Build feature"), session_state=session_state)
     seed = MessageEntry(id=1, message=UserMessage(content=[TextContent(text="hello")], timestamp=1))
     session_state.messages = [seed]
@@ -681,7 +681,7 @@ def test_lifecycle_appends_messages_in_memory_until_explicit_sync(tmp_path):
 
 def test_lifecycle_replaces_message_range_and_syncs_explicit_message_list(tmp_path):
     db = _make_db(tmp_path)
-    session_state = SessionState(messages=[], base_dir=".", database=db, session_id="session_a")
+    session_state = SessionState(messages=[], workspace_dir=".", database=db, session_id="session_a")
     _user_lifecycle(CommonTask(id=1, title="Build feature"), session_state=session_state)
     first = MessageEntry(id=1, message=UserMessage(content=[TextContent(text="one")], timestamp=1))
     second = MessageEntry(id=2, message=AssistantMessage(role="assistant", content=[TextContent(text="two")]))
@@ -732,7 +732,7 @@ def test_session_state_replaces_message_range_in_database(tmp_path):
         for entry in messages:
             db.insert_runner_message("session_a", entry.message, id=entry.id, session=session)
         session.commit()
-    session_state = SessionState(messages=list(messages), base_dir=".", database=db, session_id="session_a")
+    session_state = SessionState(messages=list(messages), workspace_dir=".", database=db, session_id="session_a")
     replacement = [
         MessageEntry(id=50, message=AssistantMessage(role="assistant", content=[TextContent(text="compact")]))
     ]
@@ -753,7 +753,7 @@ def test_session_state_replaces_message_range_in_database(tmp_path):
 
 def test_lifecycle_syncs_explicit_tool_call_records_without_buffer(tmp_path):
     db = _make_db(tmp_path)
-    session_state = SessionState(messages=[], base_dir=".", database=db, session_id="session_a")
+    session_state = SessionState(messages=[], workspace_dir=".", database=db, session_id="session_a")
     _user_lifecycle(CommonTask(id=1, title="Build feature"), session_state=session_state)
     tool_call = ToolCall(id="call_1", name="ls", arguments={"path": "."})
     tool_result = ToolResultMessage(
@@ -780,7 +780,7 @@ async def test_user_task_lifecycle_run_calls_llm_appends_message_and_returns_sta
     db = _make_db(tmp_path)
     user_task = CommonTask(id=1, title="Build feature")
     session_state = SessionState(
-        base_dir=".",
+        workspace_dir=".",
         messages=[],
         database=db,
         session_id="session_a",
@@ -816,7 +816,7 @@ async def test_user_task_lifecycle_run_keeps_done_task_for_compaction_when_neede
     db = _make_db(tmp_path)
     user_task = CommonTask(id=1, title="Build feature")
     session_state = SessionState(
-        base_dir=".",
+        workspace_dir=".",
         messages=[],
         database=db,
         session_id="session_a",
@@ -842,7 +842,7 @@ async def test_user_task_lifecycle_run_compacts_already_done_task(tmp_path):
     user_task = CommonTask(id=1, parent_id=99, title="Build feature", status="done", start_message_id=1)
     user_message = UserMessage(content=[TextContent(text="Build feature")], timestamp=1)
     session_state = SessionState(
-        base_dir=".",
+        workspace_dir=".",
         messages=[MessageEntry(id=1, message=user_message)],
         database=db,
         session_id="session_a",
@@ -895,7 +895,7 @@ async def test_user_task_lifecycle_run_executes_tools_and_returns_current_task(t
     runtime_logger.set_log_dir(tmp_path / "logs")
     user_task = CommonTask(id=1, title="Build feature")
     session_state = SessionState(
-        base_dir=".",
+        workspace_dir=".",
         messages=[],
         database=db,
         session_id="session_a",
@@ -956,7 +956,7 @@ async def test_common_task_finish_tool_stamps_end_message_to_tool_result(tmp_pat
     db = _make_db(tmp_path)
     user_task = CommonTask(id=1, title="Build feature", start_message_id=1)
     session_state = SessionState(
-        base_dir=".",
+        workspace_dir=".",
         messages=[MessageEntry(id=1, message=UserMessage(content=[TextContent(text="Build feature")], timestamp=1))],
         database=db,
         session_id="session_a",
@@ -989,7 +989,7 @@ async def test_user_task_lifecycle_run_syncs_created_common_task(tmp_path):
     db = _make_db(tmp_path)
     user_task = CommonTask(id=1, title="Build feature")
     session_state = SessionState(
-        base_dir=".",
+        workspace_dir=".",
         messages=[],
         database=db,
         session_id="session_a",
@@ -1095,7 +1095,7 @@ async def test_user_task_lifecycle_run_compact_one_turn_records_tool_call_log_id
     )
     db = _make_db(tmp_path)
     session_state = SessionState(
-        base_dir=".",
+        workspace_dir=".",
         messages=[MessageEntry(id=1, message=UserMessage(content=[TextContent(text="go")], timestamp=1))],
         database=db,
         session_id="session_a",
@@ -1147,7 +1147,7 @@ async def test_user_task_lifecycle_run_compact_one_turn_finishes_and_replaces_me
         AssistantMessage(role="assistant", content=[TextContent(text="work")]),
     ]
     session_state = SessionState(
-        base_dir=".",
+        workspace_dir=".",
         messages=[
             MessageEntry(id=index + 1, message=message)
             for index, message in enumerate(original_messages)

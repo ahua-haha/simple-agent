@@ -16,16 +16,23 @@ def test_runner_state_metadata_roundtrip(tmp_path):
 
     db.upsert_runner_state_metadata(
         session_id="session_a",
+        workspace_dir="/workspace",
         active_user_task_id=42,
         last_error=None,
+    )
+    db.upsert_runner_state_metadata(
+        session_id="session_a",
+        active_user_task_id=43,
+        last_error="boom",
     )
 
     record = db.get_runner_state_metadata("session_a")
 
     assert record is not None
     assert record.session_id == "session_a"
-    assert record.active_user_task_id == 42
-    assert record.last_error is None
+    assert record.workspace_dir == "/workspace"
+    assert record.active_user_task_id == 43
+    assert record.last_error == "boom"
     assert record.version == 1
 
 

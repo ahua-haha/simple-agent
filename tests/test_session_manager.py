@@ -16,7 +16,7 @@ class TestSessionManager:
 
     def test_create_adds_to_registry(self, tmp_path):
         sm = SessionManager(sessions_dir=str(tmp_path))
-        s = sm.create()
+        s = sm.create(workspace_dir=os.getcwd())
         assert s.id in sm._sessions
         assert sm.get(s.id) is s
 
@@ -26,8 +26,8 @@ class TestSessionManager:
 
     def test_list_returns_all(self, tmp_path):
         sm = SessionManager(sessions_dir=str(tmp_path))
-        s1 = sm.create()
-        s2 = sm.create()
+        s1 = sm.create(workspace_dir=os.getcwd())
+        s2 = sm.create(workspace_dir=os.getcwd())
         sessions = sm.list()
         assert len(sessions) == 2
         ids = [s["id"] for s in sessions]
@@ -36,14 +36,14 @@ class TestSessionManager:
 
     def test_remove_parks_and_removes(self, tmp_path):
         sm = SessionManager(sessions_dir=str(tmp_path))
-        s = sm.create()
+        s = sm.create(workspace_dir=os.getcwd())
         sid = s.id
         sm.remove(sid)
         assert sm.get(sid) is None
 
     def test_persistence_round_trip(self, tmp_path):
         sm = SessionManager(sessions_dir=str(tmp_path))
-        s = sm.create()
+        s = sm.create(workspace_dir=os.getcwd())
 
         # Reload
         sm2 = SessionManager(sessions_dir=str(tmp_path))
@@ -54,7 +54,7 @@ class TestSessionManager:
     def test_reload_skips_bad_dir_entries(self, tmp_path):
         # Create a non-db file in the sessions dir — shouldn't crash reload
         sm = SessionManager(sessions_dir=str(tmp_path))
-        s = sm.create()
+        s = sm.create(workspace_dir=os.getcwd())
 
         sm2 = SessionManager(sessions_dir=str(tmp_path))
         # Session is parked (not auto-loaded), get() reloads from disk
@@ -69,7 +69,7 @@ class TestSessionManagerRunPause:
     @pytest.mark.asyncio
     async def test_run_returns_event_queue(self, tmp_path, monkeypatch):
         sm = SessionManager(sessions_dir=str(tmp_path))
-        s = sm.create()
+        s = sm.create(workspace_dir=os.getcwd())
 
         # Mock Session.run to avoid actual LLM calls
         def mock_run(self, user_input):
@@ -88,7 +88,7 @@ class TestSessionManagerRunPause:
     @pytest.mark.asyncio
     async def test_run_on_running_raises_busy_error(self, tmp_path):
         sm = SessionManager(sessions_dir=str(tmp_path))
-        s = sm.create()
+        s = sm.create(workspace_dir=os.getcwd())
         s._running = True
 
         with pytest.raises(SessionBusyError):
@@ -97,14 +97,14 @@ class TestSessionManagerRunPause:
     @pytest.mark.asyncio
     async def test_pause_signals_session(self, tmp_path):
         sm = SessionManager(sessions_dir=str(tmp_path))
-        s = sm.create()
+        s = sm.create(workspace_dir=os.getcwd())
         sm.pause(s.id)
         assert s._runner._cancel_event.is_set()
 
     @pytest.mark.asyncio
     async def test_pause_idle_session_is_noop(self, tmp_path):
         sm = SessionManager(sessions_dir=str(tmp_path))
-        s = sm.create()
+        s = sm.create(workspace_dir=os.getcwd())
         # Should not raise
         sm.pause(s.id)
 

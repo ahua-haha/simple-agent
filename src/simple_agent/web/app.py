@@ -1,5 +1,7 @@
 """FastAPI app for browsing the task tree and serving the session API."""
 
+import os
+
 from fastapi import FastAPI
 
 from simple_agent.session.session_manager import SessionManager
@@ -8,9 +10,11 @@ from simple_agent.web.session_api import create_session_router
 
 def create_app(
     sessions_dir: str = "./sessions",
+    workspace_dir: str | None = None,
 ) -> FastAPI:
     app = FastAPI(title="Simple Agent Web")
 
+    app.state.workspace_dir = workspace_dir or os.getcwd()
     session_manager = SessionManager(sessions_dir=sessions_dir)
     app.state.session_manager = session_manager
 
@@ -40,10 +44,16 @@ def main() -> None:
         default="./sessions",
         help="Directory for session persistence (default: ./sessions)",
     )
+    parser.add_argument(
+        "--workspace-dir",
+        default=os.getcwd(),
+        help="Directory where agent tools operate (default: current working directory)",
+    )
     args = parser.parse_args()
 
     app = create_app(
         sessions_dir=args.sessions_dir,
+        workspace_dir=args.workspace_dir,
     )
 
     uvicorn.run(app, host=args.host, port=args.port)
