@@ -104,6 +104,8 @@ class TestAgentIndexCRUD:
         tools = idx.create_tools()
 
         assert [tool.name for tool in tools] == ["index_tree", "index_upsert"]
+        assert "Explore the repository tree" in tools[0].description
+        assert "inspect the corresponding AgentIndex memory" in tools[0].description
 
     @pytest.mark.asyncio
     async def test_index_upsert_tool_updates_entry_metadata(self, tmp_path):

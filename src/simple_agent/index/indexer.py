@@ -77,8 +77,8 @@ class AgentIndex:
         tool = AgentTool(
             name="index_tree",
             description=(
-                "Render the current repo memory tree from the AgentIndex database. "
-                "Use this before writing repo memory to understand what is already recorded."
+                "Explore the repository tree and inspect repo structure. "
+                "Use this to inspect the corresponding AgentIndex memory for each entry."
             ),
             parameters={
                 "type": "object",

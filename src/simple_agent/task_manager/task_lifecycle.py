@@ -9,6 +9,7 @@ from typing import TYPE_CHECKING, cast
 from pi.agent import AgentTool, AgentToolResult
 from pi.ai.types import AssistantMessage, TextContent, ToolCall, ToolResultMessage, UserMessage
 
+from simple_agent.index.indexer import AgentIndex
 from simple_agent.run_log import runtime_logger
 from simple_agent.task_manager.base_lifecycle import (
     BaseTaskLifecycle,
@@ -68,6 +69,7 @@ Task view to compact:
 
 class CommonTaskLifecycle(BaseTaskLifecycle):
     task: CommonTask | None
+    _agent_index: AgentIndex | None
 
     def set_data(self, session_state: SessionState) -> None:
         self._session_state = session_state
@@ -79,9 +81,11 @@ class CommonTaskLifecycle(BaseTaskLifecycle):
         if task.kind != "user_task":
             raise TaskLifecycleError("Active lifecycle task is not a user task")
         self.task = cast(CommonTask, task)
+        self._agent_index = AgentIndex()
 
     def clear_data(self) -> None:
         super().clear_data()
+        self._agent_index = None
 
     def instruction_text(self) -> str:
         tool_call_count = _count_tool_calls(self.task.children)
@@ -111,6 +115,7 @@ class CommonTaskLifecycle(BaseTaskLifecycle):
         return [
             *self.create_next_task_tools(enabled_task_kinds=["common", "repo_memory"]),
             self.create_finish_common_task_tool(),
+            self._agent_index.create_tree_tool(),
             *create_all_coding_tools("."),
         ]
 
@@ -163,6 +168,7 @@ class CommonTaskLifecycle(BaseTaskLifecycle):
         tool_call_tasks = turn_result.tool_call_tasks
         has_tool_call = turn_result.has_tool_call
         new_messages = [assistant_entry, *tool_result_entries]
+        turn_end_message_id = new_messages[-1].id
         self._session_state.append_messages(new_messages)
 
         task.children.extend(tool_call_tasks)
@@ -184,7 +190,7 @@ class CommonTaskLifecycle(BaseTaskLifecycle):
                 return
 
             if self.finished_task is not None:
-                self.stamp_finished_task(end_message_id=assistant_entry.id)
+                self.stamp_finished_task(end_message_id=turn_end_message_id)
                 if self.should_compact_after_turn():
                     self.set_next_task(task.id, task)
                     return
@@ -197,7 +203,7 @@ class CommonTaskLifecycle(BaseTaskLifecycle):
 
         route_after_turn()
 
-        self.stamp_finished_task(end_message_id=assistant_entry.id)
+        self.stamp_finished_task(end_message_id=turn_end_message_id)
 
         runtime_logger.log_handle_running(
             session_id=self._session_state._require_session_id(),

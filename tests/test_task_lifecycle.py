@@ -113,7 +113,7 @@ def test_user_task_instruction_asks_for_complexity_check_when_tool_count_is_smal
     assert instruction.startswith("<system-instruction>")
     assert instruction.endswith("</system-instruction>")
     assert "## Current task process information" not in instruction
-    assert "## What can be done next" in instruction
+    assert "You can create these following sub tasks." in instruction
     assert "## Reminder instruction" in instruction
     assert "Focus on current task: Build feature" in instruction
     assert "consider decompose complex task and create sub task" in instruction
@@ -143,7 +143,7 @@ def test_user_task_instruction_requires_next_task_after_six_tool_calls():
 
     assert "<system-instruction>" in instruction
     assert "## Current task process information" not in instruction
-    assert "## What can be done next" in instruction
+    assert "You can create these following sub tasks." in instruction
     assert "## Reminder instruction" in instruction
     assert "Focus on current task: Build feature" in instruction
     assert "## Common Task" in instruction
@@ -257,6 +257,16 @@ def test_repo_memory_lifecycle_instruction_and_tools(tmp_path):
     assert task.index_db_path in instruction
     assert "index_tree" in [tool.name for tool in tools]
     assert "index_upsert" in [tool.name for tool in tools]
+
+
+def test_common_task_lifecycle_exposes_index_tree_tool():
+    task = CommonTask(id=1, title="Build feature")
+    lifecycle = _user_lifecycle(task)
+
+    tool_names = [tool.name for tool in lifecycle.create_tools()]
+
+    assert "index_tree" in tool_names
+    assert "index_upsert" not in tool_names
 
 
 def test_repo_memory_lifecycle_owns_runtime_agent_index(tmp_path):
@@ -923,6 +933,38 @@ async def test_user_task_lifecycle_run_executes_tools_and_returns_current_task(t
     assert records[0]["tool_results"] == [
         {"tool_call_id": "call_1", "tool_name": "ls", "message_id": 2}
     ]
+
+
+@pytest.mark.asyncio
+async def test_common_task_finish_tool_stamps_end_message_to_tool_result(tmp_path):
+    db = _make_db(tmp_path)
+    user_task = CommonTask(id=1, title="Build feature", start_message_id=1)
+    session_state = SessionState(
+        messages=[MessageEntry(id=1, message=UserMessage(content=[TextContent(text="Build feature")], timestamp=1))],
+        database=db,
+        session_id="session_a",
+        next_message_id=2,
+        next_task_id_to_allocate=2,
+    )
+    lifecycle = _user_lifecycle(user_task, session_state=session_state)
+    assistant_message = AssistantMessage(
+        role="assistant",
+        content=[
+            ToolCall(
+                id="call_1",
+                name="finish_common_task",
+                arguments={"result": "Built feature"},
+            )
+        ],
+    )
+    agent_process = ExecutingFakeAgentProcess(assistant_message)
+
+    await lifecycle.run(agent_process=agent_process)
+
+    assert user_task.status == "done"
+    assert user_task.end_message_id == 3
+    assert [entry.id for entry in lifecycle._session_state.messages] == [1, 2, 3]
+    assert lifecycle._session_state.messages[-1].message.tool_call_id == "call_1"
 
 
 @pytest.mark.asyncio
