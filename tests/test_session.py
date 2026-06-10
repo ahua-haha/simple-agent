@@ -189,3 +189,60 @@ async def test_session_runner_does_not_resolve_next_task_after_lifecycle_run(tmp
     assert result is runner._session_state
     assert runner._session_state.next_task_id_to_run == 999
     assert runner._session_state.next_task is None
+
+
+@pytest.mark.asyncio
+async def test_session_runner_continues_when_lifecycle_sets_next_task_id_without_instance(tmp_path):
+    from simple_agent.session.session import Session
+    from simple_agent.task_manager.models import TodoTask, UserTask
+
+    class ChildLifecycle:
+        def __init__(self, parent_id):
+            self.parent_id = parent_id
+
+        def set_data(self, session_state):
+            self.session_state = session_state
+
+        async def run(self, *, agent_process, cancel_event=None):
+            self.session_state.next_task_id_to_run = self.parent_id
+            self.session_state.next_task = None
+            return self.session_state
+
+        def clear_data(self):
+            pass
+
+    class ParentLifecycle:
+        def __init__(self):
+            self.run_count = 0
+
+        def set_data(self, session_state):
+            self.session_state = session_state
+
+        async def run(self, *, agent_process, cancel_event=None):
+            self.run_count += 1
+            self.session_state.next_task_id_to_run = None
+            self.session_state.next_task = None
+            return self.session_state
+
+        def clear_data(self):
+            pass
+
+    session = Session(base_dir=str(tmp_path))
+    runner = session._runner
+    parent = UserTask(id=1, title="Build feature")
+    child = TodoTask(id=2, parent_id=parent.id, title="Inspect files")
+    with session._db.create_session() as db_session:
+        session._db.upsert_managed_task(parent, session=db_session)
+        session._db.upsert_managed_task(child, session=db_session)
+        db_session.commit()
+
+    runner.load = lambda: None
+    runner._session_state.next_task_id_to_run = child.id
+    runner._session_state.next_task = child
+    parent_lifecycle = ParentLifecycle()
+    runner._lifecycles["todo"] = ChildLifecycle(parent.id)
+    runner._lifecycles["user_task"] = parent_lifecycle
+
+    await runner.run(None)
+
+    assert parent_lifecycle.run_count == 1

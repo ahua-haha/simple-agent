@@ -99,7 +99,7 @@ class SessionRunner:
         self.load()
         self.run_input_transition(user_input)
 
-        while self._session_state.next_task is not None:
+        while self._session_state.next_task_id_to_run is not None:
             if self._user_paused:
                 break
             await self.run_active_lifecycle()
