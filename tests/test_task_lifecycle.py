@@ -127,24 +127,63 @@ def test_user_task_instruction_asks_for_complexity_check_when_tool_count_is_smal
 
     instruction = lifecycle.instruction_text()
 
-    assert "Runtime instruction for this turn" in instruction
-    assert "Determine whether the user task is complex" in instruction
-    assert "decompose it into the next enabled task" in instruction
-    assert "Choose the enabled task kind that best moves the user task forward" in instruction
-    assert "create_next_task" in instruction
-    assert "repo_memory" in instruction
+    assert instruction.startswith("<system-instruction>")
+    assert instruction.endswith("</system-instruction>")
+    assert "## Current task process information" not in instruction
+    assert "## What can be done next" in instruction
+    assert "## Reminder instruction" in instruction
+    assert "TODO" in instruction
+    assert "Early in the task, create a sub task" in instruction
+    assert "Always finish the current task as soon as the requested work is complete" in instruction
 
 
-def test_user_task_instruction_requires_next_task_after_many_tool_calls():
+def test_user_task_instruction_recommends_sub_task_mid_run():
+    task = UserTask(title="Build feature")
+    task.children = [ToolCallTask(tool_call_log_id=index) for index in range(2)]
+    lifecycle = _user_lifecycle(task)
+
+    instruction = lifecycle.instruction_text()
+
+    assert "Mid run, prefer creating a sub task" in instruction
+    assert "Always finish the current task as soon as the requested work is complete" in instruction
+
+
+def test_user_task_instruction_requires_next_task_after_six_tool_calls():
     task = UserTask(title="Build feature")
     task.children = [ToolCallTask(tool_call_log_id=index) for index in range(6)]
     lifecycle = _user_lifecycle(task)
 
     instruction = lifecycle.instruction_text()
 
-    assert "More than 5 tool calls have run since the previous todo" in instruction
-    assert "create the next enabled task before doing more work" in instruction
-    assert "Use any enabled task kind" in instruction
+    assert "<system-instruction>" in instruction
+    assert "## Current task process information" not in instruction
+    assert "## What can be done next" in instruction
+    assert "## Reminder instruction" in instruction
+    assert "TODO" in instruction
+    assert "Create the next sub task now before continuing more work" in instruction
+    assert "Always finish the current task as soon as the requested work is complete" in instruction
+
+
+def test_user_task_instruction_renders_task_tree_after_ten_tool_calls():
+    task = UserTask(title="Build feature")
+    task.children = [
+        TodoTask(title="Inspect files"),
+        *[
+            ToolCallTask(tool_call_log_id=index, tool_call_name="read")
+            for index in range(11)
+        ],
+    ]
+    task.children[0].children = [ToolCallTask(tool_call_log_id=99, tool_call_name="nested")]
+    lifecycle = _user_lifecycle(task)
+
+    instruction = lifecycle.instruction_text()
+
+    assert "## Current task process information" in instruction
+    assert "Task tree:" in instruction
+    assert "- user_task [active] Build feature" in instruction
+    assert "  - todo [active] Inspect files" in instruction
+    assert "  - tool_call 1. read" in instruction
+    assert "nested" not in instruction
 
 
 def test_todo_task_instruction_focuses_active_todo_when_tool_count_is_small():
@@ -867,7 +906,7 @@ async def test_user_task_lifecycle_run_calls_llm_appends_message_and_returns_sta
     assert tool_names[:2] == ["create_next_task", "finish_user_task"]
     assert "read" in tool_names
     assert agent_process.llm_calls[0]["messages"][:-1] == [seed.message]
-    assert "Runtime instruction for this turn" in agent_process.llm_calls[0]["messages"][-1].content[0].text
+    assert "<system-instruction>" in agent_process.llm_calls[0]["messages"][-1].content[0].text
     assert agent_process.tool_calls == []
     assert result is lifecycle._session_state
     assert lifecycle._session_state.messages == [seed, MessageEntry(id=2, message=assistant_message)]

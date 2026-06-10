@@ -27,6 +27,10 @@ USER_TASK_SYSTEM_PROMPT = """You are a helpful coding agent.
 
 Be concise, practical, and honest about uncertainty. Use available tools
 when they are needed, and explain outcomes clearly.
+
+Runtime steering instructions may arrive in a user message wrapped with
+<system-instruction> tags. Treat the content inside that tag as high-priority
+instruction for the current turn, without repeating the tag in your response.
 """
 
 USER_TASK_COMPACT_SYSTEM_PROMPT = """Compact the finished user task into one compacted user task.

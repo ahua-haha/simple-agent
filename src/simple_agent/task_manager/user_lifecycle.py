@@ -6,6 +6,7 @@ import asyncio
 import time
 from typing import TYPE_CHECKING, cast
 
+from jinja2 import Environment, StrictUndefined
 from pi.agent import AgentTool, AgentToolResult
 from pi.ai.types import AssistantMessage, TextContent, ToolCall, ToolResultMessage, UserMessage
 
@@ -23,6 +24,40 @@ from simple_agent.tool.common_tools import create_all_coding_tools
 
 if TYPE_CHECKING:
     from simple_agent.process.agent_process import AgentProcess
+
+
+_PROMPT_ENV = Environment(
+    undefined=StrictUndefined,
+    trim_blocks=True,
+    lstrip_blocks=True,
+)
+
+_USER_TASK_INSTRUCTION_TEMPLATE = _PROMPT_ENV.from_string(
+    """\
+<system-instruction>
+{% if task_info %}
+## Current task process information
+{{ task_info }}
+{% endif %}
+
+{% if available_instruction %}
+## What can be done next
+{{ available_instruction }}
+{% endif %}
+
+## Reminder instruction
+{% if is_early_run %}
+- Early in the task, create a sub task before doing broad work.
+{% elif is_mid_run %}
+- Mid run, prefer creating a sub task for the next coherent unit of work.
+{% else %}
+- Create the next sub task now before continuing more work.
+{% endif %}
+- Keep each created task small, atomic, and directly tied to finishing the current task.
+- Always finish the current task as soon as the requested work is complete.
+</system-instruction>
+"""
+)
 
 
 class UserTaskLifecycle(BaseTaskLifecycle):
@@ -43,25 +78,17 @@ class UserTaskLifecycle(BaseTaskLifecycle):
         super().clear_data()
 
     def instruction_text(self) -> str:
-        builder_instruction = self.next_task_instruction_text(enabled_task_kinds=["todo", "repo_memory"])
-        if _count_user_task_tool_calls_after_latest_todo(self.task) > 5:
-            return (
-                "Runtime instruction for this turn:\n"
-                "- More than 5 tool calls have run since the previous todo.\n"
-                "- Stop and create the next enabled task before doing more work.\n"
-                "- Use any enabled task kind that best captures the next coherent unit of work.\n"
-                "- Keep the next task small and atomic so it can be completed cleanly.\n\n"
-                f"{builder_instruction}"
-            )
-        return (
-            "Runtime instruction for this turn:\n"
-            "- Determine whether the user task is complex before doing more work.\n"
-            "- If it is complex or long-running, decompose it into the next enabled task first.\n"
-            "- Choose the enabled task kind that best moves the user task forward.\n"
-            "- Keep each created task small, atomic, and directly tied to finishing the user task.\n"
-            "- If it is simple, answer directly or use the needed tools.\n\n"
-            f"{builder_instruction}"
-        )
+        tool_calls_after_latest_todo = _count_user_task_tool_calls_after_latest_todo(self.task)
+        should_create_next_task = tool_calls_after_latest_todo > 5
+        task_info = None
+        if _count_tool_calls(self.task.children) > 10:
+            task_info = TaskTreeRenderer(format="tree", depth=1).render(self.task)
+        return _USER_TASK_INSTRUCTION_TEMPLATE.render(
+            task_info=task_info,
+            available_instruction="TODO",
+            is_early_run=tool_calls_after_latest_todo == 0,
+            is_mid_run=0 < tool_calls_after_latest_todo <= 5,
+        ).strip()
 
     def finish_task(self, *, result: str | None = None) -> UserTask:
         self.task.status = "done"
