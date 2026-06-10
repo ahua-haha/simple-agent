@@ -517,7 +517,6 @@ async def test_todo_task_lifecycle_run_records_tool_calls_and_keeps_active(tmp_p
     assert records[0]["tool_results"] == [
         {"tool_call_id": "call_1", "tool_name": "ls", "message_id": 2}
     ]
-    assert records[0]["next_action"] == "next_task"
 
 
 @pytest.mark.asyncio
@@ -1015,7 +1014,6 @@ async def test_user_task_lifecycle_run_executes_tools_and_returns_current_task(t
     assert records[0]["tool_results"] == [
         {"tool_call_id": "call_1", "tool_name": "ls", "message_id": 2}
     ]
-    assert records[0]["next_action"] == "next_task"
 
 
 @pytest.mark.asyncio

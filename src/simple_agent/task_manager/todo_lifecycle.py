@@ -15,7 +15,6 @@ from simple_agent.task_manager.base_lifecycle import (
     SessionState,
     TaskLifecycleError,
     USER_TASK_SYSTEM_PROMPT,
-    _next_task_action_text,
 )
 from simple_agent.task_manager.models import ManagedTask, TodoTask
 from simple_agent.tool.common_tools import create_all_coding_tools
@@ -156,7 +155,6 @@ class TodoTaskLifecycle(BaseTaskLifecycle):
             assistant_message_id=assistant_entry.id,
             assistant_message=assistant_message,
             tool_result_entries=tool_result_entries,
-            next_action=_next_task_action_text(self._session_state),
         )
 
         tasks_to_sync: list[ManagedTask] = [task, *task.children]

@@ -35,7 +35,6 @@ class RuntimeLogger:
         assistant_message_id: int,
         assistant_message: AssistantMessage,
         tool_result_entries: list["MessageEntry"],
-        next_action: str,
     ) -> None:
         self._write(
             {
@@ -52,7 +51,6 @@ class RuntimeLogger:
                     for entry in tool_result_entries
                     if isinstance(entry.message, ToolResultMessage)
                 ],
-                "next_action": next_action,
             },
             session_id=session_id,
         )
@@ -66,7 +64,6 @@ class RuntimeLogger:
         end_message_id: int,
         compacted_messages: list["AgentMessage"],
         replacement_messages: list["MessageEntry"],
-        next_action: str,
     ) -> None:
         self._write(
             {
@@ -78,7 +75,6 @@ class RuntimeLogger:
                 "compact_messages": [_message_json(message) for message in compact_messages],
                 "compacted_messages": [_message_json(message) for message in compacted_messages],
                 "replacement_messages": [_message_entry_json(entry) for entry in replacement_messages],
-                "next_action": next_action,
             },
             session_id=session_id,
         )

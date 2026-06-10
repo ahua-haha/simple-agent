@@ -117,7 +117,7 @@ def test_session_initializes_runner_without_task_manager(tmp_path):
     assert session._runner is not None
 
 
-def test_session_runner_input_transition_creates_user_task_in_memory(tmp_path):
+def test_session_runner_input_transition_creates_and_persists_user_task(tmp_path):
     from simple_agent.session.session import Session
     from pi.ai.types import UserMessage
     from simple_agent.task_manager.models import UserTask
@@ -149,5 +149,11 @@ def test_session_runner_input_transition_creates_user_task_in_memory(tmp_path):
     assert runner._session_state.next_task is task
     assert runner._session_state.next_task_id_to_run == task.id
     assert [entry.message.content[0].text for entry in runner._session_state.messages] == ["Build feature"]
-    assert session._db.list_runner_messages(session.id) == []
-    assert session._db.get_managed_task(task.id) is None
+    persisted_messages = session._db.list_runner_messages(session.id)
+    assert len(persisted_messages) == 1
+    assert isinstance(persisted_messages[0], UserMessage)
+    assert persisted_messages[0].content[0].text == "Build feature"
+
+    persisted_task = session._db.get_managed_task(task.id)
+    assert isinstance(persisted_task, UserTask)
+    assert persisted_task.start_message_id == message_entry.id

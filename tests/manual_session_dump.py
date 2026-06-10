@@ -59,7 +59,6 @@ def _print_runner_metadata(db: Database, session_id: str) -> None:
         print("  none")
         return
 
-    print(f"  next_action={metadata.next_action}")
     print(f"  active_user_task_id={metadata.active_user_task_id}")
     print(f"  last_error={metadata.last_error}")
     print(f"  version={metadata.version}")

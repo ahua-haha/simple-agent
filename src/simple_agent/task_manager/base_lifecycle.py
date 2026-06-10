@@ -517,10 +517,6 @@ class BaseTaskLifecycle:
         raise NotImplementedError(f"{type(self).__name__}.run is not implemented")
 
 
-def _next_task_action_text(session_state: SessionState) -> str:
-    return "next_task" if session_state.next_task_id_to_run is not None else "wait_user_input"
-
-
 def _assistant_has_tool_calls(message: AssistantMessage) -> bool:
     return any(isinstance(content, ToolCall) for content in message.content)
 

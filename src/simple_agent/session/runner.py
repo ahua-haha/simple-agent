@@ -88,7 +88,6 @@ class SessionRunner:
     def sync_metadata(self, *, session: Session) -> None:
         self._db.upsert_runner_state_metadata(
             self._session_id,
-            next_action="wait_user_input",
             active_user_task_id=self._current_active_user_task_id(),
             last_error=self._last_error,
             session=session,
@@ -122,25 +121,28 @@ class SessionRunner:
             content=[TextContent(text=user_input)],
             timestamp=int(time.time() * 1000),
         )
-        message_entry = MessageEntry(
-            id=self._session_state.next_message_id,
-            message=user_message,
-        )
-        self._session_state.next_message_id += 1
-        self._session_state.messages.append(message_entry)
+        message_entry = self._session_state.append_message(user_message)
 
         task = UserTask(
-            id=self.allocate_task_id(),
+            id=self._session_state.allocate_task_id(),
             title=user_input,
             start_message_id=message_entry.id,
         )
         self._user_task = task
-        self._session_state.next_task_id_to_run = task.id
-        self._session_state.next_task = task
+        self._session_state.set_next_task(task.id, task)
         self._last_error = None
 
-        # TODO: sync the user input transition data to the session database
-        # when lifecycle-owned persistence is wired back in.
+        with self._db.create_session() as session:
+            self._session_state.append_messages_to_database(
+                messages=[message_entry],
+                session=session,
+            )
+            self._session_state.append_tasks_to_database(
+                tasks=[task],
+                session=session,
+            )
+            self.sync_metadata(session=session)
+            session.commit()
 
     def _current_user_task_from_database(self) -> ManagedTask | None:
         if self._user_task is None:
@@ -211,13 +213,6 @@ class SessionRunner:
             next_tool_call_log_id=self._db.next_runner_tool_call_id(self._session_id, session=session),
             next_task_id_to_allocate=self._db.next_managed_task_id(session=session),
         )
-
-    def allocate_task_id(self) -> int:
-        if self._session_state.next_task_id_to_allocate is None:
-            raise RuntimeError("Session state is missing task allocation state")
-        task_id = self._session_state.next_task_id_to_allocate
-        self._session_state.next_task_id_to_allocate += 1
-        return task_id
 
     @property
     def user_task(self) -> UserTask | None:

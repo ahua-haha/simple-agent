@@ -16,7 +16,6 @@ from simple_agent.task_manager.base_lifecycle import (
     TaskLifecycleError,
     USER_TASK_COMPACT_SYSTEM_PROMPT,
     USER_TASK_SYSTEM_PROMPT,
-    _next_task_action_text,
 )
 from simple_agent.task_manager.models import ManagedTask, TodoTask, ToolCallTask, UserTask
 from simple_agent.task_manager.review import TaskTreeRenderer
@@ -172,7 +171,6 @@ class UserTaskLifecycle(BaseTaskLifecycle):
             assistant_message_id=assistant_entry.id,
             assistant_message=assistant_message,
             tool_result_entries=tool_result_entries,
-            next_action=_next_task_action_text(self._session_state),
         )
 
         tasks_to_sync: list[ManagedTask] = [task, *task.children]
