@@ -15,7 +15,7 @@ from simple_agent.task_manager.lifecycle import (
     SessionState,
     TaskLifecycleError,
     TodoTaskLifecycle,
-    UserTaskLifecycle,
+    CommonTaskLifecycle,
 )
 from simple_agent.task_manager.repo_memory_lifecycle import RepoMemoryLifecycle
 from simple_agent.task_manager.models import RepoMemoryTask, TodoTask, ToolCallTask, CommonTask, task_from_metadata
@@ -40,13 +40,13 @@ def _user_lifecycle(
     *,
     allocate_task_id=None,
     session_state: SessionState | None = None,
-) -> UserTaskLifecycle:
+) -> CommonTaskLifecycle:
     session_state = session_state or SessionState(messages=[])
     session_state.next_task = task
     session_state.next_task_id_to_run = task.id
     if allocate_task_id is not None and session_state.next_task_id_to_allocate is None:
         session_state.next_task_id_to_allocate = allocate_task_id()
-    lifecycle = UserTaskLifecycle()
+    lifecycle = CommonTaskLifecycle()
     lifecycle.set_data(session_state)
     return lifecycle
 

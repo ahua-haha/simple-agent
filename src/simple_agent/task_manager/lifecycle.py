@@ -8,7 +8,7 @@ from simple_agent.task_manager.base_lifecycle import (
     TaskLifecycleError,
 )
 from simple_agent.task_manager.todo_lifecycle import TodoTaskLifecycle
-from simple_agent.task_manager.user_lifecycle import UserTaskLifecycle, todo_status_text
+from simple_agent.task_manager.task_lifecycle import CommonTaskLifecycle, todo_status_text
 
 __all__ = [
     "BaseTaskLifecycle",
@@ -17,6 +17,6 @@ __all__ = [
     "TodoTaskLifecycle",
     "USER_TASK_COMPACT_SYSTEM_PROMPT",
     "USER_TASK_SYSTEM_PROMPT",
-    "UserTaskLifecycle",
+    "CommonTaskLifecycle",
     "todo_status_text",
 ]

@@ -64,7 +64,7 @@ Task view to compact:
 """
 
 
-class UserTaskLifecycle(BaseTaskLifecycle):
+class CommonTaskLifecycle(BaseTaskLifecycle):
     task: CommonTask | None
 
     def set_data(self, session_state: SessionState) -> None:

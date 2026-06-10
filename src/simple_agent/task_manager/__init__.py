@@ -2,7 +2,7 @@
 
 from simple_agent.task_manager.repo_memory_lifecycle import RepoMemoryLifecycle
 from simple_agent.task_manager.todo_lifecycle import TodoTaskLifecycle
-from simple_agent.task_manager.user_lifecycle import UserTaskLifecycle
+from simple_agent.task_manager.task_lifecycle import CommonTaskLifecycle
 from simple_agent.task_manager.models import (
     BaseTask,
     ManagedTask,
@@ -22,6 +22,6 @@ __all__ = [
     "TodoTaskLifecycle",
     "TodoTask",
     "ToolCallTask",
-    "UserTaskLifecycle",
+    "CommonTaskLifecycle",
     "CommonTask",
 ]
