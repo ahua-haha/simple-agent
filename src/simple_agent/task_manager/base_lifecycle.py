@@ -35,11 +35,7 @@ def render_prompt_template(template: str, **context) -> str:
     return _PROMPT_ENV.from_string(template).render(**context).strip()
 
 
-AVAILABLE_INSTRUCTION_TEMPLATE = """\
-## Next Task Builder
-Use `create_next_task(kind, title, metadata)` before switching from the current task to a different unit of work.
-Create only one next task at a time.
-
+TASK_INSTRUCTION_TEMPLATE = """\
 {% if has_common_task %}
 ## Common Task
 When to use:
@@ -75,9 +71,9 @@ How to create:
 """
 
 
-def available_instruction_text(*, has_common_task: bool, has_repo_memory_task: bool) -> str:
+def task_instruction_text(*, has_common_task: bool, has_repo_memory_task: bool) -> str:
     return render_prompt_template(
-        AVAILABLE_INSTRUCTION_TEMPLATE,
+        TASK_INSTRUCTION_TEMPLATE,
         has_common_task=has_common_task,
         has_repo_memory_task=has_repo_memory_task,
     )

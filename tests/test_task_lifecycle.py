@@ -115,6 +115,8 @@ def test_user_task_instruction_asks_for_complexity_check_when_tool_count_is_smal
     assert "## Current task process information" not in instruction
     assert "## What can be done next" in instruction
     assert "## Reminder instruction" in instruction
+    assert "Focus on current task: Build feature" in instruction
+    assert "consider decompose complex task and create sub task" in instruction
     assert "## Common Task" in instruction
     assert "## Repo Memory Task" in instruction
     assert "Early in the task, create a sub task" in instruction
@@ -143,6 +145,7 @@ def test_user_task_instruction_requires_next_task_after_six_tool_calls():
     assert "## Current task process information" not in instruction
     assert "## What can be done next" in instruction
     assert "## Reminder instruction" in instruction
+    assert "Focus on current task: Build feature" in instruction
     assert "## Common Task" in instruction
     assert "Create the next sub task now before continuing more work" in instruction
     assert "Always finish the current task as soon as the requested work is complete" in instruction

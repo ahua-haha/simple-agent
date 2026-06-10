@@ -16,8 +16,8 @@ from simple_agent.task_manager.base_lifecycle import (
     TaskLifecycleError,
     USER_TASK_COMPACT_SYSTEM_PROMPT,
     USER_TASK_SYSTEM_PROMPT,
-    available_instruction_text,
     render_prompt_template,
+    task_instruction_text,
 )
 from simple_agent.task_manager.models import ManagedTask, ToolCallTask, CommonTask
 from simple_agent.task_manager.review import TaskTreeRenderer
@@ -34,9 +34,11 @@ USER_TASK_INSTRUCTION_TEMPLATE = """\
 {{ task_info }}
 {% endif %}
 
-{% if available_instruction %}
-## What can be done next
-{{ available_instruction }}
+IMPORTANT: Focus on current task: {{ task }}, if task is complex, consider decompose complex task and create sub task to do, and you can also use tools to first explore around and gather some useful context.
+You can create these following sub tasks.
+
+{% if task_instruction %}
+{{ task_instruction }}
 {% endif %}
 
 ## Reminder instruction
@@ -88,8 +90,9 @@ class CommonTaskLifecycle(BaseTaskLifecycle):
             task_info = TaskTreeRenderer(format="tree", depth=1).render(self.task)
         return render_prompt_template(
             USER_TASK_INSTRUCTION_TEMPLATE,
+            task=self.task.title,
             task_info=task_info,
-            available_instruction=available_instruction_text(
+            task_instruction=task_instruction_text(
                 has_common_task=True,
                 has_repo_memory_task=True,
             ),
