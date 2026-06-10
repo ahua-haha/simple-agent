@@ -347,6 +347,29 @@ def test_base_lifecycle_provides_next_task_instruction_and_tool():
     assert next_task_tools[0].parameters["properties"]["kind"]["enum"] == ["todo"]
 
 
+def test_base_lifecycle_create_next_task_supports_common_task():
+    parent = CommonTask(id=1, title="Build feature")
+    session_state = SessionState(
+        messages=[],
+        next_task=parent,
+        next_task_id_to_run=parent.id,
+        next_task_id_to_allocate=2,
+    )
+    lifecycle = _user_lifecycle(parent, session_state=session_state)
+
+    task = lifecycle.create_next_task(
+        kind="common",
+        title="Inspect lifecycle flow",
+        enabled_task_kinds=["common"],
+    )
+
+    assert isinstance(task, CommonTask)
+    assert task.id is None
+    assert task.parent_id == parent.id
+    assert task.start_message_id is None
+    assert lifecycle.created_task is task
+
+
 @pytest.mark.asyncio
 async def test_base_lifecycle_create_next_task_tool_mutates_session_state():
     task = CommonTask(id=1, title="Build feature")
@@ -1081,6 +1104,43 @@ async def test_user_task_lifecycle_run_syncs_created_todo_task(tmp_path):
     assert len(tool_calls) == 1
     assert [child.kind for child in user_task.children] == ["tool_call", "todo"]
     assert lifecycle._session_state.next_task_id_to_run == todos[0].id
+    assert lifecycle._session_state.next_task is user_task.children[1]
+
+
+@pytest.mark.asyncio
+async def test_user_task_lifecycle_run_syncs_created_common_task(tmp_path):
+    db = _make_db(tmp_path)
+    user_task = CommonTask(id=1, title="Build feature")
+    session_state = SessionState(
+        messages=[],
+        database=db,
+        session_id="session_a",
+        next_task_id_to_allocate=2,
+    )
+    lifecycle = _user_lifecycle(user_task, session_state=session_state)
+    assistant_message = AssistantMessage(
+        role="assistant",
+        content=[
+            ToolCall(
+                id="call_1",
+                name="create_next_task",
+                arguments={"kind": "common", "title": "Inspect lifecycle flow"},
+            )
+        ],
+    )
+    agent_process = ExecutingFakeAgentProcess(assistant_message)
+
+    await lifecycle.run(agent_process=agent_process)
+
+    children = db.list_managed_task_children(user_task.id)
+    common_tasks = [child for child in children if isinstance(child, CommonTask)]
+    tool_calls = [child for child in children if child.kind == "tool_call"]
+    assert len(common_tasks) == 1
+    assert common_tasks[0].title == "Inspect lifecycle flow"
+    assert common_tasks[0].start_message_id == 1
+    assert len(tool_calls) == 1
+    assert [child.kind for child in user_task.children] == ["tool_call", "user_task"]
+    assert lifecycle._session_state.next_task_id_to_run == common_tasks[0].id
     assert lifecycle._session_state.next_task is user_task.children[1]
 
 

@@ -91,6 +91,7 @@ class UserTaskLifecycle(BaseTaskLifecycle):
             task_info=task_info,
             available_instruction=available_instruction_text(
                 has_todo_task=True,
+                has_common_task=True,
                 has_repo_memory_task=True,
             ),
             is_early_run=tool_calls_after_latest_todo == 0,
@@ -109,7 +110,7 @@ class UserTaskLifecycle(BaseTaskLifecycle):
 
     def create_tools(self) -> list[AgentTool]:
         return [
-            *self.create_next_task_tools(enabled_task_kinds=["todo", "repo_memory"]),
+            *self.create_next_task_tools(enabled_task_kinds=["common", "todo", "repo_memory"]),
             self.create_finish_user_task_tool(),
             *create_all_coding_tools("."),
         ]
