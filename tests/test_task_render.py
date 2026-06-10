@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from simple_agent.task_manager.models import TodoTask, ToolCallTask, CommonTask
+from simple_agent.task_manager.models import ToolCallTask, CommonTask
 from simple_agent.task_manager.review import TaskTreeRenderer, build_task_tree
 
 
@@ -30,7 +30,7 @@ def test_task_tree_renderer_uses_tool_call_metadata_from_task():
 
 def test_task_tree_renderer_flat_mode_does_not_mutate_tree():
     root = CommonTask(id=1, title="Build feature")
-    todo = TodoTask(id=2, parent_id=1, title="Inspect files")
+    task = CommonTask(id=2, parent_id=1, title="Inspect files")
     tool_call = ToolCallTask(
         id=3,
         parent_id=2,
@@ -39,26 +39,26 @@ def test_task_tree_renderer_flat_mode_does_not_mutate_tree():
         tool_call_name="ls",
         tool_call_args={"path": "."},
     )
-    todo.children.append(tool_call)
-    root.children.append(todo)
+    task.children.append(tool_call)
+    root.children.append(task)
     original_children = list(root.children)
-    original_todo_children = list(todo.children)
+    original_task_children = list(task.children)
 
     output = TaskTreeRenderer(format="flat", depth=None).render(root)
 
     assert "- user_task [active] Build feature" in output
     assert '- tool_call 1. ls args: {"path":"."}' in output
     assert root.children == original_children
-    assert todo.children == original_todo_children
+    assert task.children == original_task_children
 
 
 def test_build_task_tree_reconstructs_children_from_parent_id():
     root = CommonTask(id=1, title="Build feature")
-    todo = TodoTask(id=2, parent_id=1, title="Inspect files")
+    task = CommonTask(id=2, parent_id=1, title="Inspect files")
     tool_call = ToolCallTask(id=3, parent_id=2, tool_call_log_id=7, tool_call_name="ls")
 
-    roots = build_task_tree([root, todo, tool_call])
+    roots = build_task_tree([root, task, tool_call])
 
     assert roots == [root]
-    assert root.children == [todo]
-    assert todo.children == [tool_call]
+    assert root.children == [task]
+    assert task.children == [tool_call]

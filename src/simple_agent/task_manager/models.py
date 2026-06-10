@@ -8,7 +8,7 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, Field
 
-TaskKind = Literal["user_task", "todo", "tool_call", "repo_memory"]
+TaskKind = Literal["user_task", "tool_call", "repo_memory"]
 TaskStatus = Literal["active", "done", "error"]
 
 
@@ -54,29 +54,6 @@ class CommonTask(BaseTask):
         status: str,
         metadata: str,
     ) -> "CommonTask":
-        return cls(id=id, parent_id=parent_id, status=status, **_metadata_dict(metadata))
-
-
-class TodoTask(BaseTask):
-    kind: Literal["todo"] = "todo"
-    title: str
-    result: str | None = None
-    error: str | None = None
-    start_message_id: int | None = None
-    end_message_id: int | None = None
-
-    def format_for_render(self, *, tool_call: Any | None = None, sequence: int | None = None) -> str:
-        return f"todo [{self.status}] {self.title}"
-
-    @classmethod
-    def from_metadata(
-        cls,
-        *,
-        id: int | None,
-        parent_id: int | None,
-        status: str,
-        metadata: str,
-    ) -> "TodoTask":
         return cls(id=id, parent_id=parent_id, status=status, **_metadata_dict(metadata))
 
 
@@ -129,7 +106,7 @@ class RepoMemoryTask(BaseTask):
         return cls(id=id, parent_id=parent_id, status=status, **_metadata_dict(metadata))
 
 
-ManagedTask = CommonTask | TodoTask | ToolCallTask | RepoMemoryTask
+ManagedTask = CommonTask | ToolCallTask | RepoMemoryTask
 
 
 def task_from_metadata(
@@ -142,8 +119,6 @@ def task_from_metadata(
 ) -> ManagedTask:
     if kind == "user_task":
         return CommonTask.from_metadata(id=id, parent_id=parent_id, status=status, metadata=metadata)
-    if kind == "todo":
-        return TodoTask.from_metadata(id=id, parent_id=parent_id, status=status, metadata=metadata)
     if kind == "tool_call":
         return ToolCallTask.from_metadata(id=id, parent_id=parent_id, status=status, metadata=metadata)
     if kind == "repo_memory":

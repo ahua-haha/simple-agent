@@ -14,11 +14,10 @@ from simple_agent.task_manager.lifecycle import (
     USER_TASK_SYSTEM_PROMPT,
     SessionState,
     TaskLifecycleError,
-    TodoTaskLifecycle,
     CommonTaskLifecycle,
 )
 from simple_agent.task_manager.repo_memory_lifecycle import RepoMemoryLifecycle
-from simple_agent.task_manager.models import RepoMemoryTask, TodoTask, ToolCallTask, CommonTask, task_from_metadata
+from simple_agent.task_manager.models import RepoMemoryTask, ToolCallTask, CommonTask, task_from_metadata
 
 
 def _make_db(tmp_path):
@@ -47,22 +46,6 @@ def _user_lifecycle(
     if allocate_task_id is not None and session_state.next_task_id_to_allocate is None:
         session_state.next_task_id_to_allocate = allocate_task_id()
     lifecycle = CommonTaskLifecycle()
-    lifecycle.set_data(session_state)
-    return lifecycle
-
-
-def _todo_lifecycle(
-    task: TodoTask,
-    *,
-    allocate_task_id=None,
-    session_state: SessionState | None = None,
-) -> TodoTaskLifecycle:
-    session_state = session_state or SessionState(messages=[])
-    session_state.next_task = task
-    session_state.next_task_id_to_run = task.id
-    if allocate_task_id is not None and session_state.next_task_id_to_allocate is None:
-        session_state.next_task_id_to_allocate = allocate_task_id()
-    lifecycle = TodoTaskLifecycle()
     lifecycle.set_data(session_state)
     return lifecycle
 
@@ -132,9 +115,8 @@ def test_user_task_instruction_asks_for_complexity_check_when_tool_count_is_smal
     assert "## Current task process information" not in instruction
     assert "## What can be done next" in instruction
     assert "## Reminder instruction" in instruction
-    assert "## Todo Task" in instruction
+    assert "## Common Task" in instruction
     assert "## Repo Memory Task" in instruction
-    assert "small, concise, atomic" in instruction
     assert "Early in the task, create a sub task" in instruction
     assert "Always finish the current task as soon as the requested work is complete" in instruction
 
@@ -161,7 +143,7 @@ def test_user_task_instruction_requires_next_task_after_six_tool_calls():
     assert "## Current task process information" not in instruction
     assert "## What can be done next" in instruction
     assert "## Reminder instruction" in instruction
-    assert "## Todo Task" in instruction
+    assert "## Common Task" in instruction
     assert "Create the next sub task now before continuing more work" in instruction
     assert "Always finish the current task as soon as the requested work is complete" in instruction
 
@@ -169,7 +151,7 @@ def test_user_task_instruction_requires_next_task_after_six_tool_calls():
 def test_user_task_instruction_renders_task_tree_after_ten_tool_calls():
     task = CommonTask(title="Build feature")
     task.children = [
-        TodoTask(title="Inspect files"),
+        CommonTask(title="Inspect files"),
         *[
             ToolCallTask(tool_call_log_id=index, tool_call_name="read")
             for index in range(11)
@@ -183,30 +165,9 @@ def test_user_task_instruction_renders_task_tree_after_ten_tool_calls():
     assert "## Current task process information" in instruction
     assert "Task tree:" in instruction
     assert "- user_task [active] Build feature" in instruction
-    assert "  - todo [active] Inspect files" in instruction
+    assert "  - user_task [active] Inspect files" in instruction
     assert "  - tool_call 1. read" in instruction
     assert "nested" not in instruction
-
-
-def test_todo_task_instruction_focuses_active_todo_when_tool_count_is_small():
-    task = TodoTask(title="Inspect files")
-    lifecycle = _todo_lifecycle(task)
-
-    instruction = lifecycle.instruction_text()
-
-    assert "Focus on the active todo: Inspect files" in instruction
-    assert "Call finish_todo immediately when it is complete" in instruction
-
-
-def test_todo_task_instruction_prompts_finish_check_after_many_tool_calls():
-    task = TodoTask(title="Inspect files")
-    task.children = [ToolCallTask(tool_call_log_id=index) for index in range(11)]
-    lifecycle = _todo_lifecycle(task)
-
-    instruction = lifecycle.instruction_text()
-
-    assert "More than 10 tool calls have run for the active todo" in instruction
-    assert "call finish_todo now with a concise result" in instruction
 
 
 def test_tool_call_task_remains_data_only():
@@ -217,13 +178,12 @@ def test_tool_call_task_remains_data_only():
 
 def test_task_data_objects_do_not_expose_lifecycle_methods():
     user_task = CommonTask(title="Build feature")
-    todo = TodoTask(title="Inspect files")
     repo_memory = RepoMemoryTask(
         title="Write repo memory",
         index_db_path="./index.db",
     )
 
-    for task in [user_task, todo, repo_memory]:
+    for task in [user_task, repo_memory]:
         assert not hasattr(task, "create_tools")
         assert not hasattr(task, "sync")
         assert not hasattr(task, "append_tool_call_task")
@@ -341,10 +301,10 @@ def test_base_lifecycle_provides_next_task_instruction_and_tool():
     )
     lifecycle = _user_lifecycle(task, session_state=session_state)
 
-    next_task_tools = lifecycle.create_next_task_tools(enabled_task_kinds=["todo"])
+    next_task_tools = lifecycle.create_next_task_tools(enabled_task_kinds=["common"])
 
     assert [tool.name for tool in next_task_tools] == ["create_next_task"]
-    assert next_task_tools[0].parameters["properties"]["kind"]["enum"] == ["todo"]
+    assert next_task_tools[0].parameters["properties"]["kind"]["enum"] == ["common"]
 
 
 def test_base_lifecycle_create_next_task_supports_common_task():
@@ -380,24 +340,23 @@ async def test_base_lifecycle_create_next_task_tool_mutates_session_state():
         next_task_id_to_allocate=2,
     )
     lifecycle = _user_lifecycle(task, session_state=session_state)
-    tool = lifecycle.create_next_task_tools(enabled_task_kinds=["todo"])[0]
+    tool = lifecycle.create_next_task_tools(enabled_task_kinds=["common"])[0]
 
-    result = await tool.execute("call_1", {"kind": "todo", "title": "Inspect files"})
+    result = await tool.execute("call_1", {"kind": "common", "title": "Inspect files"})
 
-    todo = lifecycle.created_task
-    assert isinstance(todo, TodoTask)
-    assert todo.id is None
-    assert todo.parent_id == task.id
-    assert todo.start_message_id is None
+    next_task = lifecycle.created_task
+    assert isinstance(next_task, CommonTask)
+    assert next_task.id is None
+    assert next_task.parent_id == task.id
+    assert next_task.start_message_id is None
     assert task.children == []
     assert session_state.next_task is task
     assert session_state.next_task_id_to_run == task.id
-    assert result.content[0].text == "Created next task: todo Inspect files"
+    assert result.content[0].text == "Created next task: user_task Inspect files"
 
 
 def test_task_models_do_not_own_runtime_message_id():
     user_task = CommonTask(id=1, title="Build feature")
-    todo = TodoTask(id=2, parent_id=1, title="Inspect files")
 
     restored_user = task_from_metadata(
         id=user_task.id,
@@ -406,20 +365,21 @@ def test_task_models_do_not_own_runtime_message_id():
         status=user_task.status,
         metadata=user_task.metadata_json(),
     )
-    restored_todo = task_from_metadata(
-        id=todo.id,
-        parent_id=todo.parent_id,
-        kind=todo.kind,
-        status=todo.status,
-        metadata=todo.metadata_json(),
-    )
 
     assert "_current_assistant_message_id" not in json.loads(user_task.metadata_json())
-    assert "_current_assistant_message_id" not in json.loads(todo.metadata_json())
     assert not hasattr(user_task, "current_assistant_message_id")
-    assert not hasattr(todo, "current_assistant_message_id")
     assert not hasattr(restored_user, "current_assistant_message_id")
-    assert not hasattr(restored_todo, "current_assistant_message_id")
+
+
+def test_todo_task_kind_is_not_supported():
+    with pytest.raises(ValueError, match="Unknown task kind: todo"):
+        task_from_metadata(
+            id=2,
+            parent_id=1,
+            kind="todo",
+            status="active",
+            metadata='{"title":"Inspect files"}',
+        )
 
 
 def test_user_task_lifecycle_uses_owned_allocator():
@@ -444,15 +404,15 @@ def test_user_task_lifecycle_uses_owned_allocator():
         content=[TextContent(text="files")],
     )
 
-    todo = lifecycle.create_next_task(kind="todo", title="Inspect files", enabled_task_kinds=["todo"])
+    next_task = lifecycle.create_next_task(kind="common", title="Inspect files", enabled_task_kinds=["common"])
     _tool_call_records, tool_call_tasks = lifecycle._session_state.create_tool_call_record_task_entries(
         assistant_message=assistant_message,
         tool_result_messages=[tool_result],
         parent_task=user_task,
     )
 
-    assert todo.id is None
-    assert todo.start_message_id is None
+    assert next_task.id is None
+    assert next_task.start_message_id is None
     assert tool_call_tasks[0].id == 10
     assert tool_call_tasks[0].parent_id == user_task.id
 
@@ -495,130 +455,16 @@ def test_user_task_lifecycle_creates_tool_call_record_task_entries_without_appen
     assert lifecycle._session_state.next_tool_call_log_id == 8
 
 
-def test_todo_task_lifecycle_uses_owned_message_id_for_finish():
-    todo = TodoTask(id=2, parent_id=1, title="Inspect files")
-    lifecycle = _todo_lifecycle(todo, allocate_task_id=lambda: 3)
-
-    lifecycle.finish_task(result="Inspected files")
-    lifecycle.stamp_finished_task(end_message_id=44)
-
-    assert todo.status == "done"
-    assert todo.end_message_id == 44
-
-
-@pytest.mark.asyncio
-async def test_todo_task_lifecycle_run_auto_finishes_without_tool_calls(tmp_path):
-    db = _make_db(tmp_path)
-    todo = TodoTask(id=2, parent_id=1, title="Inspect files")
-    session_state = SessionState(
-        messages=[],
-        database=db,
-        session_id="session_a",
-        next_task_id_to_allocate=3,
-    )
-    lifecycle = _todo_lifecycle(todo, session_state=session_state)
-    assistant_message = AssistantMessage(role="assistant", content=[TextContent(text="Inspected files")])
-    agent_process = FakeAgentProcess(assistant_message)
-
-    result = await lifecycle.run(agent_process=agent_process)
-
-    assert result is lifecycle._session_state
-    assert agent_process.tool_calls == []
-    assert todo.status == "done"
-    assert todo.end_message_id == 1
-    assert lifecycle._session_state.next_task is None
-    assert lifecycle._session_state.next_task_id_to_run == 1
-    assert [message.content[0].text for message in db.list_runner_messages("session_a")] == ["Inspected files"]
-    persisted = db.get_managed_task(todo.id)
-    assert persisted.status == "done"
-    assert persisted.end_message_id == 1
-
-
-@pytest.mark.asyncio
-async def test_todo_task_lifecycle_run_records_tool_calls_and_keeps_active(tmp_path):
-    db = _make_db(tmp_path)
-    todo = TodoTask(id=2, parent_id=1, title="Inspect files")
-    session_state = SessionState(
-        messages=[],
-        database=db,
-        session_id="session_a",
-        next_task_id_to_allocate=3,
-        next_tool_call_log_id=7,
-    )
-    lifecycle = _todo_lifecycle(todo, session_state=session_state)
-    assistant_message = AssistantMessage(
-        role="assistant",
-        content=[ToolCall(id="call_1", name="ls", arguments={"path": "."})],
-    )
-    tool_result = ToolResultMessage(
-        toolCallId="call_1",
-        toolName="ls",
-        content=[TextContent(text="files")],
-    )
-    agent_process = FakeAgentProcess(assistant_message, [tool_result])
-
-    result = await lifecycle.run(agent_process=agent_process)
-
-    assert result is lifecycle._session_state
-    assert todo.status == "active"
-    assert lifecycle._session_state.next_task is todo
-    assert lifecycle._session_state.next_task_id_to_run == todo.id
-    assert lifecycle._session_state.messages == [
-        MessageEntry(id=1, message=assistant_message),
-        MessageEntry(id=2, message=tool_result),
-    ]
-    assert [child.tool_call_log_id for child in todo.children] == [7]
-    assert [record.id for record in db.list_runner_tool_calls("session_a")] == [7]
-    assert [child.tool_call_log_id for child in db.list_managed_task_children(todo.id)] == [7]
-    records = _read_log_records(tmp_path)
-    assert len(records) == 1
-    assert records[0]["event"] == "handle_running"
-    assert records[0]["assistant_message_id"] == 1
-    assert records[0]["tool_results"] == [
-        {"tool_call_id": "call_1", "tool_name": "ls", "message_id": 2}
-    ]
-
-
-@pytest.mark.asyncio
-async def test_todo_task_lifecycle_run_routes_to_parent_when_finish_tool_called(tmp_path):
-    db = _make_db(tmp_path)
-    todo = TodoTask(id=2, parent_id=1, title="Inspect files")
-    session_state = SessionState(
-        messages=[],
-        database=db,
-        session_id="session_a",
-        next_task_id_to_allocate=3,
-        next_tool_call_log_id=7,
-    )
-    lifecycle = _todo_lifecycle(todo, session_state=session_state)
-    assistant_message = AssistantMessage(
-        role="assistant",
-        content=[ToolCall(id="call_1", name="finish_todo", arguments={"result": "Inspected files"})],
-    )
-    agent_process = ExecutingFakeAgentProcess(assistant_message)
-
-    result = await lifecycle.run(agent_process=agent_process)
-
-    assert result is lifecycle._session_state
-    assert todo.status == "done"
-    assert todo.result == "Inspected files"
-    assert todo.end_message_id == 1
-    assert lifecycle._session_state.next_task is None
-    assert lifecycle._session_state.next_task_id_to_run == 1
-    assert [record.id for record in db.list_runner_tool_calls("session_a")] == [7]
-    assert [child.tool_call_log_id for child in db.list_managed_task_children(todo.id)] == [7]
-
-
 def test_lifecycle_tracks_next_task_transition():
     user_task = CommonTask(id=1, title="Build feature")
     user_lifecycle = _user_lifecycle(user_task, allocate_task_id=lambda: 2)
 
-    todo = user_lifecycle.create_next_task(kind="todo", title="Inspect files", enabled_task_kinds=["todo"])
+    next_task = user_lifecycle.create_next_task(kind="common", title="Inspect files", enabled_task_kinds=["common"])
 
     assert user_lifecycle._session_state.next_task_id_to_run == user_task.id
     assert user_lifecycle._session_state.next_task is user_task
-    assert todo.id is None
-    assert todo.parent_id == user_task.id
+    assert next_task.id is None
+    assert next_task.parent_id == user_task.id
 
 
 def test_lifecycle_allocates_task_id_from_session_state_context():
@@ -626,9 +472,9 @@ def test_lifecycle_allocates_task_id_from_session_state_context():
     user_task = CommonTask(id=1, title="Build feature")
     lifecycle = _user_lifecycle(user_task, session_state=session_state)
 
-    todo = lifecycle.create_next_task(kind="todo", title="Inspect files", enabled_task_kinds=["todo"])
+    next_task = lifecycle.create_next_task(kind="common", title="Inspect files", enabled_task_kinds=["common"])
 
-    assert todo.id is None
+    assert next_task.id is None
     assert session_state.next_task_id_to_allocate == 7
 
 
@@ -771,17 +617,17 @@ def test_session_state_appends_tasks_to_database(tmp_path):
     db = _make_db(tmp_path)
     session_state = SessionState(messages=[], database=db, session_id="session_a")
     user_task = CommonTask(id=1, title="Build feature")
-    todo = TodoTask(id=2, parent_id=1, title="Inspect files")
+    child_task = CommonTask(id=2, parent_id=1, title="Inspect files")
 
     with session_state.create_database_session() as session:
         session_state.append_tasks_to_database(
-            tasks=[user_task, todo],
+            tasks=[user_task, child_task],
             session=session,
         )
         session.commit()
 
     assert db.get_managed_task(1) == user_task
-    assert db.get_managed_task(2) == todo
+    assert db.get_managed_task(2) == child_task
 
 
 def test_lifecycle_appends_messages_in_memory_until_explicit_sync(tmp_path):
@@ -1077,37 +923,6 @@ async def test_user_task_lifecycle_run_executes_tools_and_returns_current_task(t
 
 
 @pytest.mark.asyncio
-async def test_user_task_lifecycle_run_syncs_created_todo_task(tmp_path):
-    db = _make_db(tmp_path)
-    user_task = CommonTask(id=1, title="Build feature")
-    session_state = SessionState(
-        messages=[],
-        database=db,
-        session_id="session_a",
-        next_task_id_to_allocate=2,
-    )
-    lifecycle = _user_lifecycle(user_task, session_state=session_state)
-    assistant_message = AssistantMessage(
-        role="assistant",
-        content=[ToolCall(id="call_1", name="create_next_task", arguments={"kind": "todo", "title": "Inspect files"})],
-    )
-    agent_process = ExecutingFakeAgentProcess(assistant_message)
-
-    await lifecycle.run(agent_process=agent_process)
-
-    children = db.list_managed_task_children(user_task.id)
-    todos = [child for child in children if child.kind == "todo"]
-    tool_calls = [child for child in children if child.kind == "tool_call"]
-    assert len(todos) == 1
-    assert todos[0].title == "Inspect files"
-    assert todos[0].start_message_id == 1
-    assert len(tool_calls) == 1
-    assert [child.kind for child in user_task.children] == ["tool_call", "todo"]
-    assert lifecycle._session_state.next_task_id_to_run == todos[0].id
-    assert lifecycle._session_state.next_task is user_task.children[1]
-
-
-@pytest.mark.asyncio
 async def test_user_task_lifecycle_run_syncs_created_common_task(tmp_path):
     db = _make_db(tmp_path)
     user_task = CommonTask(id=1, title="Build feature")
@@ -1260,7 +1075,7 @@ async def test_user_task_lifecycle_run_compact_one_turn_finishes_and_replaces_me
         compacted_tool_call_log_ids=[7],
         children=[
             ToolCallTask(id=2, parent_id=1, status="done", tool_call_log_id=7),
-            TodoTask(id=3, parent_id=1, title="Old todo", status="done"),
+            CommonTask(id=3, parent_id=1, title="Old subtask", status="done"),
         ],
     )
     original_messages = [
@@ -1335,7 +1150,7 @@ def test_user_task_lifecycle_should_compact_after_more_than_ten_tool_calls():
 
 
 def test_user_task_lifecycle_should_compact_after_nested_tool_calls():
-    todo = TodoTask(
+    subtask = CommonTask(
         id=2,
         parent_id=1,
         title="Inspect files",
@@ -1344,7 +1159,7 @@ def test_user_task_lifecycle_should_compact_after_nested_tool_calls():
             for index in range(11)
         ],
     )
-    user_task = CommonTask(id=1, title="Build feature", children=[todo])
+    user_task = CommonTask(id=1, title="Build feature", children=[subtask])
     lifecycle = _user_lifecycle(user_task)
 
     assert lifecycle.should_compact_after_turn() is True

@@ -14,9 +14,8 @@ from simple_agent.task_manager.base_lifecycle import (
     SessionState,
 )
 from simple_agent.task_manager.repo_memory_lifecycle import RepoMemoryLifecycle
-from simple_agent.task_manager.todo_lifecycle import TodoTaskLifecycle
 from simple_agent.task_manager.task_lifecycle import CommonTaskLifecycle
-from simple_agent.task_manager.models import ManagedTask, TodoTask, CommonTask
+from simple_agent.task_manager.models import ManagedTask, CommonTask
 
 if TYPE_CHECKING:
     from simple_agent.db.db import Database
@@ -53,7 +52,6 @@ class SessionRunner:
         self._user_task = None
         self._lifecycles = {
             "user_task": CommonTaskLifecycle(),
-            "todo": TodoTaskLifecycle(),
             "repo_memory": RepoMemoryLifecycle(),
         }
         self._session_state = SessionState(

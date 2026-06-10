@@ -194,7 +194,7 @@ async def test_session_runner_does_not_resolve_next_task_after_lifecycle_run(tmp
 @pytest.mark.asyncio
 async def test_session_runner_continues_when_lifecycle_sets_next_task_id_without_instance(tmp_path):
     from simple_agent.session.session import Session
-    from simple_agent.task_manager.models import TodoTask, CommonTask
+    from simple_agent.task_manager.models import CommonTask, RepoMemoryTask
 
     class ChildLifecycle:
         def __init__(self, parent_id):
@@ -230,7 +230,7 @@ async def test_session_runner_continues_when_lifecycle_sets_next_task_id_without
     session = Session(base_dir=str(tmp_path))
     runner = session._runner
     parent = CommonTask(id=1, title="Build feature")
-    child = TodoTask(id=2, parent_id=parent.id, title="Inspect files")
+    child = RepoMemoryTask(id=2, parent_id=parent.id, title="Inspect files", index_db_path=".agent-index.db")
     with session._db.create_session() as db_session:
         session._db.upsert_managed_task(parent, session=db_session)
         session._db.upsert_managed_task(child, session=db_session)
@@ -240,7 +240,7 @@ async def test_session_runner_continues_when_lifecycle_sets_next_task_id_without
     runner._session_state.next_task_id_to_run = child.id
     runner._session_state.next_task = child
     parent_lifecycle = ParentLifecycle()
-    runner._lifecycles["todo"] = ChildLifecycle(parent.id)
+    runner._lifecycles["repo_memory"] = ChildLifecycle(parent.id)
     runner._lifecycles["user_task"] = parent_lifecycle
 
     await runner.run(None)

@@ -8,7 +8,7 @@ import sqlite3
 from pi.ai.types import AssistantMessage, TextContent
 
 from simple_agent.db.db import Database
-from simple_agent.task_manager.models import TodoTask, CommonTask
+from simple_agent.task_manager.models import CommonTask
 
 
 def test_runner_state_metadata_roundtrip(tmp_path):
@@ -161,11 +161,11 @@ def test_replace_managed_task_tree_deletes_all_tasks_after_root_id(tmp_path):
     db = Database(str(tmp_path / "session.db"))
     user_task = CommonTask(title="Build feature")
     user_task.id = db.upsert_managed_task(user_task)
-    stale_child = TodoTask(title="Old child", parent_id=user_task.id)
+    stale_child = CommonTask(title="Old child", parent_id=user_task.id)
     stale_child.id = db.upsert_managed_task(stale_child)
-    stale_orphan = TodoTask(title="Old orphan", parent_id=None)
+    stale_orphan = CommonTask(title="Old orphan", parent_id=None)
     stale_orphan.id = db.upsert_managed_task(stale_orphan)
-    replacement_child = TodoTask(title="New child", parent_id=user_task.id)
+    replacement_child = CommonTask(title="New child", parent_id=user_task.id)
     replacement_child.id = stale_child.id
     user_task.children = [replacement_child]
 

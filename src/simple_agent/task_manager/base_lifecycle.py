@@ -12,7 +12,7 @@ from pi.agent.types import AgentMessage
 from pi.ai.types import AssistantMessage, TextContent, ToolCall, ToolResultMessage
 
 from simple_agent.message_store import MessageEntry
-from simple_agent.task_manager.models import CommonTask, ManagedTask, RepoMemoryTask, TodoTask, ToolCallTask
+from simple_agent.task_manager.models import CommonTask, ManagedTask, RepoMemoryTask, ToolCallTask
 
 if TYPE_CHECKING:
     from simple_agent.db.db import Database
@@ -40,20 +40,6 @@ AVAILABLE_INSTRUCTION_TEMPLATE = """\
 Use `create_next_task(kind, title, metadata)` before switching from the current task to a different unit of work.
 Create only one next task at a time.
 
-{% if has_todo_task %}
-## Todo Task
-When to use:
-- Use a todo task for the next small implementation, debugging, inspection, or verification step.
-- Use it when the current task needs decomposition before more work.
-- The todo task must be small, concise, atomic, and directly tied to finishing the current task.
-
-How to create:
-- Call `create_next_task(kind="todo", title="<small atomic next action>", metadata={})`.
-- Put the concrete next action in the title.
-- Omit metadata or pass an empty object.
-- Example: {"kind":"todo","title":"Inspect session runner state transitions","metadata":{}}
-
-{% endif %}
 {% if has_common_task %}
 ## Common Task
 When to use:
@@ -89,10 +75,9 @@ How to create:
 """
 
 
-def available_instruction_text(*, has_todo_task: bool, has_common_task: bool, has_repo_memory_task: bool) -> str:
+def available_instruction_text(*, has_common_task: bool, has_repo_memory_task: bool) -> str:
     return render_prompt_template(
         AVAILABLE_INSTRUCTION_TEMPLATE,
-        has_todo_task=has_todo_task,
         has_common_task=has_common_task,
         has_repo_memory_task=has_repo_memory_task,
     )
@@ -445,7 +430,7 @@ class BaseTaskLifecycle:
             name="create_next_task",
             description=(
                 "Create the next task for this session. Use this before moving "
-                "from the current task to a common, todo, or repo-memory task."
+                "from the current task to a common or repo-memory task."
             ),
             parameters={
                 "type": "object",
@@ -463,7 +448,7 @@ class BaseTaskLifecycle:
                         "type": "object",
                         "description": (
                             "Task-specific metadata. For repo_memory include "
-                            "repo_path and index_db_path. Common and todo tasks usually omit this."
+                            "repo_path and index_db_path. Common tasks usually omit this."
                         ),
                         "additionalProperties": True,
                     },
@@ -499,11 +484,6 @@ class BaseTaskLifecycle:
         metadata = metadata or {}
         if kind == "common":
             task: ManagedTask = CommonTask(
-                parent_id=parent.id,
-                title=title,
-            )
-        elif kind == "todo":
-            task: ManagedTask = TodoTask(
                 parent_id=parent.id,
                 title=title,
             )
@@ -544,8 +524,8 @@ class BaseTaskLifecycle:
         self,
         enabled_task_kinds: list[str] | tuple[str, ...] | None,
     ) -> list[str]:
-        enabled_kinds = list(enabled_task_kinds or ("common", "todo", "repo_memory"))
-        invalid = [kind for kind in enabled_kinds if kind not in ("common", "todo", "repo_memory")]
+        enabled_kinds = list(enabled_task_kinds or ("common", "repo_memory"))
+        invalid = [kind for kind in enabled_kinds if kind not in ("common", "repo_memory")]
         if invalid:
             raise TaskLifecycleError(f"Unsupported task kind enabled: {invalid[0]}")
         return enabled_kinds
