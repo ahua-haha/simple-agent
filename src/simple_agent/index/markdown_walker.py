@@ -76,6 +76,9 @@ def _convert_node(title: str, line_number: int) -> SymbolNode:
 
     return SymbolNode(
         path=label,
-        description=f"line {line_number}",
+        name=label,
+        description="",
+        line_start=line_number,
+        line_end=line_number,
         symbol_type="heading",
     )

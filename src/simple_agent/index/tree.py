@@ -32,6 +32,8 @@ class WalkOptions:
 def walk_file(root: FileNode, options: WalkOptions) -> FileNode:
     """Walk a file node and return *root* with any symbol children populated."""
     file_path = Path(root.path)
+    if not root.name:
+        root.name = file_path.name
     if options.should_skip(file_path):
         return root
 
@@ -87,15 +89,10 @@ def render_tree(node: BaseNode | None, *, depth: int | None = None) -> str:
             output += f"{current_prefix}{current.format_node()}\n"
 
         if current.children and (depth is None or current_depth < depth):
-            sorted_children = sorted(
-                current.children,
-                key=lambda child: (0 if child.is_dir else 1, child.name.lower()),
-            )
-
             next_prefix = prefix if is_root else prefix + ("    " if is_last else "│   ")
 
-            num_children = len(sorted_children)
-            for index, child in enumerate(sorted_children):
+            num_children = len(current.children)
+            for index, child in enumerate(current.children):
                 is_child_last = index == num_children - 1
                 output += _render(
                     child,

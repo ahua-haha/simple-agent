@@ -323,6 +323,7 @@ class AgentIndex:
     @staticmethod
     def _apply_entry_metadata(node: BaseNode, entry: IndexNodeRecord) -> None:
         entry_node = index_node_from_record(entry)
+        node.name = entry_node.name
         node.description = entry_node.description
         node.propagation_count = entry_node.propagation_count
         node.updated_at = entry_node.updated_at

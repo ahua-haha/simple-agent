@@ -838,7 +838,7 @@ class TestTreeRenderPython:
             symbol_type="function",
         )
 
-        assert node.format_node() == "app.py:run()  # Runs the app [function]"
+        assert node.format_node() == "run()  # Runs the app [function]"
         assert "# Runs the app [function]" in render_tree(node)
 
     def test_render_tree_accepts_depth_option(self):
@@ -891,6 +891,41 @@ class TestTreeRenderPython:
         print(out)
         assert "AgentProcess" in out
 
+    def test_render_python_file_tree_keeps_source_order_and_line_ranges(self, tmp_path):
+        pytest.importorskip("tree_sitter")
+        pytest.importorskip("tree_sitter_python")
+        from simple_agent.index.models import FileNode
+        from simple_agent.index.tree import WalkOptions, render_tree, walk_file
+
+        path = tmp_path / "sample.py"
+        path.write_text(
+            "def first():\n"
+            "    pass\n"
+            "\n"
+            "class Second:\n"
+            "    def method(self):\n"
+            "        pass\n"
+            "\n"
+            "def third():\n"
+            "    pass\n"
+        )
+
+        node = walk_file(FileNode(path=str(path)), WalkOptions())
+
+        assert [child.name for child in node.children] == [
+            "first()",
+            "Second",
+            "third()",
+        ]
+        assert node.children[0].line_start == 1
+        assert node.children[0].line_end == 2
+        assert node.children[1].children[0].line_start == 5
+        output = render_tree(node)
+        assert "first()  # lines 1-2 [function]" in output
+        assert "Second  # lines 4-6 [class]" in output
+        assert "method()  # lines 5-6 [function]" in output
+        assert output.index("first()") < output.index("Second") < output.index("third()")
+
 
 class TestTreeRenderMarkdown:
     """Render Markdown files with regex heading outline extraction."""
@@ -918,6 +953,8 @@ class TestTreeRenderMarkdown:
             "heading",
             "heading",
         ]
+        assert node.children[0].line_start == 1
+        assert node.children[0].children[0].line_start == 5
         assert "README.md" in output
         assert "Overview  # line 1 [heading]" in output
         assert "Install  # line 5 [heading]" in output

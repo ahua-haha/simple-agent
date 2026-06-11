@@ -24,10 +24,10 @@ def walk_dir(root: DirectoryNode, options: WalkOptions) -> DirectoryNode:
             continue
         child_options = options.child()
         if entry.is_dir():
-            child = DirectoryNode(path=str(entry))
+            child = DirectoryNode(path=str(entry), name=entry.name)
             root.children.append(walk_dir(child, child_options))
         elif entry.is_file():
-            child = FileNode(path=str(entry))
+            child = FileNode(path=str(entry), name=entry.name)
             root.children.append(walk_file(child, child_options))
 
     return root

@@ -38,14 +38,15 @@ class IndexNodeRecord(SQLModel, table=True):
 class BaseNode(BaseModel):
     path: str
     kind: str
+    name: str = ""
     description: str = ""
     propagation_count: int = 4
     updated_at: int = PydanticField(default_factory=lambda: int(time.time()))
     children: list[BaseNode] = PydanticField(default_factory=list)
 
-    @property
-    def name(self) -> str:
-        return Path(self.path).name or self.path
+    def model_post_init(self, __context: object) -> None:
+        if not self.name:
+            self.name = Path(self.path).name or self.path
 
     @property
     def is_dir(self) -> bool:
@@ -97,11 +98,22 @@ class DirectoryNode(BaseNode):
 class SymbolNode(BaseNode):
     kind: Literal["symbol"] = "symbol"
     symbol_type: str = "symbol"
+    line_start: int | None = None
+    line_end: int | None = None
+
+    def model_post_init(self, __context: object) -> None:
+        if not self.name:
+            self.name = self.path.rsplit(":", 1)[-1]
 
     def comment(self) -> str:
         parts = []
         if self.description:
             parts.append(self.description)
+        if self.line_start is not None:
+            if self.line_end is not None and self.line_end != self.line_start:
+                parts.append(f"lines {self.line_start}-{self.line_end}")
+            else:
+                parts.append(f"line {self.line_start}")
         if self.symbol_type:
             parts.append(f"[{self.symbol_type}]")
         return " ".join(parts)

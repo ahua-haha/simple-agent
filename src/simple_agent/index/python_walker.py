@@ -68,7 +68,14 @@ def _walk_class_definition(
 ) -> SymbolNode:
     cls_name = class_node.child_by_field_name("name")
     name = cls_name.text.decode() if cls_name else "class"
-    symbol = SymbolNode(path=f"{file_path}:{name}", description="", symbol_type="class")
+    symbol = SymbolNode(
+        path=f"{file_path}:{name}",
+        name=name,
+        description="",
+        symbol_type="class",
+        line_start=_line_start(class_node),
+        line_end=_line_end(class_node),
+    )
 
     if depth is not None and sym_depth >= depth:
         return symbol
@@ -83,7 +90,14 @@ def _walk_class_definition(
 def _walk_function_definition(func_node: Any, parent_path: str) -> SymbolNode:
     func_name = func_node.child_by_field_name("name")
     name = (func_name.text.decode() + "()") if func_name else "func()"
-    return SymbolNode(path=f"{parent_path}:{name}", description="", symbol_type="function")
+    return SymbolNode(
+        path=f"{parent_path}:{name}",
+        name=name,
+        description="",
+        symbol_type="function",
+        line_start=_line_start(func_node),
+        line_end=_line_end(func_node),
+    )
 
 
 def _walk_block(
@@ -102,8 +116,11 @@ def _walk_block(
             name = (func_name.text.decode() + "()") if func_name else "func()"
             symbol = SymbolNode(
                 path=f"{parent_path}:{name}",
+                name=name,
                 description="",
                 symbol_type="function",
+                line_start=_line_start(child),
+                line_end=_line_end(child),
             )
 
             if depth is None or sym_depth < depth:
@@ -118,3 +135,11 @@ def _walk_block(
             result.append(symbol)
 
     return result
+
+
+def _line_start(node: Any) -> int:
+    return node.start_point[0] + 1
+
+
+def _line_end(node: Any) -> int:
+    return node.end_point[0] + 1
