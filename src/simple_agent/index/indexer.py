@@ -261,13 +261,24 @@ class AgentIndex:
         # TODO: verify every updated entry still exists in target_commit.
         return
 
-    def _load_gitignore_spec(self) -> pathspec.PathSpec | None:
+    def _load_gitignore_spec(self) -> pathspec.PathSpec:
+        lines = [
+            ".git/",
+            "**/.git/",
+            ".venv/",
+            "**/.venv/",
+            "__pycache__/",
+            "**/__pycache__/",
+            ".pytest_cache/",
+            "**/.pytest_cache/",
+        ]
         gitignore = self._base_dir / ".gitignore"
         try:
             with gitignore.open() as f:
-                return pathspec.PathSpec.from_lines("gitignore", f)
+                lines.extend(f)
         except FileNotFoundError:
-            return None
+            pass
+        return pathspec.PathSpec.from_lines("gitignore", lines)
 
     def _make_tree_filter(self) -> Callable[[Path], bool]:
         spec = self._load_gitignore_spec()
@@ -278,15 +289,10 @@ class AgentIndex:
                 rel = abs_path.relative_to(base)
             except ValueError:
                 return False
-            if rel.parts and rel.parts[0] in {".git", ".venv", "__pycache__", ".pytest_cache"}:
-                return True
-            if spec is not None:
-                rel_text = rel.as_posix()
-                if abs_path.is_dir():
-                    rel_text += "/"
-                if spec.match_file(rel_text):
-                    return True
-            return False
+            rel_text = rel.as_posix()
+            if abs_path.is_dir():
+                rel_text += "/"
+            return spec.match_file(rel_text)
 
         return filter_fn
 

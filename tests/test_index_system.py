@@ -280,6 +280,27 @@ class TestAgentIndexCRUD:
         assert ".git/" not in output
         assert "objects/" not in output
 
+    def test_tree_hides_nested_git_directory(self, tmp_path):
+        """tree() should not render nested VCS metadata directories."""
+        db_path = str(tmp_path / "index.db")
+        ws = str(tmp_path / "ws")
+        self._make_workspace(ws, {
+            "external/project/.git/config": "",
+            "external/project/.git/objects/aa/file": "",
+            "external/project/src/app.py": "",
+        })
+
+        idx = self._make_index(db_path, base_dir=ws)
+
+        output = idx.tree()
+
+        assert "external/" in output
+        assert "project/" in output
+        assert "src/" in output
+        assert "app.py" in output
+        assert ".git/" not in output
+        assert "objects/" not in output
+
     def test_tree_scoped_subtree(self, tmp_path):
         """tree() with path should render only a subtree."""
         db_path = str(tmp_path / "index.db")
