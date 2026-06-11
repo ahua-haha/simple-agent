@@ -14,18 +14,20 @@ _HEADING_RE = re.compile(r"^(#{1,6})[ \t]+(.+?)\s*$")
 _FENCE_RE = re.compile(r"^[ \t]{0,3}(```+|~~~+)")
 
 
-def walk_markdown_file(root: FileNode, options: WalkOptions) -> FileNode:
+def walk_markdown_file(root: str | Path, options: WalkOptions) -> FileNode:
     """Walk a Markdown file node and return *root* with heading children populated."""
+    file_path = Path(root)
+    root_node = FileNode(path=str(file_path), name=file_path.name)
     if options.at_depth_limit():
-        return root
+        return root_node
 
     try:
-        source = Path(root.path).read_text()
+        source = file_path.read_text()
     except OSError:
-        return root
+        return root_node
 
-    root.children = _walk_outline(source.splitlines(), options.child())
-    return root
+    root_node.children = _walk_outline(source.splitlines(), options.child())
+    return root_node
 
 
 def _walk_outline(lines: list[str], options: WalkOptions) -> list[SymbolNode]:

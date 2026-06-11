@@ -856,35 +856,32 @@ class TestTreeRenderPython:
         assert "src/" in output
         assert "app.py" not in output
 
-    def test_walk_file_accepts_root_node_and_returns_same_node(self):
+    def test_walk_file_accepts_path_and_returns_file_node(self):
         from pathlib import Path
-        from simple_agent.index.models import FileNode
         from simple_agent.index.tree import WalkOptions, walk_file
 
         path = Path("src/simple_agent/process/agent_process.py")
-        root = FileNode(path=str(path))
+        node = walk_file(path, WalkOptions())
 
-        assert walk_file(root, WalkOptions()) is root
+        assert node.path.endswith("src/simple_agent/process/agent_process.py")
+        assert node.name == "agent_process.py"
 
     def test_build_tree_accepts_file_path(self):
-        from simple_agent.index.models import FileNode
         from simple_agent.index.tree import WalkOptions, build_tree
 
-        root = FileNode(path="src/simple_agent/index/tree.py")
-        node = build_tree(root, WalkOptions())
+        node = build_tree("src/simple_agent/index/tree.py", WalkOptions())
 
-        assert node is root
         assert node.path.endswith("src/simple_agent/index/tree.py")
+        assert node.name == "tree.py"
 
     def test_render_python_file_tree(self):
         from pathlib import Path
         pytest.importorskip("tree_sitter")
         pytest.importorskip("tree_sitter_python")
-        from simple_agent.index.models import FileNode
         from simple_agent.index.tree import WalkOptions, render_tree, walk_file
 
         path = Path("src/simple_agent/process/agent_process.py")
-        node = walk_file(FileNode(path=str(path)), WalkOptions())
+        node = walk_file(path, WalkOptions())
         assert node is not None
         out = render_tree(node)
         print()
@@ -894,7 +891,6 @@ class TestTreeRenderPython:
     def test_render_python_file_tree_keeps_source_order_and_line_ranges(self, tmp_path):
         pytest.importorskip("tree_sitter")
         pytest.importorskip("tree_sitter_python")
-        from simple_agent.index.models import FileNode
         from simple_agent.index.tree import WalkOptions, render_tree, walk_file
 
         path = tmp_path / "sample.py"
@@ -910,7 +906,7 @@ class TestTreeRenderPython:
             "    pass\n"
         )
 
-        node = walk_file(FileNode(path=str(path)), WalkOptions())
+        node = walk_file(path, WalkOptions())
 
         assert [child.name for child in node.children] == [
             "first()",
@@ -931,7 +927,6 @@ class TestTreeRenderMarkdown:
     """Render Markdown files with regex heading outline extraction."""
 
     def test_render_markdown_file_tree(self, tmp_path):
-        from simple_agent.index.models import FileNode
         from simple_agent.index.tree import WalkOptions, render_tree, walk_file
 
         path = tmp_path / "README.md"
@@ -945,7 +940,7 @@ class TestTreeRenderMarkdown:
             "## Usage\n",
         )
 
-        node = walk_file(FileNode(path=str(path)), WalkOptions())
+        node = walk_file(path, WalkOptions())
 
         output = render_tree(node)
         assert [child.symbol_type for child in node.children] == ["heading"]

@@ -6,7 +6,7 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
 
-from simple_agent.index.models import BaseNode, DirectoryNode, FileNode
+from simple_agent.index.models import BaseNode
 
 
 @dataclass(frozen=True)
@@ -29,37 +29,38 @@ class WalkOptions:
         return self.depth is not None and self.current_depth >= self.depth
 
 
-def walk_file(root: FileNode, options: WalkOptions) -> FileNode:
+def walk_file(root: str | Path, options: WalkOptions) -> BaseNode:
     """Walk a file node and return *root* with any symbol children populated."""
-    file_path = Path(root.path)
-    if not root.name:
-        root.name = file_path.name
+    file_path = Path(root)
     if options.should_skip(file_path):
-        return root
+        from simple_agent.index.models import FileNode
+        return FileNode(path=str(file_path), name=file_path.name)
 
     suffix = file_path.suffix
     if suffix == ".py":
         from simple_agent.index.python_walker import walk_python_file
-        return walk_python_file(root, options)
+        return walk_python_file(file_path, options)
     if suffix in (".md", ".mdx", ".markdown"):
         from simple_agent.index.markdown_walker import walk_markdown_file
-        return walk_markdown_file(root, options)
-    return root
+        return walk_markdown_file(file_path, options)
+
+    from simple_agent.index.models import FileNode
+    return FileNode(path=str(file_path), name=file_path.name)
 
 
 def build_tree(
-    root: BaseNode,
+    root: str | Path,
     options: WalkOptions,
 ) -> BaseNode:
     """Walk from *root* and return it with children populated."""
     from simple_agent.index.dir_walker import walk_dir
 
-    root_path = Path(root.path)
-    if isinstance(root, DirectoryNode) and root_path.is_dir():
-        return walk_dir(root, options)
-    if isinstance(root, FileNode) and root_path.is_file():
-        return walk_file(root, options)
-    return root
+    root_path = Path(root)
+    if root_path.is_dir():
+        return walk_dir(root_path, options)
+    if root_path.is_file():
+        return walk_file(root_path, options)
+    return BaseNode(path=str(root_path), kind="unknown", name=root_path.name or str(root_path))
 
 
 def render_tree(node: BaseNode | None, *, depth: int | None = None) -> str:

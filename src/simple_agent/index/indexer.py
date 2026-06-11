@@ -343,14 +343,10 @@ class AgentIndex:
         """
         filter_fn = self._make_tree_filter()
         full_path = (self._base_dir / path) if path else self._base_dir
-        if full_path.is_dir():
-            root: BaseNode = DirectoryNode(path=str(full_path))
-        elif full_path.is_file():
-            root = FileNode(path=str(full_path))
-        else:
+        if not full_path.exists():
             return f'Error: path not found in repo: "{path or "."}"'
 
-        root = build_tree(root, WalkOptions(depth=depth, filter_fn=filter_fn))
+        root = build_tree(full_path, WalkOptions(depth=depth, filter_fn=filter_fn))
         entries = self._load_entries()
         self._fill_tree_metadata(root, entries)
         render_depth = (
