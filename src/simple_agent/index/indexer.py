@@ -361,15 +361,23 @@ class AgentIndex:
         if entry_limit is None:
             entry_limit = 36
         entry_limit = min(entry_limit, MAX_TREE_ENTRY_LIMIT)
-        render_depth = _max_render_depth_for_entry_limit(root, entry_limit)
+        render_depth, truncated = _max_render_depth_for_entry_limit(root, entry_limit)
         if entry_limit > 0:
             render_depth = max(render_depth, 1)
-        return render_tree(root, depth=render_depth)
+        output = render_tree(root, depth=render_depth)
+        if truncated:
+            info = (
+                f"Info: current tree entries exceed entry_limit={entry_limit}; "
+                f"rendered with depth={render_depth}. "
+                "You can go deeper in the tree by using a child path or a larger entry_limit."
+            )
+            return f"{info}\n{output}"
+        return output
 
 
-def _max_render_depth_for_entry_limit(root: BaseNode, entry_limit: int) -> int:
+def _max_render_depth_for_entry_limit(root: BaseNode, entry_limit: int) -> tuple[int, bool]:
     if entry_limit <= 0:
-        return 0
+        return 0, True
     counts_by_depth: dict[int, int] = {}
     queue = deque([(root, 0)])
     while queue:
@@ -383,10 +391,10 @@ def _max_render_depth_for_entry_limit(root: BaseNode, entry_limit: int) -> int:
     for depth in sorted(counts_by_depth):
         next_total = total + counts_by_depth[depth]
         if next_total > entry_limit:
-            return best_depth
+            return best_depth, True
         total = next_total
         best_depth = depth
-    return best_depth
+    return best_depth, False
 
 
 def _metadata_dict(metadata_json: str) -> dict:

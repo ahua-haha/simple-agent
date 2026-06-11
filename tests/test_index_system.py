@@ -237,6 +237,9 @@ class TestAgentIndexCRUD:
         idx = self._make_index(db_path, base_dir=ws)
         output = idx.tree(entry_limit=3)
 
+        assert "current tree entries exceed entry_limit=3" in output
+        assert "rendered with depth=1" in output
+        assert "go deeper in the tree" in output
         assert "src/" in output
         assert "tests/" in output
         assert "a.py" not in output
@@ -279,6 +282,8 @@ class TestAgentIndexCRUD:
         idx = self._make_index(db_path, base_dir=ws)
         output = idx.tree(entry_limit=36)
 
+        assert "current tree entries exceed entry_limit=36" in output
+        assert "rendered with depth=1" in output
         assert "file_0.py" in output
 
     @pytest.mark.asyncio
