@@ -859,17 +859,15 @@ async def test_user_task_lifecycle_run_compacts_already_done_task(tmp_path):
     result = await lifecycle.run(agent_process=agent_process)
 
     assert result is lifecycle._session_state
-    assert lifecycle._session_state.next_task is None
-    assert lifecycle._session_state.next_task_id_to_run == 99
+    assert user_task.status == "index_memory_upsert"
+    assert lifecycle._session_state.next_task is user_task
+    assert lifecycle._session_state.next_task_id_to_run == 1
     assert agent_process.llm_calls[0]["system_prompt"] == USER_TASK_COMPACT_SYSTEM_PROMPT
     persisted_messages = db.list_runner_messages("session_a")
     assert [message.role for message in persisted_messages] == ["user", "assistant"]
     assert persisted_messages[0].content[0].text == "Build feature"
-    assert persisted_messages[1].content[0].text == (
-        "Finished task: Build feature\n"
-        "Result: Build feature\n"
-        "Following tool calls preserve useful context: []"
-    )
+    assert persisted_messages[1].content[0].text == "Done"
+    assert db.get_managed_task(user_task.id).status == "index_memory_upsert"
 
 
 @pytest.mark.asyncio
@@ -1182,7 +1180,7 @@ async def test_user_task_lifecycle_compact_finished_replaces_messages(tmp_path):
     result = await lifecycle.run_compact_one_turn(agent_process=agent_process)
 
     assert result is lifecycle._session_state
-    assert user_task.status == "compact_finished"
+    assert user_task.status == "index_memory_upsert"
     assert user_task.end_message_id is None
     assert lifecycle._session_state.next_task is user_task
     assert lifecycle._session_state.next_task_id_to_run == 1
@@ -1191,13 +1189,26 @@ async def test_user_task_lifecycle_compact_finished_replaces_messages(tmp_path):
     persisted_messages = db.list_runner_messages("session_a")
     assert [message.role for message in persisted_messages] == ["user", "assistant", "assistant"]
 
+    agent_process = FakeAgentProcess(AssistantMessage(role="assistant", content=[TextContent(text="memory done")]))
+
+    result = await lifecycle.run_index_memory_upsert_one_turn(agent_process=agent_process)
+
+    assert result is lifecycle._session_state
+    assert user_task.status == "compact_finished"
+    assert lifecycle._session_state.next_task is user_task
+    assert lifecycle._session_state.next_task_id_to_run == 1
+    assert [tool.name for tool in agent_process.llm_calls[0]["tools"]] == ["index_tree", "index_upsert"]
+    assert "Runtime instruction for index memory upsert phase" in agent_process.llm_calls[0]["messages"][-1].content[0].text
+    assert [entry.id for entry in lifecycle._session_state.messages] == [1, 2, 3, 4]
+    assert [entry.message.role for entry in lifecycle._session_state.messages] == ["user", "assistant", "assistant", "assistant"]
+
     result = lifecycle.compact_finished_task()
 
     assert result is lifecycle._session_state
     assert user_task.status == "done"
     assert lifecycle._session_state.next_task is None
     assert lifecycle._session_state.next_task_id_to_run == 99
-    assert [entry.id for entry in lifecycle._session_state.messages] == [4, 5, 6]
+    assert [entry.id for entry in lifecycle._session_state.messages] == [5, 6, 7]
     assert [entry.message.role for entry in lifecycle._session_state.messages] == ["user", "assistant", "tool_result"]
     assert lifecycle._session_state.messages[0].message.content[0].text == "Build feature"
     assert lifecycle._session_state.messages[1].message.content[0].text == (
