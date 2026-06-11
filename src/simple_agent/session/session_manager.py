@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import os
 
@@ -131,3 +132,19 @@ class SessionManager:
         session = self._sessions.get(session_id)
         if session is not None:
             session.pause()
+
+    async def shutdown(self, *, timeout: float = 5.0) -> None:
+        """Stop all in-memory sessions before the process exits."""
+        sessions = list(self._sessions.values())
+        if not sessions:
+            return
+        results = await asyncio.gather(
+            *(session.stop(timeout=timeout) for session in sessions),
+            return_exceptions=True,
+        )
+        for result in results:
+            if isinstance(result, Exception):
+                _log.error(
+                    "shutdown: session stop failed",
+                    exc_info=(type(result), result, result.__traceback__),
+                )

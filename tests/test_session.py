@@ -101,6 +101,52 @@ class TestSessionEventQueue:
 
         assert received is not None
 
+    @pytest.mark.asyncio
+    async def test_stop_pauses_and_waits_for_run_task(self, tmp_path):
+        import asyncio
+        session = Session(sessions_dir=str(tmp_path), workspace_dir=os.getcwd())
+        stopped = asyncio.Event()
+
+        async def fake_run(user_input):
+            try:
+                while not session._runner._cancel_event.is_set():
+                    await asyncio.sleep(0.01)
+            finally:
+                stopped.set()
+            return None
+
+        session._runner.run = fake_run
+
+        queue = session.run("hello")
+        await session.stop(timeout=1.0)
+
+        assert stopped.is_set()
+        assert not session.is_running
+        assert session._run_task is None
+        assert await queue.get() is None
+
+    @pytest.mark.asyncio
+    async def test_stop_cancels_run_task_after_timeout(self, tmp_path):
+        import asyncio
+        session = Session(sessions_dir=str(tmp_path), workspace_dir=os.getcwd())
+        cancelled = asyncio.Event()
+
+        async def fake_run(user_input):
+            try:
+                while True:
+                    await asyncio.sleep(1)
+            except asyncio.CancelledError:
+                cancelled.set()
+                raise
+
+        session._runner.run = fake_run
+
+        session.run("hello")
+        await session.stop(timeout=0.01)
+
+        assert cancelled.is_set()
+        assert not session.is_running
+
 
 def test_session_pause_delegates_to_runner(tmp_path):
     session = Session(sessions_dir=str(tmp_path), workspace_dir=os.getcwd())

@@ -1,6 +1,7 @@
 """FastAPI app for browsing the task tree and serving the session API."""
 
 import os
+from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
 
@@ -12,10 +13,18 @@ def create_app(
     sessions_dir: str = "./sessions",
     workspace_dir: str | None = None,
 ) -> FastAPI:
-    app = FastAPI(title="Simple Agent Web")
+    session_manager = SessionManager(sessions_dir=sessions_dir)
+
+    @asynccontextmanager
+    async def lifespan(app: FastAPI):
+        try:
+            yield
+        finally:
+            await session_manager.shutdown()
+
+    app = FastAPI(title="Simple Agent Web", lifespan=lifespan)
 
     app.state.workspace_dir = workspace_dir or os.getcwd()
-    session_manager = SessionManager(sessions_dir=sessions_dir)
     app.state.session_manager = session_manager
 
     session_router = create_session_router()

@@ -108,6 +108,28 @@ class TestSessionManagerRunPause:
         # Should not raise
         sm.pause(s.id)
 
+    @pytest.mark.asyncio
+    async def test_shutdown_stops_running_sessions(self, tmp_path):
+        sm = SessionManager(sessions_dir=str(tmp_path))
+        s = sm.create(workspace_dir=os.getcwd())
+        stopped = asyncio.Event()
+
+        async def fake_run(user_input):
+            try:
+                while not s._runner._cancel_event.is_set():
+                    await asyncio.sleep(0.01)
+            finally:
+                stopped.set()
+            return None
+
+        s._runner.run = fake_run
+
+        sm.run(s.id, "test input")
+        await sm.shutdown(timeout=1.0)
+
+        assert stopped.is_set()
+        assert not s.is_running
+
 class TestAPIEndpoints:
     """Session API endpoints (via TestClient)."""
 
