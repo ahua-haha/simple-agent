@@ -243,6 +243,61 @@ class TestAgentIndexCRUD:
         assert "nested/" not in output
         assert "test_app.py" not in output
 
+    def test_tree_entry_limit_is_capped(self, tmp_path):
+        db_path = str(tmp_path / "index.db")
+        ws = str(tmp_path / "ws")
+        self._make_workspace(ws, {
+            f"dir_{index}/file.py": ""
+            for index in range(150)
+        })
+
+        idx = self._make_index(db_path, base_dir=ws)
+        output = idx.tree(entry_limit=999)
+
+        assert "dir_0/" in output
+        assert "file.py" not in output
+
+    def test_tree_none_entry_limit_uses_default_limit(self, tmp_path):
+        db_path = str(tmp_path / "index.db")
+        ws = str(tmp_path / "ws")
+        self._make_workspace(ws, {
+            f"dir_{index}/file.py": ""
+            for index in range(50)
+        })
+
+        idx = self._make_index(db_path, base_dir=ws)
+        output = idx.tree(entry_limit=None)
+
+        assert "dir_0/" in output
+        assert "file.py" not in output
+
+    def test_tree_entry_limit_renders_first_depth_when_it_exceeds_limit(self, tmp_path):
+        db_path = str(tmp_path / "index.db")
+        ws = str(tmp_path / "ws")
+        self._make_workspace(ws, {f"file_{index}.py": "" for index in range(50)})
+
+        idx = self._make_index(db_path, base_dir=ws)
+        output = idx.tree(entry_limit=36)
+
+        assert "file_0.py" in output
+
+    @pytest.mark.asyncio
+    async def test_tree_tool_uses_default_entry_limit_when_omitted(self, tmp_path):
+        db_path = str(tmp_path / "index.db")
+        ws = str(tmp_path / "ws")
+        self._make_workspace(ws, {
+            f"dir_{index}/file.py": ""
+            for index in range(50)
+        })
+
+        idx = self._make_index(db_path, base_dir=ws)
+        tool = idx.create_tree_tool()
+        result = await tool.execute("call_1", {"path": "."})
+
+        output = result.content[0].text
+        assert "dir_0/" in output
+        assert "file.py" not in output
+
     def test_tree_hides_gitignore_ignored_directories(self, tmp_path):
         """tree() should not render directories ignored by .gitignore."""
         db_path = str(tmp_path / "index.db")

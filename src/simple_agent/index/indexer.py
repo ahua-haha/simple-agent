@@ -29,6 +29,7 @@ import pathspec
 
 
 IndexEntry = IndexNodeRecord
+MAX_TREE_ENTRY_LIMIT = 128
 
 
 class IndexUpdateError(Exception):
@@ -102,8 +103,9 @@ class AgentIndex:
                     "entry_limit": {
                         "type": "integer",
                         "description": (
-                            "Optional maximum number of tree entries to render. Defaults to 36. "
-                            "If exceeded, render depth is reduced until the entry count fits."
+                            "Optional maximum number of tree entries to render. Defaults to 36 "
+                            f"and is capped at {MAX_TREE_ENTRY_LIMIT}. If exceeded, render "
+                            "depth is reduced until the entry count fits."
                         ),
                     },
                 },
@@ -356,11 +358,12 @@ class AgentIndex:
         root = build_tree(full_path, WalkOptions(depth=depth, filter_fn=filter_fn))
         entries = self._load_entries()
         self._fill_tree_metadata(root, entries)
-        render_depth = (
-            _max_render_depth_for_entry_limit(root, entry_limit)
-            if entry_limit is not None
-            else None
-        )
+        if entry_limit is None:
+            entry_limit = 36
+        entry_limit = min(entry_limit, MAX_TREE_ENTRY_LIMIT)
+        render_depth = _max_render_depth_for_entry_limit(root, entry_limit)
+        if entry_limit > 0:
+            render_depth = max(render_depth, 1)
         return render_tree(root, depth=render_depth)
 
 
