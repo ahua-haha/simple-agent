@@ -96,7 +96,7 @@ class Session:
         """
         self._runner.pause()
 
-    async def stop(self, *, timeout: float = 5.0) -> None:
+    async def stop(self, *, timeout: float = 5.0, cancel_timeout: float = 1.0) -> None:
         """Request the current run to stop and wait for its task to exit."""
         task = self._run_task
         if task is None:
@@ -104,17 +104,27 @@ class Session:
             return
 
         self.pause()
+        if timeout <= 0:
+            _log.warning("stop: session=%s cancelling run task immediately", self._id)
+            await self._cancel_run_task(task, timeout=cancel_timeout)
+            return
+
         try:
             await asyncio.wait_for(asyncio.shield(task), timeout=timeout)
         except asyncio.TimeoutError:
             _log.warning("stop: session=%s timed out; cancelling run task", self._id)
-            task.cancel()
-            try:
-                await task
-            except asyncio.CancelledError:
-                pass
+            await self._cancel_run_task(task, timeout=cancel_timeout)
         except Exception:
             _log.exception("stop: session=%s run task failed while stopping", self._id)
+
+    async def _cancel_run_task(self, task: asyncio.Task, *, timeout: float) -> None:
+        task.cancel()
+        try:
+            await asyncio.wait_for(task, timeout=timeout)
+        except asyncio.CancelledError:
+            pass
+        except asyncio.TimeoutError:
+            _log.error("stop: session=%s run task did not exit after cancellation", self._id)
 
     @property
     def id(self) -> str:

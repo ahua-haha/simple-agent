@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import os
+from contextlib import suppress
 
 import pytest
 
@@ -108,28 +109,6 @@ class TestSessionManagerRunPause:
         # Should not raise
         sm.pause(s.id)
 
-    @pytest.mark.asyncio
-    async def test_shutdown_stops_running_sessions(self, tmp_path):
-        sm = SessionManager(sessions_dir=str(tmp_path))
-        s = sm.create(workspace_dir=os.getcwd())
-        stopped = asyncio.Event()
-
-        async def fake_run(user_input):
-            try:
-                while not s._runner._cancel_event.is_set():
-                    await asyncio.sleep(0.01)
-            finally:
-                stopped.set()
-            return None
-
-        s._runner.run = fake_run
-
-        sm.run(s.id, "test input")
-        await sm.shutdown(timeout=1.0)
-
-        assert stopped.is_set()
-        assert not s.is_running
-
 class TestAPIEndpoints:
     """Session API endpoints (via TestClient)."""
 
@@ -216,6 +195,41 @@ class TestAPIEndpoints:
     def test_run_missing_session(self, client):
         resp = client.post("/api/sessions/nonexistent/run", json={"input": "hello"})
         assert resp.status_code == 404
+
+
+@pytest.mark.asyncio
+async def test_stream_session_events_stops_session_manager_when_cancelled():
+    from simple_agent.web.session_api import _stream_session_events
+
+    closed = asyncio.Event()
+    queue = asyncio.Queue()
+
+    class FakeSessionManager:
+        session_id = None
+        timeout = None
+
+        async def stop(self, session_id, *, timeout):
+            self.session_id = session_id
+            self.timeout = timeout
+            closed.set()
+
+    session_manager = FakeSessionManager()
+
+    task = asyncio.create_task(
+        _stream_session_events(
+            queue,
+            session_manager=session_manager,
+            session_id="session_a",
+        ).__anext__()
+    )
+    await asyncio.sleep(0)
+    task.cancel()
+    with suppress(asyncio.CancelledError):
+        await task
+
+    assert closed.is_set()
+    assert session_manager.session_id == "session_a"
+    assert session_manager.timeout == 0.0
 
 
 class TestSessionRunStream:

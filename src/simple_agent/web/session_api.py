@@ -81,7 +81,11 @@ async def run_session(session_id: str, body: RunRequest, request: Request):
         raise HTTPException(status_code=404, detail="Session not found")
 
     response = StreamingResponse(
-        _stream_session_events(queue),
+        _stream_session_events(
+            queue,
+            session_manager=sm,
+            session_id=session_id,
+        ),
         media_type="text/event-stream",
     )
     return response
@@ -112,7 +116,12 @@ def _serialize(event: AgentEvent | dict) -> str:
 # ── stream ──────────────────────────────────────────────────────────────
 
 
-async def _stream_session_events(queue: asyncio.Queue) -> AsyncGenerator[str, None]:
+async def _stream_session_events(
+    queue: asyncio.Queue,
+    *,
+    session_manager: SessionManager | None = None,
+    session_id: str | None = None,
+) -> AsyncGenerator[str, None]:
     """Read pi-agent events from *queue*, yield SSE frames.
 
     Each event is serialized as:
@@ -123,20 +132,24 @@ async def _stream_session_events(queue: asyncio.Queue) -> AsyncGenerator[str, No
     import logging
     logger = logging.getLogger(__name__)
 
-    while True:
-        event = await queue.get()
-        if event is None:
-            logger.debug("stream: received sentinel, closing")
-            break
+    try:
+        while True:
+            event = await queue.get()
+            if event is None:
+                logger.debug("stream: received sentinel, closing")
+                break
 
-        if isinstance(event, dict):
-            event_type = event.get("type", "error")
-        else:
-            event_type = getattr(event, "type", type(event).__name__)
+            if isinstance(event, dict):
+                event_type = event.get("type", "error")
+            else:
+                event_type = getattr(event, "type", type(event).__name__)
 
-        payload = _serialize(event)
-        logger.debug("stream: event=%s", event_type)
-        yield f"event: {event_type}\ndata: {payload}\n\n"
+            payload = _serialize(event)
+            logger.debug("stream: event=%s", event_type)
+            yield f"event: {event_type}\ndata: {payload}\n\n"
 
-    logger.debug("stream: sending [DONE]")
-    yield "data: [DONE]\n\n"
+        logger.debug("stream: sending [DONE]")
+        yield "data: [DONE]\n\n"
+    finally:
+        if session_manager is not None and session_id is not None:
+            await session_manager.stop(session_id, timeout=0.0)

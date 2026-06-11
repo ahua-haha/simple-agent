@@ -147,6 +147,29 @@ class TestSessionEventQueue:
         assert cancelled.is_set()
         assert not session.is_running
 
+    @pytest.mark.asyncio
+    async def test_stop_with_zero_timeout_cancels_run_task_immediately(self, tmp_path):
+        import asyncio
+        session = Session(sessions_dir=str(tmp_path), workspace_dir=os.getcwd())
+        cancelled = asyncio.Event()
+
+        async def fake_run(user_input):
+            try:
+                while True:
+                    await asyncio.sleep(1)
+            except asyncio.CancelledError:
+                cancelled.set()
+                raise
+
+        session._runner.run = fake_run
+
+        session.run("hello")
+        await asyncio.sleep(0)
+        await session.stop(timeout=0.0)
+
+        assert cancelled.is_set()
+        assert not session.is_running
+
 
 def test_session_pause_delegates_to_runner(tmp_path):
     session = Session(sessions_dir=str(tmp_path), workspace_dir=os.getcwd())
