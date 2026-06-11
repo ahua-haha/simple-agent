@@ -890,3 +890,37 @@ class TestTreeRenderPython:
         print()
         print(out)
         assert "AgentProcess" in out
+
+
+class TestTreeRenderMarkdown:
+    """Render Markdown files with regex heading outline extraction."""
+
+    def test_render_markdown_file_tree(self, tmp_path):
+        from simple_agent.index.models import FileNode
+        from simple_agent.index.tree import WalkOptions, render_tree, walk_file
+
+        path = tmp_path / "README.md"
+        path.write_text(
+            "# Overview\n\n"
+            "Intro text.\n\n"
+            "## Install\n\n"
+            "```python\n"
+            "# Not a heading\n"
+            "```\n\n"
+            "## Usage\n",
+        )
+
+        node = walk_file(FileNode(path=str(path)), WalkOptions())
+
+        output = render_tree(node)
+        assert [child.symbol_type for child in node.children] == ["heading"]
+        assert [child.symbol_type for child in node.children[0].children] == [
+            "heading",
+            "heading",
+        ]
+        assert "README.md" in output
+        assert "Overview  # line 1 [heading]" in output
+        assert "Install  # line 5 [heading]" in output
+        assert "Usage  # line 11 [heading]" in output
+        assert "Not a heading" not in output
+        assert "paragraph" not in output
