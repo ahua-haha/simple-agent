@@ -79,7 +79,14 @@ class AgentIndex:
             name="index_tree",
             description=(
                 "Explore the repository tree and inspect repo structure. "
-                "Use this to inspect the corresponding AgentIndex memory for each entry."
+                "This tree command can show directories in a tree structure, "
+                "list symbols from source code files in a tree structure, and "
+                "display markdown file outlines in a tree structure. Most "
+                "importantly, use this to inspect the corresponding AgentIndex "
+                "memory description for each entry, generated from previous tasks. "
+                "Use this when you need to explore the repo quickly, inspect "
+                "existing memory, search the structure, and locate the files, "
+                "symbols, or markdown sections relevant to the current task."
             ),
             parameters={
                 "type": "object",
@@ -95,7 +102,7 @@ class AgentIndex:
                     "entry_limit": {
                         "type": "integer",
                         "description": (
-                            "Optional maximum number of tree entries to render. "
+                            "Optional maximum number of tree entries to render. Defaults to 36. "
                             "If exceeded, render depth is reduced until the entry count fits."
                         ),
                     },
@@ -334,7 +341,7 @@ class AgentIndex:
         self,
         path: str = "",
         depth: int | None = None,
-        entry_limit: int | None = 48,
+        entry_limit: int | None = 36,
     ) -> str:
         """Render the index as a tree with # descriptions.
 

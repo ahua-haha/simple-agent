@@ -69,11 +69,15 @@ Task view to compact:
 
 USER_INDEX_MEMORY_INSTRUCTION_TEMPLATE = """\
 Runtime instruction for index memory upsert phase:
-- Use AgentIndex tools to write durable memory for the completed task before final compaction replacement.
-- Review the task view and compact context, then call index_upsert for useful repository entries.
+- Review the finished task.
+- First call index_tree to inspect the existing index memory and repository tree context for the task scope.
+- Based on the task context, update the index memory with concise facts that will help future runs understand the repository.
+- Only update entries inside this task scope. Do not update files, directories, or symbols outside the finished task's scope.
+- If you update an entry, make sure the memory is synced with the current repository content; inspect the current content first when needed.
+- Do not add descriptions for every visible tree entry. Choose only the most significant entries touched or clarified by this task.
+- Omit entries whose purpose can be easily inferred from their name.
 - Each upserted description should be short, factual, and say what the entry does.
-- Use index_tree if you need to inspect existing memory or repository tree context.
-- When useful memory is written, respond without tool calls to finish this phase.
+- When useful memory is written, or no significant in-scope memory is needed, respond without tool calls to finish this phase.
 
 Task view:
 {{ task_view }}
