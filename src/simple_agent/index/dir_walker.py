@@ -11,6 +11,7 @@ from simple_agent.index.tree import WalkOptions, walk_file
 def walk_dir(root: DirectoryNode, options: WalkOptions) -> DirectoryNode:
     """Walk a directory node and return *root* with children populated."""
     dir_path = Path(root.path)
+    root = DirectoryNode(path=root.path, name=dir_path.name or str(dir_path))
     if options.should_skip(dir_path) or options.at_depth_limit():
         return root
 
@@ -24,10 +25,10 @@ def walk_dir(root: DirectoryNode, options: WalkOptions) -> DirectoryNode:
             continue
         child_options = options.child()
         if entry.is_dir():
-            child = DirectoryNode(path=str(entry), name=entry.name)
+            child = DirectoryNode(path=str(entry))
             root.children.append(walk_dir(child, child_options))
         elif entry.is_file():
-            child = FileNode(path=str(entry), name=entry.name)
+            child = FileNode(path=str(entry))
             root.children.append(walk_file(child, child_options))
 
     return root
