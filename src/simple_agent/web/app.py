@@ -1,6 +1,10 @@
 """FastAPI app for browsing the task tree and serving the session API."""
 
+import asyncio
+import logging
 import os
+import signal
+from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
 
@@ -14,7 +18,28 @@ def create_app(
 ) -> FastAPI:
     session_manager = SessionManager(sessions_dir=sessions_dir)
 
-    app = FastAPI(title="Simple Agent Web")
+    @asynccontextmanager
+    async def lifespan(app: FastAPI):
+        loop = asyncio.get_running_loop()
+        signals = (signal.SIGINT, signal.SIGTERM)
+        previous_handlers = {sig: signal.getsignal(sig) for sig in signals}
+
+        def handle_shutdown(sig: signal.Signals) -> None:
+            session_manager.stop_running()
+            previous_handler = previous_handlers.get(sig)
+            if callable(previous_handler):
+                previous_handler(sig, None)
+
+        for sig in signals:
+            loop.add_signal_handler(sig, handle_shutdown, sig)
+        try:
+            yield
+        finally:
+            for sig in signals:
+                loop.remove_signal_handler(sig)
+                signal.signal(sig, previous_handlers[sig])
+
+    app = FastAPI(title="Simple Agent Web", lifespan=lifespan)
 
     app.state.workspace_dir = workspace_dir or os.getcwd()
     app.state.session_manager = session_manager
@@ -28,8 +53,6 @@ def create_app(
 def main() -> None:
     """Entry point for ``python -m simple_agent.web.app``."""
     import argparse
-    import logging
-
     import uvicorn
 
     logging.basicConfig(

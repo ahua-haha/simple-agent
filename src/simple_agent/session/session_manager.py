@@ -132,8 +132,14 @@ class SessionManager:
         if session is not None:
             session.pause()
 
-    async def stop(self, session_id: str, *, timeout: float = 5.0) -> None:
-        """Request one in-memory session to stop and wait for it."""
+    def stop(self, session_id: str) -> None:
+        """Request one in-memory session to stop at the next safe point."""
         session = self._sessions.get(session_id)
         if session is not None:
-            await session.stop(timeout=timeout)
+            session.pause()
+
+    def stop_running(self) -> None:
+        """Request every in-memory running session to stop at the next safe point."""
+        for session in self._sessions.values():
+            if session.is_running:
+                session.pause()

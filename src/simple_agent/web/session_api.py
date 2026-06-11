@@ -152,4 +152,4 @@ async def _stream_session_events(
         yield "data: [DONE]\n\n"
     finally:
         if session_manager is not None and session_id is not None:
-            await session_manager.stop(session_id, timeout=0.0)
+            session_manager.stop(session_id)

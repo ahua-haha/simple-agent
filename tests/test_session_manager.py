@@ -109,6 +109,28 @@ class TestSessionManagerRunPause:
         # Should not raise
         sm.pause(s.id)
 
+    def test_stop_running_stops_only_running_sessions(self, tmp_path):
+        sm = SessionManager(sessions_dir=str(tmp_path))
+        stopped: list[str] = []
+
+        class FakeSession:
+            def __init__(self, session_id: str, *, running: bool):
+                self.id = session_id
+                self.is_running = running
+
+            def pause(self):
+                stopped.append(self.id)
+
+        sm._sessions = {
+            "running": FakeSession("running", running=True),
+            "idle": FakeSession("idle", running=False),
+        }
+
+        sm.stop_running()
+
+        assert stopped == ["running"]
+
+
 class TestAPIEndpoints:
     """Session API endpoints (via TestClient)."""
 
@@ -206,11 +228,9 @@ async def test_stream_session_events_stops_session_manager_when_cancelled():
 
     class FakeSessionManager:
         session_id = None
-        timeout = None
 
-        async def stop(self, session_id, *, timeout):
+        def stop(self, session_id):
             self.session_id = session_id
-            self.timeout = timeout
             closed.set()
 
     session_manager = FakeSessionManager()
@@ -229,7 +249,6 @@ async def test_stream_session_events_stops_session_manager_when_cancelled():
 
     assert closed.is_set()
     assert session_manager.session_id == "session_a"
-    assert session_manager.timeout == 0.0
 
 
 class TestSessionRunStream:
