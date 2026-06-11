@@ -1128,7 +1128,7 @@ async def test_user_task_lifecycle_run_compact_one_turn_records_tool_call_log_id
 
 
 @pytest.mark.asyncio
-async def test_user_task_lifecycle_run_compact_one_turn_finishes_and_replaces_messages(tmp_path):
+async def test_user_task_lifecycle_compact_finished_replaces_messages(tmp_path):
     db = _make_db(tmp_path)
     user_task = CommonTask(
         id=1,
@@ -1182,6 +1182,19 @@ async def test_user_task_lifecycle_run_compact_one_turn_finishes_and_replaces_me
     result = await lifecycle.run_compact_one_turn(agent_process=agent_process)
 
     assert result is lifecycle._session_state
+    assert user_task.status == "compact_finished"
+    assert user_task.end_message_id is None
+    assert lifecycle._session_state.next_task is user_task
+    assert lifecycle._session_state.next_task_id_to_run == 1
+    assert [entry.id for entry in lifecycle._session_state.messages] == [1, 2, 3]
+    assert [entry.message.role for entry in lifecycle._session_state.messages] == ["user", "assistant", "assistant"]
+    persisted_messages = db.list_runner_messages("session_a")
+    assert [message.role for message in persisted_messages] == ["user", "assistant", "assistant"]
+
+    result = lifecycle.compact_finished_task()
+
+    assert result is lifecycle._session_state
+    assert user_task.status == "done"
     assert lifecycle._session_state.next_task is None
     assert lifecycle._session_state.next_task_id_to_run == 99
     assert [entry.id for entry in lifecycle._session_state.messages] == [4, 5, 6]

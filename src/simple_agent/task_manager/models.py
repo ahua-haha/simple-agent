@@ -9,7 +9,7 @@ from typing import Any, Literal
 from pydantic import BaseModel, Field
 
 TaskKind = Literal["user_task", "tool_call", "repo_memory"]
-TaskStatus = Literal["active", "done", "error"]
+TaskStatus = Literal["active", "done", "error", "compact_finished"]
 
 
 class BaseTask(BaseModel):

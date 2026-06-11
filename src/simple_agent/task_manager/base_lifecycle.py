@@ -89,9 +89,9 @@ Runtime steering instructions may arrive in a user message wrapped with
 instruction for the current turn, without repeating the tag in your response.
 """
 
-USER_TASK_COMPACT_SYSTEM_PROMPT = """Compact the finished user task into one compacted user task.
-Use only the compact tools. Set the compacted user task result, record useful
-tool-call log IDs, then finish the compacted user task."""
+USER_TASK_COMPACT_SYSTEM_PROMPT = """Compact the finished user task.
+Use only the compact tools to record useful tool-call log IDs. When all useful
+tool-call logs are recorded, respond without tool calls to finish compaction."""
 
 
 @dataclass

@@ -58,9 +58,9 @@ You can create these following sub tasks.
 
 USER_COMPACTION_INSTRUCTION_TEMPLATE = """\
 Runtime instruction for compacting phase:
-- Complete the compacted user task information first: define the task result.
-- Record every must-include tool call based on the compacted task result to avoid context loss.
-- Use only compact tools: set the compacted user task result, record must-include tool calls, then finish it.
+- Review the task view and record every must-include tool-call log id needed to preserve context.
+- Use only compact tools while recording useful tool-call log ids.
+- When all useful tool-call logs are recorded, respond without tool calls to finish compaction.
 
 Task view to compact:
 {{ task_view }}
@@ -125,6 +125,9 @@ class CommonTaskLifecycle(BaseTaskLifecycle):
         agent_process: AgentProcess,
         cancel_event: asyncio.Event | None = None,
     ) -> SessionState:
+        if self.task.status == "compact_finished":
+            return self.compact_finished_task()
+
         if self.task.status == "done":
             return await self.run_compact_one_turn(
                 agent_process=agent_process,
@@ -168,7 +171,6 @@ class CommonTaskLifecycle(BaseTaskLifecycle):
         tool_call_tasks = turn_result.tool_call_tasks
         has_tool_call = turn_result.has_tool_call
         new_messages = [assistant_entry, *tool_result_entries]
-        turn_end_message_id = new_messages[-1].id
         self._session_state.append_messages(new_messages)
 
         task.children.extend(tool_call_tasks)
@@ -268,29 +270,25 @@ class CommonTaskLifecycle(BaseTaskLifecycle):
             cancel_event=cancel_event,
         )
         new_messages = [turn_result.assistant_entry, *turn_result.tool_result_entries]
+        self._session_state.append_messages(new_messages)
 
         task.children.extend(turn_result.tool_call_tasks)
         if turn_result.tool_call_tasks:
             task.touch()
 
-        replacement_entries: list[MessageEntry] = []
         if turn_result.has_tool_call:
-            self._session_state.append_messages(new_messages)
             self.set_next_task(task.id, task)
         else:
-            if task.start_message_id is None:
-                raise TaskLifecycleError("Compact task is missing start message id")
-            end_message_id = task.end_message_id or self._session_state.messages[-1].id
-            compacted_messages = self.format_messages_from_user_task(task)
-            replacement_entries = self._session_state.replace_message_range(
-                start_message_id=task.start_message_id,
-                end_message_id=end_message_id,
-                replacement_messages=compacted_messages,
-            )
-            self.set_next_task(task.parent_id, None)
+            task.status = "compact_finished"
+            task.touch()
+            self.set_next_task(task.id, task)
 
         tasks_to_sync: list[ManagedTask] = [task, *task.children]
         with self._session_state.create_database_session() as session:
+            self._session_state.append_messages_to_database(
+                messages=new_messages,
+                session=session,
+            )
             self._session_state.append_tool_calls_to_database(
                 tool_calls=turn_result.tool_call_records,
                 session=session,
@@ -299,18 +297,36 @@ class CommonTaskLifecycle(BaseTaskLifecycle):
                 tasks=tasks_to_sync,
                 session=session,
             )
-            if replacement_entries:
-                self._session_state.replace_message_range_in_database(
-                    start_message_id=task.start_message_id,
-                    end_message_id=end_message_id,
-                    replacement_messages=replacement_entries,
-                    session=session,
-                )
-            else:
-                self._session_state.append_messages_to_database(
-                    messages=new_messages,
-                    session=session,
-                )
+            session.commit()
+        return self._session_state
+
+    def compact_finished_task(self) -> SessionState:
+        task = self.task
+        if task.start_message_id is None:
+            raise TaskLifecycleError("Compact task is missing start message id")
+        end_message_id = self._session_state.messages[-1].id
+
+        compacted_messages = self.format_messages_from_user_task(task)
+        replacement_entries = self._session_state.replace_message_range(
+            start_message_id=task.start_message_id,
+            end_message_id=end_message_id,
+            replacement_messages=compacted_messages,
+        )
+        task.status = "done"
+        task.touch()
+        self.set_next_task(task.parent_id, None)
+
+        with self._session_state.create_database_session() as session:
+            self._session_state.replace_message_range_in_database(
+                start_message_id=task.start_message_id,
+                end_message_id=end_message_id,
+                replacement_messages=replacement_entries,
+                session=session,
+            )
+            self._session_state.append_tasks_to_database(
+                tasks=[task, *task.children],
+                session=session,
+            )
             session.commit()
         return self._session_state
 
