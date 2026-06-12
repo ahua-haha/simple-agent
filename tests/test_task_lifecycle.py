@@ -114,13 +114,10 @@ def test_user_task_instruction_asks_for_complexity_check_when_tool_count_is_smal
     assert instruction.endswith("</system-instruction>")
     assert "## Current task process information" not in instruction
     assert "You can create these following sub tasks." in instruction
-    assert "## Reminder instruction" in instruction
     assert "Focus on current task: Build feature" in instruction
     assert "consider decompose complex task and create sub task" in instruction
     assert "## Common Task" in instruction
-    assert "## Repo Memory Task" in instruction
-    assert "Early in the task, create a sub task" in instruction
-    assert "Always finish the current task as soon as the requested work is complete" in instruction
+    assert "## Reminder instruction" not in instruction
 
 
 def test_user_task_instruction_recommends_sub_task_mid_run():
@@ -130,11 +127,11 @@ def test_user_task_instruction_recommends_sub_task_mid_run():
 
     instruction = lifecycle.instruction_text()
 
-    assert "Mid run, prefer creating a sub task" in instruction
-    assert "Always finish the current task as soon as the requested work is complete" in instruction
+    assert "## Reminder instruction" not in instruction
+    assert "Mid run, prefer creating a sub task" not in instruction
 
 
-def test_user_task_instruction_requires_next_task_after_six_tool_calls():
+def test_user_task_instruction_does_not_force_next_task_after_six_tool_calls():
     task = CommonTask(title="Build feature")
     task.children = [ToolCallTask(tool_call_log_id=index) for index in range(6)]
     lifecycle = _user_lifecycle(task)
@@ -144,11 +141,10 @@ def test_user_task_instruction_requires_next_task_after_six_tool_calls():
     assert "<system-instruction>" in instruction
     assert "## Current task process information" not in instruction
     assert "You can create these following sub tasks." in instruction
-    assert "## Reminder instruction" in instruction
     assert "Focus on current task: Build feature" in instruction
     assert "## Common Task" in instruction
-    assert "Create the next sub task now before continuing more work" in instruction
-    assert "Always finish the current task as soon as the requested work is complete" in instruction
+    assert "## Reminder instruction" not in instruction
+    assert "Create the next sub task now before continuing more work" not in instruction
 
 
 def test_user_task_instruction_renders_task_tree_after_ten_tool_calls():
@@ -350,6 +346,7 @@ def test_base_lifecycle_create_next_task_supports_common_task():
     assert task.parent_id == parent.id
     assert task.start_message_id is None
     assert lifecycle.created_task is task
+    assert lifecycle.task_to_start is None
 
 
 @pytest.mark.asyncio
@@ -372,10 +369,53 @@ async def test_base_lifecycle_create_next_task_tool_mutates_session_state():
     assert next_task.id is None
     assert next_task.parent_id == task.id
     assert next_task.start_message_id is None
+    assert lifecycle.task_to_start is None
     assert task.children == []
     assert session_state.next_task is task
     assert session_state.next_task_id_to_run == task.id
     assert result.content[0].text == "Created next task: user_task Inspect files"
+
+
+@pytest.mark.asyncio
+async def test_base_lifecycle_start_next_task_tool_sets_task_to_start():
+    parent = CommonTask(id=1, title="Build feature")
+    child = CommonTask(id=2, parent_id=1, title="Inspect files")
+    parent.children = [child]
+    session_state = SessionState(
+        workspace_dir=".",
+        messages=[],
+        next_task=parent,
+        next_task_id_to_run=parent.id,
+        next_task_id_to_allocate=3,
+    )
+    lifecycle = _user_lifecycle(parent, session_state=session_state)
+    tool = lifecycle.build_start_next_task_tool()
+
+    result = await tool.execute("call_1", {"task_id": 2})
+
+    assert lifecycle.task_to_start is child
+    assert session_state.next_task is parent
+    assert session_state.next_task_id_to_run == parent.id
+    assert result.content[0].text == "Start next task: user_task 2"
+
+
+def test_base_lifecycle_start_next_task_can_select_created_task_with_id():
+    parent = CommonTask(id=1, title="Build feature")
+    session_state = SessionState(
+        workspace_dir=".",
+        messages=[],
+        next_task=parent,
+        next_task_id_to_run=parent.id,
+        next_task_id_to_allocate=3,
+    )
+    lifecycle = _user_lifecycle(parent, session_state=session_state)
+    child = CommonTask(id=2, parent_id=1, title="Inspect files")
+    lifecycle.created_task = child
+
+    result = lifecycle.start_next_task(task_id=2)
+
+    assert result is child
+    assert lifecycle.task_to_start is child
 
 
 def test_task_models_do_not_own_runtime_message_id():

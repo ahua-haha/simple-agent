@@ -331,17 +331,20 @@ class BaseTaskLifecycle:
     _session_state: SessionState
     task: ManagedTask | None
     created_task: ManagedTask | None
+    task_to_start: ManagedTask | None
     finished_task: ManagedTask | None
 
     def clear_data(self) -> None:
         self.task = None
         self.created_task = None
+        self.task_to_start = None
         self.finished_task = None
 
     def set_data(self, session_state: SessionState) -> None:
         self._session_state = session_state
         self.task = None
         self.created_task = None
+        self.task_to_start = None
         self.finished_task = None
         raise NotImplementedError(f"{type(self).__name__}.set_data is not implemented")
 
@@ -359,8 +362,8 @@ class BaseTaskLifecycle:
 
         Mutates only allocation counters on SessionState while building message
         entries, tool-call log records, and tool-call task records. Executed
-        tools may mutate lifecycle turn indicators such as created_task or
-        finished_task, but tool handlers must not allocate task ids, stamp
+        tools may mutate lifecycle turn indicators such as created_task,
+        task_to_start, or finished_task, but tool handlers must not allocate task ids, stamp
         message metadata, append tasks, route next_task, or sync database data.
         Those metadata and persistence changes belong in the caller's post-turn
         handler so ordering stays deterministic.
@@ -466,6 +469,29 @@ class BaseTaskLifecycle:
         tool.execute = execute
         return tool
 
+    def build_start_next_task_tool(self) -> AgentTool:
+        tool = AgentTool(
+            name="start_next_task",
+            description="Start an existing task by id and make it the next task to run.",
+            parameters={
+                "type": "object",
+                "properties": {
+                    "task_id": {
+                        "type": "integer",
+                        "description": "The id of the task to start.",
+                    },
+                },
+                "required": ["task_id"],
+            },
+        )
+
+        async def execute(tool_call_id, params, cancel_event=None, on_update=None):
+            task = self.start_next_task(task_id=params["task_id"])
+            return AgentToolResult(content=[TextContent(text=f"Start next task: {task.kind} {task.id}")])
+
+        tool.execute = execute
+        return tool
+
     def create_next_task(
         self,
         *,
@@ -501,6 +527,11 @@ class BaseTaskLifecycle:
         self.created_task = task
         return task
 
+    def start_next_task(self, *, task_id: int) -> ManagedTask:
+        task = self._find_task_to_start(task_id=task_id)
+        self.task_to_start = task
+        return task
+
     def set_next_task(self, task_id: int | None, task: ManagedTask | None) -> None:
         self._session_state.set_next_task(task_id, task)
 
@@ -515,6 +546,7 @@ class BaseTaskLifecycle:
 
     def clear_turn_indicators(self) -> None:
         self.created_task = None
+        self.task_to_start = None
         self.finished_task = None
 
     def _validate_enabled_task_kinds(
@@ -534,6 +566,16 @@ class BaseTaskLifecycle:
         if parent.id is None:
             raise TaskLifecycleError("Current task must have an id before creating a next task")
         return parent
+
+    def _find_task_to_start(self, *, task_id: int) -> ManagedTask:
+        created_task = self.created_task
+        if created_task is not None and created_task.id == task_id:
+            return created_task
+        parent = self._require_task()
+        for child in parent.children:
+            if child.id == task_id:
+                return child
+        raise TaskLifecycleError(f"Task does not exist under current task: {task_id}")
 
     async def run(
         self,
