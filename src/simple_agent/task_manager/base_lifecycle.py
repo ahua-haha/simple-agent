@@ -330,20 +330,20 @@ class AgentTurnResult:
 class BaseTaskLifecycle:
     _session_state: SessionState
     task: ManagedTask | None
-    created_task: ManagedTask | None
+    created_task: list[ManagedTask]
     task_to_start: ManagedTask | None
     finished_task: ManagedTask | None
 
     def clear_data(self) -> None:
         self.task = None
-        self.created_task = None
+        self.created_task = []
         self.task_to_start = None
         self.finished_task = None
 
     def set_data(self, session_state: SessionState) -> None:
         self._session_state = session_state
         self.task = None
-        self.created_task = None
+        self.created_task = []
         self.task_to_start = None
         self.finished_task = None
         raise NotImplementedError(f"{type(self).__name__}.set_data is not implemented")
@@ -524,7 +524,7 @@ class BaseTaskLifecycle:
         else:
             raise TaskLifecycleError(f"Unsupported next task kind: {kind}")
 
-        self.created_task = task
+        self.created_task.append(task)
         return task
 
     def start_next_task(self, *, task_id: int) -> ManagedTask:
@@ -545,7 +545,7 @@ class BaseTaskLifecycle:
         return task
 
     def clear_turn_indicators(self) -> None:
-        self.created_task = None
+        self.created_task = []
         self.task_to_start = None
         self.finished_task = None
 
@@ -568,9 +568,9 @@ class BaseTaskLifecycle:
         return parent
 
     def _find_task_to_start(self, *, task_id: int) -> ManagedTask:
-        created_task = self.created_task
-        if created_task is not None and created_task.id == task_id:
-            return created_task
+        for created_task in self.created_task:
+            if created_task.id == task_id:
+                return created_task
         parent = self._require_task()
         for child in parent.children:
             if child.id == task_id:

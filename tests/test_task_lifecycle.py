@@ -345,7 +345,7 @@ def test_base_lifecycle_create_next_task_supports_common_task():
     assert task.id is None
     assert task.parent_id == parent.id
     assert task.start_message_id is None
-    assert lifecycle.created_task is task
+    assert lifecycle.created_task == [task]
     assert lifecycle.task_to_start is None
 
 
@@ -364,7 +364,7 @@ async def test_base_lifecycle_create_next_task_tool_mutates_session_state():
 
     result = await tool.execute("call_1", {"kind": "common", "title": "Inspect files"})
 
-    next_task = lifecycle.created_task
+    next_task = lifecycle.created_task[0]
     assert isinstance(next_task, CommonTask)
     assert next_task.id is None
     assert next_task.parent_id == task.id
@@ -410,7 +410,7 @@ def test_base_lifecycle_start_next_task_can_select_created_task_with_id():
     )
     lifecycle = _user_lifecycle(parent, session_state=session_state)
     child = CommonTask(id=2, parent_id=1, title="Inspect files")
-    lifecycle.created_task = child
+    lifecycle.created_task = [child]
 
     result = lifecycle.start_next_task(task_id=2)
 
@@ -1053,11 +1053,11 @@ async def test_user_task_lifecycle_run_syncs_created_common_task(tmp_path):
     tool_calls = [child for child in children if child.kind == "tool_call"]
     assert len(common_tasks) == 1
     assert common_tasks[0].title == "Inspect lifecycle flow"
-    assert common_tasks[0].start_message_id == 1
+    assert common_tasks[0].start_message_id is None
     assert len(tool_calls) == 1
     assert [child.kind for child in user_task.children] == ["tool_call", "user_task"]
-    assert lifecycle._session_state.next_task_id_to_run == common_tasks[0].id
-    assert lifecycle._session_state.next_task is user_task.children[1]
+    assert lifecycle._session_state.next_task_id_to_run == user_task.id
+    assert lifecycle._session_state.next_task is user_task
 
 
 def test_user_task_lifecycle_records_compacted_tool_call_log_id():

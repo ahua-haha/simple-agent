@@ -47,7 +47,7 @@ class RepoMemoryLifecycle(BaseTaskLifecycle):
 
     def set_data(self, session_state: SessionState) -> None:
         self._session_state = session_state
-        self.created_task = None
+        self.created_task = []
         self.task_to_start = None
         self.finished_task = None
         task = self._session_state.next_task
