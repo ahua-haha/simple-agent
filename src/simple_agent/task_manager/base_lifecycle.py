@@ -43,10 +43,11 @@ When to use:
 - Use it when the next unit of work may need its own decomposition, tool calls, finish handling, and compaction.
 - Keep the common task focused on one meaningful sub-goal, not the whole user request.
 
-How to create:
+How to create and start:
 - Call `create_next_task(kind="common", title="<focused subtask goal>", metadata={})`.
 - Put the concrete subtask goal in the title.
 - Omit metadata or pass an empty object.
+- The tool returns the allocated task id. Call `start_next_task(task_id=<returned id>)` to begin execution.
 - Example: {"kind":"common","title":"Summarize session runner lifecycle flow","metadata":{}}
 
 {% endif %}
@@ -57,17 +58,19 @@ When to use:
 - Use it after exploring or changing repository structure when the useful result should be saved for future runs.
 - Use it when the task is about recording concise descriptions of files, modules, or architecture.
 
-How to create:
+How to create and start:
 - Call `create_next_task(kind="repo_memory", title="<memory writing goal>", metadata={...})`.
 - Metadata must include `index_db_path`.
 - Metadata may include `repo_path`; omit it when the current repository root is correct.
 - Metadata shape: {"repo_path":"<repo path>","index_db_path":"<index database path>"}.
+- The tool returns the allocated task id. Call `start_next_task(task_id=<returned id>)` to begin execution.
 - Example: {"kind":"repo_memory","title":"Write memory for task lifecycle design","metadata":{"repo_path":".","index_db_path":".agent-index.db"}}
 
 {% endif %}
 ## Task Creation Rules
 - Do not invent metadata keys unless the selected task kind asks for them.
 - Keep the created task focused on the next unit of work, not the whole user request.
+- Always call `start_next_task` with the id returned by `create_next_task` to begin the new task.
 """
 
 
@@ -461,7 +464,7 @@ class BaseTaskLifecycle:
                 metadata=params.get("metadata"),
                 enabled_task_kinds=enabled_kinds,
             )
-            return AgentToolResult(content=[TextContent(text=f"Created next task: {task.kind} {task.title}")])
+            return AgentToolResult(content=[TextContent(text=f"Created next task: id={task.id} kind={task.kind} title={task.title}")])
 
         tool.execute = execute
         return tool

@@ -373,14 +373,14 @@ async def test_base_lifecycle_create_next_task_tool_mutates_session_state():
     assert task.children == []
     assert session_state.next_task is task
     assert session_state.next_task_id_to_run == task.id
-    assert result.content[0].text == "Created next task: user_task Inspect files"
+    assert result.content[0].text == "Created next task: id=2 kind=user_task title=Inspect files"
 
 
 @pytest.mark.asyncio
 async def test_base_lifecycle_start_next_task_tool_sets_task_to_start():
     parent = CommonTask(id=1, title="Build feature")
     child = CommonTask(id=2, parent_id=1, title="Inspect files")
-    parent.children = [child]
+    parent.pending_tasks = [child]
     session_state = SessionState(
         workspace_dir=".",
         messages=[],
@@ -837,7 +837,7 @@ async def test_user_task_lifecycle_run_calls_llm_appends_message_and_returns_sta
 
     assert agent_process.llm_calls[0]["system_prompt"] == USER_TASK_SYSTEM_PROMPT
     tool_names = [tool.name for tool in agent_process.llm_calls[0]["tools"]]
-    assert tool_names[:2] == ["create_next_task", "finish_common_task"]
+    assert tool_names[:3] == ["create_next_task", "start_next_task", "finish_common_task"]
     assert "read" in tool_names
     assert agent_process.llm_calls[0]["messages"][:-1] == [seed.message]
     assert "<system-instruction>" in agent_process.llm_calls[0]["messages"][-1].content[0].text
@@ -961,7 +961,7 @@ async def test_user_task_lifecycle_run_executes_tools_and_returns_current_task(t
     assert agent_process.llm_calls[0]["system_prompt"] == USER_TASK_SYSTEM_PROMPT
     assert agent_process.tool_calls[0]["assistant_message"] is assistant_message
     tool_names = [tool.name for tool in agent_process.tool_calls[0]["tools"]]
-    assert tool_names[:2] == ["create_next_task", "finish_common_task"]
+    assert tool_names[:3] == ["create_next_task", "start_next_task", "finish_common_task"]
     assert "read" in tool_names
     assert result is lifecycle._session_state
     assert lifecycle._session_state.messages == [
