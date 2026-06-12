@@ -366,12 +366,12 @@ class AgentIndex:
             render_depth = max(render_depth, 1)
         output = render_tree(root, depth=render_depth)
         if truncated:
-            info = (
-                f"Info: current tree entries exceed entry_limit={entry_limit}; "
+            hint = (
+                f"Hint: current tree entries exceed entry_limit={entry_limit}; "
                 f"rendered with depth={render_depth}. "
                 "You can go deeper in the tree by using a child path or a larger entry_limit."
             )
-            return f"{info}\n{output}"
+            return f"{output}{hint}\n"
         return output
 
 

@@ -41,17 +41,6 @@ You can create these following sub tasks.
 {% if task_instruction %}
 {{ task_instruction }}
 {% endif %}
-
-## Reminder instruction
-{% if is_early_run %}
-- Early in the task, create a sub task before doing broad work.
-{% elif is_mid_run %}
-- Mid run, prefer creating a sub task for the next coherent unit of work.
-{% else %}
-- Create the next sub task now before continuing more work.
-{% endif %}
-- Keep each created task small, atomic, and directly tied to finishing the current task.
-- Always finish the current task as soon as the requested work is complete.
 </system-instruction>
 """
 
@@ -115,10 +104,8 @@ class CommonTaskLifecycle(BaseTaskLifecycle):
             task_info=task_info,
             task_instruction=task_instruction_text(
                 has_common_task=True,
-                has_repo_memory_task=True,
+                has_repo_memory_task=False,
             ),
-            is_early_run=tool_call_count == 0,
-            is_mid_run=0 < tool_call_count <= 5,
         )
 
     def finish_task(self, *, result: str | None = None) -> CommonTask:
@@ -130,7 +117,7 @@ class CommonTaskLifecycle(BaseTaskLifecycle):
 
     def create_tools(self) -> list[AgentTool]:
         return [
-            *self.create_next_task_tools(enabled_task_kinds=["common", "repo_memory"]),
+            *self.create_next_task_tools(enabled_task_kinds=["common"]),
             self.create_finish_common_task_tool(),
             self._agent_index.create_tree_tool(),
             *create_all_coding_tools(self._session_state.workspace_dir),

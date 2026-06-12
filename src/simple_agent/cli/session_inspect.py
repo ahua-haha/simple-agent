@@ -50,6 +50,14 @@ class InspectState:
 
 def main() -> None:
     args = _parse_args()
+    if args.command:
+        run_direct_command(
+            args.command,
+            log_dir=Path(args.log_dir),
+            sessions_dir=Path(args.sessions_dir),
+            session_selector=args.session,
+        )
+        return
     run_repl(log_dir=Path(args.log_dir), sessions_dir=Path(args.sessions_dir))
 
 
@@ -57,6 +65,8 @@ def _parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Inspect simple-agent session data")
     parser.add_argument("--log-dir", default="./logs/session_runs", help="Directory containing session JSONL logs")
     parser.add_argument("--sessions-dir", default="./sessions", help="Directory containing session DB files")
+    parser.add_argument("--session", help="Session id or session list number for direct commands")
+    parser.add_argument("command", nargs=argparse.REMAINDER, help="Direct command to run instead of the REPL")
     return parser.parse_args()
 
 
@@ -92,6 +102,42 @@ def run_repl(*, log_dir: Path, sessions_dir: Path) -> None:
         if command in {"quit", "exit", "q"}:
             return
         handle_repl_command(command, state)
+
+
+def run_direct_command(
+    command: list[str],
+    *,
+    log_dir: Path,
+    sessions_dir: Path,
+    session_selector: str | None = None,
+) -> None:
+    state = InspectState(log_dir=log_dir, sessions_dir=sessions_dir)
+    state.sessions = discover_sessions(log_dir=log_dir, sessions_dir=sessions_dir)
+    if session_selector is not None:
+        if not select_session([session_selector], state, announce=False):
+            return
+    elif state.sessions:
+        state.selected = state.sessions[0]
+
+    name = command[0]
+    args = command[1:]
+    if name in {"help", "?"}:
+        print_repl_help()
+    elif name in {"sessions", "session"}:
+        print_sessions(state)
+    elif name == "use":
+        select_session(args, state)
+    elif name == "tasks":
+        print_selected_task_tree(args, state)
+    elif name == "index":
+        handle_index_command(args, state)
+    elif name in {"list", "ls", "show", "move", "tool"}:
+        if not ensure_playback_loaded(state):
+            return
+        handle_playback_command(" ".join(command), state.playback_moves, state.playback_state, state.playback_context)
+    else:
+        print(f"[unknown command] {name}")
+        print_repl_help()
 
 
 def handle_repl_command(command: str, state: InspectState) -> None:
@@ -134,10 +180,10 @@ def print_sessions(state: InspectState) -> None:
         print(f"{selected}{index}. {session.session_id} [{log}, {db}]")
 
 
-def select_session(args: list[str], state: InspectState) -> None:
+def select_session(args: list[str], state: InspectState, *, announce: bool = True) -> bool:
     if not args:
         print("[error] use <session-number|session-id>")
-        return
+        return False
     selector = args[0]
     selected = None
     if selector.isdigit():
@@ -148,13 +194,15 @@ def select_session(args: list[str], state: InspectState) -> None:
         selected = next((session for session in state.sessions if session.session_id == selector), None)
     if selected is None:
         print(f"[error] session not found: {selector}")
-        return
+        return False
     state.selected = selected
     state.playback_moves = []
     state.playback_context = PlaybackContext(tool_results={})
     state.index_tasks = []
     state.selected_index_task = None
-    print(f"[selected] {state.sessions.index(selected) + 1}. {selected.session_id}")
+    if announce:
+        print(f"[selected] {state.sessions.index(selected) + 1}. {selected.session_id}")
+    return True
 
 
 def ensure_playback_loaded(state: InspectState) -> bool:
