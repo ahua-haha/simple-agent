@@ -342,10 +342,10 @@ def test_base_lifecycle_create_next_task_supports_common_task():
     )
 
     assert isinstance(task, CommonTask)
-    assert task.id is None
+    assert task.id == 2
     assert task.parent_id == parent.id
     assert task.start_message_id is None
-    assert lifecycle.created_task == [task]
+    assert parent.pending_tasks == [task]
     assert lifecycle.task_to_start is None
 
 
@@ -364,9 +364,9 @@ async def test_base_lifecycle_create_next_task_tool_mutates_session_state():
 
     result = await tool.execute("call_1", {"kind": "common", "title": "Inspect files"})
 
-    next_task = lifecycle.created_task[0]
+    next_task = task.pending_tasks[0]
     assert isinstance(next_task, CommonTask)
-    assert next_task.id is None
+    assert next_task.id == 2
     assert next_task.parent_id == task.id
     assert next_task.start_message_id is None
     assert lifecycle.task_to_start is None
@@ -399,7 +399,7 @@ async def test_base_lifecycle_start_next_task_tool_sets_task_to_start():
     assert result.content[0].text == "Start next task: user_task 2"
 
 
-def test_base_lifecycle_start_next_task_can_select_created_task_with_id():
+def test_base_lifecycle_start_next_task_can_select_pending_task_with_id():
     parent = CommonTask(id=1, title="Build feature")
     session_state = SessionState(
         workspace_dir=".",
@@ -410,7 +410,7 @@ def test_base_lifecycle_start_next_task_can_select_created_task_with_id():
     )
     lifecycle = _user_lifecycle(parent, session_state=session_state)
     child = CommonTask(id=2, parent_id=1, title="Inspect files")
-    lifecycle.created_task = [child]
+    parent.pending_tasks = [child]
 
     result = lifecycle.start_next_task(task_id=2)
 
@@ -474,9 +474,9 @@ def test_user_task_lifecycle_uses_owned_allocator():
         parent_task=user_task,
     )
 
-    assert next_task.id is None
+    assert next_task.id == 10
     assert next_task.start_message_id is None
-    assert tool_call_tasks[0].id == 10
+    assert tool_call_tasks[0].id == 11
     assert tool_call_tasks[0].parent_id == user_task.id
 
 
@@ -526,8 +526,9 @@ def test_lifecycle_tracks_next_task_transition():
 
     assert user_lifecycle._session_state.next_task_id_to_run == user_task.id
     assert user_lifecycle._session_state.next_task is user_task
-    assert next_task.id is None
+    assert next_task.id == 2
     assert next_task.parent_id == user_task.id
+    assert user_task.pending_tasks == [next_task]
 
 
 def test_lifecycle_allocates_task_id_from_session_state_context():
@@ -537,8 +538,8 @@ def test_lifecycle_allocates_task_id_from_session_state_context():
 
     next_task = lifecycle.create_next_task(kind="common", title="Inspect files", enabled_task_kinds=["common"])
 
-    assert next_task.id is None
-    assert session_state.next_task_id_to_allocate == 7
+    assert next_task.id == 7
+    assert session_state.next_task_id_to_allocate == 8
 
 
 def test_session_state_creates_tool_call_records_and_tasks():
@@ -1051,11 +1052,13 @@ async def test_user_task_lifecycle_run_syncs_created_common_task(tmp_path):
     children = db.list_managed_task_children(user_task.id)
     common_tasks = [child for child in children if isinstance(child, CommonTask)]
     tool_calls = [child for child in children if child.kind == "tool_call"]
-    assert len(common_tasks) == 1
-    assert common_tasks[0].title == "Inspect lifecycle flow"
-    assert common_tasks[0].start_message_id is None
+    assert len(common_tasks) == 0  # stays in pending_tasks until start_next_task
     assert len(tool_calls) == 1
-    assert [child.kind for child in user_task.children] == ["tool_call", "user_task"]
+    assert [child.kind for child in user_task.children] == ["tool_call"]
+    pending_kinds = [t.kind for t in user_task.pending_tasks]
+    assert "user_task" in pending_kinds
+    assert user_task.pending_tasks[0].title == "Inspect lifecycle flow"
+    assert user_task.pending_tasks[0].start_message_id is None
     assert lifecycle._session_state.next_task_id_to_run == user_task.id
     assert lifecycle._session_state.next_task is user_task
 

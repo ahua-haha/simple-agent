@@ -79,7 +79,6 @@ class CommonTaskLifecycle(BaseTaskLifecycle):
 
     def set_data(self, session_state: SessionState) -> None:
         self._session_state = session_state
-        self.created_task = []
         self.task_to_start = None
         self.finished_task = None
         task = self._session_state.next_task
@@ -193,17 +192,8 @@ class CommonTaskLifecycle(BaseTaskLifecycle):
             self.finish_task()
 
         def route_after_turn() -> None:
-            if self.created_task:
-                for created_task in self.created_task:
-                    if created_task.id is None:
-                        created_task.id = self._session_state.allocate_task_id()
-                    task.children.append(created_task)
-                task.touch()
-
             task_to_start = self.task_to_start
             if task_to_start is not None:
-                if task_to_start.id is None:
-                    task_to_start.id = self._session_state.allocate_task_id()
                 if hasattr(task_to_start, "start_message_id"):
                     task_to_start.start_message_id = assistant_entry.id
                 self.set_next_task(task_to_start.id, task_to_start)
