@@ -15,7 +15,6 @@ from simple_agent.task_manager.base_lifecycle import (
     BaseTaskLifecycle,
     SessionState,
     TaskLifecycleError,
-    USER_TASK_COMPACT_SYSTEM_PROMPT,
     USER_TASK_SYSTEM_PROMPT,
     render_prompt_template,
     task_instruction_text,
@@ -46,7 +45,10 @@ You can create these following sub tasks.
 
 
 USER_COMPACTION_INSTRUCTION_TEMPLATE = """\
-Runtime instruction for compacting phase:
+System metadata phase — auto-triggered, not requested by the user. Do NOT generate
+plain text or conversational responses; use only the provided tools.
+
+Compaction instructions:
 - Review the task view and record every must-include tool-call log id needed to preserve context.
 - Use only compact tools while recording useful tool-call log ids.
 - When all useful tool-call logs are recorded, respond without tool calls to finish compaction.
@@ -57,7 +59,10 @@ Task view to compact:
 
 
 USER_INDEX_MEMORY_INSTRUCTION_TEMPLATE = """\
-Runtime instruction for index memory upsert phase:
+System metadata phase — auto-triggered, not requested by the user. Do NOT generate
+plain text or conversational responses; use only the provided tools.
+
+Index memory upsert instructions:
 - Review the finished task.
 - First call index_tree to inspect the existing index memory and repository tree context for the task scope.
 - Based on the task context, update the index memory with concise facts that will help future runs understand the repository.
@@ -71,6 +76,16 @@ Runtime instruction for index memory upsert phase:
 Task view:
 {{ task_view }}
 """
+
+USER_TASK_COMPACT_SYSTEM_PROMPT = """You are in a system metadata phase — this is auto-triggered by the system,
+not requested by the user. Do NOT generate plain text or conversational responses.
+Use only the compact tools to record useful tool-call log IDs. When all useful
+tool-call logs are recorded, respond without tool calls to finish compaction."""
+
+USER_TASK_INDEX_MEMORY_SYSTEM_PROMPT = """You are in a system metadata phase — this is auto-triggered by the
+system, not requested by the user. Do NOT generate plain text or conversational
+responses. Use the index tools to inspect and update repository memory. When
+enough useful memory is written, respond without tool calls to finish this phase."""
 
 
 class CommonTaskLifecycle(BaseTaskLifecycle):
@@ -335,7 +350,7 @@ class CommonTaskLifecycle(BaseTaskLifecycle):
         run_messages = [*self._session_state.message_values(), user_instruction_message]
         turn_result = await self.run_agent_turn(
             agent_process=agent_process,
-            system_prompt=USER_TASK_SYSTEM_PROMPT,
+            system_prompt=USER_TASK_INDEX_MEMORY_SYSTEM_PROMPT,
             messages=run_messages,
             tools=tools,
             parent_task=task,

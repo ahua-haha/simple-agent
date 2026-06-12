@@ -1152,7 +1152,8 @@ async def test_user_task_lifecycle_run_compact_one_turn_records_tool_call_log_id
     assert agent_process.llm_calls[0]["system_prompt"] == USER_TASK_COMPACT_SYSTEM_PROMPT
     assert agent_process.llm_calls[0]["tools"] == ["record_compacted_tool_call_log"]
     assert agent_process.llm_calls[0]["messages"][0] == session_state.messages[0].message
-    assert "Runtime instruction for compacting phase" in agent_process.llm_calls[0]["messages"][-1].content[0].text
+    assert "System metadata phase" in agent_process.llm_calls[0]["messages"][-1].content[0].text
+    assert "Compaction instructions:" in agent_process.llm_calls[0]["messages"][-1].content[0].text
     assert agent_process.tool_calls[0]["tools"] == ["record_compacted_tool_call_log"]
     assert user_task.compacted_tool_call_log_ids == [7]
     assert [entry.id for entry in lifecycle._session_state.messages] == [1, 2, 3]
@@ -1241,7 +1242,8 @@ async def test_user_task_lifecycle_compact_finished_replaces_messages(tmp_path):
     assert lifecycle._session_state.next_task is user_task
     assert lifecycle._session_state.next_task_id_to_run == 1
     assert [tool.name for tool in agent_process.llm_calls[0]["tools"]] == ["index_tree", "index_upsert"]
-    assert "Runtime instruction for index memory upsert phase" in agent_process.llm_calls[0]["messages"][-1].content[0].text
+    assert "System metadata phase" in agent_process.llm_calls[0]["messages"][-1].content[0].text
+    assert "Index memory upsert instructions:" in agent_process.llm_calls[0]["messages"][-1].content[0].text
     assert [entry.id for entry in lifecycle._session_state.messages] == [1, 2, 3, 4]
     assert [entry.message.role for entry in lifecycle._session_state.messages] == ["user", "assistant", "assistant", "assistant"]
 
