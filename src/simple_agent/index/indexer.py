@@ -79,15 +79,14 @@ class AgentIndex:
         tool = AgentTool(
             name="index_tree",
             description=(
-                "Explore the repository tree and inspect repo structure. "
-                "This tree command can show directories in a tree structure, "
-                "list symbols from source code files in a tree structure, and "
-                "display markdown file outlines in a tree structure. Most "
-                "importantly, use this to inspect the corresponding AgentIndex "
-                "memory description for each entry, generated from previous tasks. "
-                "Use this when you need to explore the repo quickly, inspect "
-                "existing memory, search the structure, and locate the files, "
-                "symbols, or markdown sections relevant to the current task."
+                "Inspect the repository outline before reading files. "
+                "Use this tool FIRST to see the directory structure, source code "
+                "symbols, and markdown outlines in a tree view. After reviewing "
+                "the outline, choose the specific files or sections to read in "
+                "detail. Also shows existing AgentIndex memory descriptions for "
+                "each entry. Use this to explore the repo structure, inspect "
+                "existing memory, and locate the most relevant files or symbols "
+                "for the current task before opening them."
             ),
             parameters={
                 "type": "object",

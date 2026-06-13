@@ -104,8 +104,8 @@ class TestAgentIndexCRUD:
         tools = idx.create_tools()
 
         assert [tool.name for tool in tools] == ["index_tree", "index_upsert"]
-        assert "Explore the repository tree" in tools[0].description
-        assert "inspect the corresponding AgentIndex memory" in tools[0].description
+        assert "Inspect the repository outline" in tools[0].description
+        assert "AgentIndex memory descriptions" in tools[0].description
         assert "entry_limit" in tools[0].parameters["properties"]
 
     @pytest.mark.asyncio
@@ -237,9 +237,10 @@ class TestAgentIndexCRUD:
         idx = self._make_index(db_path, base_dir=ws)
         output = idx.tree(entry_limit=3)
 
-        assert "current tree entries exceed entry_limit=3" in output
+        assert "Hint: current tree entries exceed entry_limit=3" in output
         assert "rendered with depth=1" in output
         assert "go deeper in the tree" in output
+        assert output.rstrip().splitlines()[-1].startswith("Hint:")
         assert "src/" in output
         assert "tests/" in output
         assert "a.py" not in output
@@ -282,8 +283,9 @@ class TestAgentIndexCRUD:
         idx = self._make_index(db_path, base_dir=ws)
         output = idx.tree(entry_limit=36)
 
-        assert "current tree entries exceed entry_limit=36" in output
+        assert "Hint: current tree entries exceed entry_limit=36" in output
         assert "rendered with depth=1" in output
+        assert output.rstrip().splitlines()[-1].startswith("Hint:")
         assert "file_0.py" in output
 
     @pytest.mark.asyncio

@@ -173,6 +173,9 @@ class CommonTaskLifecycle(BaseTaskLifecycle):
         )
 
     def should_compact_after_turn(self) -> bool:
+        # Sub-tasks (tasks with a parent) do not compact — only the root user task compacts.
+        if self.task.parent_id is not None:
+            return False
         return _count_tool_calls(self.task.children) > 10
 
     async def run_one_turn(
