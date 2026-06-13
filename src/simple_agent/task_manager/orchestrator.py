@@ -95,6 +95,28 @@ system, not requested by the user. Do NOT generate plain text or conversational
 responses. Use the index tools to inspect and update repository memory. When
 enough useful memory is written, respond without tool calls to finish this phase."""
 
+ORCHESTRATOR_SYSTEM_PROMPT = """You are an orchestrator agent. Your job is to help the agent manage tasks.
+NEVER generate a text response — use only the provided tools.
+Inspect the task progress and task plan, then decide whether to create a
+sub-task, update the task plan, or do nothing and let the current task continue."""
+
+ORCHESTRATOR_INSTRUCTION_TEMPLATE = """\
+Based on current task progress:
+{{ task_progress }}
+
+And task plan:
+{{ task_plan }}
+
+Determine whether to create a sub-task or keep running the current task.
+
+When to create a sub-task:
+- TODO: define criteria
+
+When to keep running the current task:
+- TODO: define criteria
+
+If no action is needed, respond without tool calls."""
+
 
 class OrchestratorLifecycle(BaseTaskLifecycle):
     task: CommonTask | None
@@ -215,10 +237,16 @@ class OrchestratorLifecycle(BaseTaskLifecycle):
         task = self.task
 
         # ── 1. Prepare ──────────────────────────────────────────────────
-        # TODO: build system_prompt and instruction message
-        system_prompt = ""  # TODO
+        system_prompt = ORCHESTRATOR_SYSTEM_PROMPT
+        task_progress = TaskTreeRenderer(format="tree", depth=1).render(task)
+        task_plan = self._session_state.task_plan or "(no plan yet)"
+        instruction_text = render_prompt_template(
+            ORCHESTRATOR_INSTRUCTION_TEMPLATE,
+            task_progress=task_progress,
+            task_plan=task_plan,
+        )
         instruction_message = UserMessage(
-            content=[TextContent(text="")],  # TODO
+            content=[TextContent(text=instruction_text)],
             timestamp=int(time.time() * 1000),
         )
         tools: list[AgentTool] = [
