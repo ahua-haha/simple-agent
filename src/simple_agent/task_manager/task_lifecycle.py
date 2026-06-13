@@ -17,7 +17,6 @@ from simple_agent.task_manager.base_lifecycle import (
     TaskLifecycleError,
     USER_TASK_SYSTEM_PROMPT,
     render_prompt_template,
-    task_instruction_text,
 )
 from simple_agent.task_manager.models import ManagedTask, ToolCallTask, CommonTask
 from simple_agent.task_manager.review import TaskTreeRenderer
@@ -34,11 +33,8 @@ USER_TASK_INSTRUCTION_TEMPLATE = """\
 {{ task_info }}
 {% endif %}
 
-IMPORTANT: Focus on current task: {{ task }}. If the task is complex, decompose it into sub-tasks that explore and search for context using tools. Sub-tasks should gather facts and inspect code — do NOT create sub-tasks whose goal is to generate a text response or write a summary. Use tools directly whenever possible before delegating to a sub-task.
-
-{% if task_instruction %}
-{{ task_instruction }}
-{% endif %}
+IMPORTANT: Focus on current task: {{ task }}. Use tools to explore, search, and gather context. Inspect files, run commands, and collect facts needed to complete the task.
+IMPORTANT: If you have finished the current task, you MUST immediately call `finish_common_task` to mark it as done.
 </system-instruction>
 """
 
@@ -73,10 +69,6 @@ class CommonTaskLifecycle(BaseTaskLifecycle):
             USER_TASK_INSTRUCTION_TEMPLATE,
             task=self.task.title,
             task_info=task_info,
-            task_instruction=task_instruction_text(
-                has_common_task=True,
-                has_repo_memory_task=False,
-            ),
         )
 
     def finish_task(self, *, result: str | None = None) -> CommonTask:
