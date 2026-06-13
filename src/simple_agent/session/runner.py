@@ -100,11 +100,11 @@ class SessionRunner:
         self.load()
         self.run_input_transition(user_input)
 
-        while self._session_state.next_task_id_to_run is not None:
+        while self._session_state.current_task_id is not None:
             if self._user_paused:
                 break
 
-            task = self._resolve_next_task()
+            task = self._resolve_current_task()
             if task is None:
                 raise RuntimeError("No active task")
 
@@ -134,7 +134,7 @@ class SessionRunner:
     def run_input_transition(self, user_input: str | None) -> None:
         if user_input is None:
             return
-        if self._session_state.next_task_id_to_run is not None or self._session_state.next_task is not None:
+        if self._session_state.current_task_id is not None or self._session_state.current_task is not None:
             # TODO: finish or interrupt existing active tasks before accepting
             # a new user task.
             return
@@ -151,7 +151,7 @@ class SessionRunner:
             start_message_id=message_entry.id,
         )
         self._user_task = task
-        self._session_state.set_next_task(task.id, task)
+        self._session_state.set_current_task(task.id, task)
         self._last_error = None
 
         with self._db.create_session() as session:
@@ -172,17 +172,17 @@ class SessionRunner:
         with self._db.create_session() as session:
             return self._db.get_managed_task(self._user_task.id, session=session)
 
-    def _resolve_next_task(self) -> ManagedTask | None:
-        next_task_id = self._session_state.next_task_id_to_run
+    def _resolve_current_task(self) -> ManagedTask | None:
+        next_task_id = self._session_state.current_task_id
         if next_task_id is None:
-            self._session_state.next_task = None
+            self._session_state.current_task = None
             return None
-        task = self._session_state.next_task
+        task = self._session_state.current_task
         if task is None or task.id != next_task_id:
             task = self.build_tree(next_task_id)
         if task is None:
             raise RuntimeError(f"Next task {next_task_id} is missing")
-        self._session_state.next_task = task
+        self._session_state.current_task = task
         return task
 
     def build_tree(self, task_id: int) -> ManagedTask | None:

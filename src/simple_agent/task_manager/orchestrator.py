@@ -103,7 +103,7 @@ class OrchestratorLifecycle(BaseTaskLifecycle):
         self._session_state = session_state
         self.task_to_start = None
         self.finished_task = None
-        task = self._session_state.next_task
+        task = self._session_state.current_task
         if task is None:
             raise TaskLifecycleError("Session state has no next task")
         if task.kind != "user_task":
@@ -155,7 +155,7 @@ class OrchestratorLifecycle(BaseTaskLifecycle):
         # TODO: inspect context, create/start sub-tasks, trigger compaction, etc.
         # For now, route back to CommonTaskLifecycle to continue the current task.
         self._session_state.next_phase = "common_task"
-        self.set_next_task(self.task.id, self.task)
+        self.set_current_task(self.task.id, self.task)
         return self._session_state
 
     def should_compact_after_turn(self) -> bool:
@@ -208,19 +208,19 @@ class OrchestratorLifecycle(BaseTaskLifecycle):
             if task_to_start is not None:
                 if hasattr(task_to_start, "start_message_id"):
                     task_to_start.start_message_id = assistant_entry.id
-                self.set_next_task(task_to_start.id, task_to_start)
+                self.set_current_task(task_to_start.id, task_to_start)
                 return
 
             if self.finished_task is not None:
                 self.stamp_finished_task(end_message_id=turn_end_message_id)
                 if self.should_compact_after_turn():
-                    self.set_next_task(task.id, task)
+                    self.set_current_task(task.id, task)
                     return
-                self.set_next_task(task.parent_id, None)
+                self.set_current_task(task.parent_id, None)
                 return
 
             if has_tool_call:
-                self.set_next_task(task.id, task)
+                self.set_current_task(task.id, task)
                 return
 
         route_after_turn()
@@ -297,11 +297,11 @@ class OrchestratorLifecycle(BaseTaskLifecycle):
             task.touch()
 
         if turn_result.has_tool_call:
-            self.set_next_task(task.id, task)
+            self.set_current_task(task.id, task)
         else:
             task.status = "index_memory_upsert"
             task.touch()
-            self.set_next_task(task.id, task)
+            self.set_current_task(task.id, task)
 
         tasks_to_sync: list[ManagedTask] = [task, *task.children]
         with self._session_state.create_database_session() as session:
@@ -361,11 +361,11 @@ class OrchestratorLifecycle(BaseTaskLifecycle):
             task.touch()
 
         if turn_result.has_tool_call:
-            self.set_next_task(task.id, task)
+            self.set_current_task(task.id, task)
         else:
             task.status = "compact_finished"
             task.touch()
-            self.set_next_task(task.id, task)
+            self.set_current_task(task.id, task)
 
         runtime_logger.log_handle_running(
             session_id=self._session_state._require_session_id(),
@@ -407,7 +407,7 @@ class OrchestratorLifecycle(BaseTaskLifecycle):
         )
         task.status = "done"
         task.touch()
-        self.set_next_task(task.parent_id, None)
+        self.set_current_task(task.parent_id, None)
 
         with self._session_state.create_database_session() as session:
             self._session_state.replace_message_range_in_database(

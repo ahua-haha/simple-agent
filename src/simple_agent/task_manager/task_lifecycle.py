@@ -52,7 +52,7 @@ class CommonTaskLifecycle(BaseTaskLifecycle):
         self._session_state = session_state
         self.task_to_start = None
         self.finished_task = None
-        task = self._session_state.next_task
+        task = self._session_state.current_task
         if task is None:
             raise TaskLifecycleError("Session state has no next task")
         if task.kind != "user_task":

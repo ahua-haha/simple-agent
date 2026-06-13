@@ -43,8 +43,8 @@ def _user_lifecycle(
     session_state: SessionState | None = None,
 ) -> CommonTaskLifecycle:
     session_state = session_state or SessionState(messages=[], workspace_dir=".")
-    session_state.next_task = task
-    session_state.next_task_id_to_run = task.id
+    session_state.current_task = task
+    session_state.current_task_id = task.id
     if allocate_task_id is not None and session_state.next_task_id_to_allocate is None:
         session_state.next_task_id_to_allocate = allocate_task_id()
     lifecycle = CommonTaskLifecycle()
@@ -58,8 +58,8 @@ def _orchestrator_lifecycle(
     session_state: SessionState | None = None,
 ) -> OrchestratorLifecycle:
     session_state = session_state or SessionState(messages=[], workspace_dir=".")
-    session_state.next_task = task
-    session_state.next_task_id_to_run = task.id
+    session_state.current_task = task
+    session_state.current_task_id = task.id
     lifecycle = OrchestratorLifecycle()
     lifecycle.set_data(session_state)
     return lifecycle
@@ -253,8 +253,8 @@ def test_repo_memory_lifecycle_instruction_and_tools(tmp_path):
         index_db_path=str(tmp_path / "index.db"),
     )
     session_state = SessionState(messages=[], workspace_dir=".")
-    session_state.next_task = task
-    session_state.next_task_id_to_run = task.id
+    session_state.current_task = task
+    session_state.current_task_id = task.id
     lifecycle = RepoMemoryLifecycle()
     lifecycle.set_data(session_state)
 
@@ -295,8 +295,8 @@ def test_repo_memory_lifecycle_owns_runtime_agent_index(tmp_path):
         index_db_path=str(tmp_path / "index.db"),
     )
     session_state = SessionState(messages=[], workspace_dir=".")
-    session_state.next_task = task
-    session_state.next_task_id_to_run = task.id
+    session_state.current_task = task
+    session_state.current_task_id = task.id
     lifecycle = RepoMemoryLifecycle()
     lifecycle.set_data(session_state)
 
@@ -327,8 +327,8 @@ def test_base_lifecycle_provides_next_task_instruction_and_tool():
     session_state = SessionState(
         workspace_dir=".",
         messages=[],
-        next_task=task,
-        next_task_id_to_run=task.id,
+        current_task=task,
+        current_task_id=task.id,
         next_task_id_to_allocate=2,
     )
     lifecycle = _user_lifecycle(task, session_state=session_state)
@@ -344,8 +344,8 @@ def test_base_lifecycle_create_next_task_supports_common_task():
     session_state = SessionState(
         workspace_dir=".",
         messages=[],
-        next_task=parent,
-        next_task_id_to_run=parent.id,
+        current_task=parent,
+        current_task_id=parent.id,
         next_task_id_to_allocate=2,
     )
     lifecycle = _user_lifecycle(parent, session_state=session_state)
@@ -370,8 +370,8 @@ async def test_base_lifecycle_create_next_task_tool_mutates_session_state():
     session_state = SessionState(
         workspace_dir=".",
         messages=[],
-        next_task=task,
-        next_task_id_to_run=task.id,
+        current_task=task,
+        current_task_id=task.id,
         next_task_id_to_allocate=2,
     )
     lifecycle = _user_lifecycle(task, session_state=session_state)
@@ -386,8 +386,8 @@ async def test_base_lifecycle_create_next_task_tool_mutates_session_state():
     assert next_task.start_message_id is None
     assert lifecycle.task_to_start is None
     assert task.children == []
-    assert session_state.next_task is task
-    assert session_state.next_task_id_to_run == task.id
+    assert session_state.current_task is task
+    assert session_state.current_task_id == task.id
     assert result.content[0].text == "Created next task: id=2 kind=user_task title=Inspect files"
 
 
@@ -399,8 +399,8 @@ async def test_base_lifecycle_start_next_task_tool_sets_task_to_start():
     session_state = SessionState(
         workspace_dir=".",
         messages=[],
-        next_task=parent,
-        next_task_id_to_run=parent.id,
+        current_task=parent,
+        current_task_id=parent.id,
         next_task_id_to_allocate=3,
     )
     lifecycle = _user_lifecycle(parent, session_state=session_state)
@@ -409,8 +409,8 @@ async def test_base_lifecycle_start_next_task_tool_sets_task_to_start():
     result = await tool.execute("call_1", {"task_id": 2})
 
     assert lifecycle.task_to_start is child
-    assert session_state.next_task is parent
-    assert session_state.next_task_id_to_run == parent.id
+    assert session_state.current_task is parent
+    assert session_state.current_task_id == parent.id
     assert result.content[0].text == "Start next task: user_task 2"
 
 
@@ -419,8 +419,8 @@ def test_base_lifecycle_start_next_task_can_select_pending_task_with_id():
     session_state = SessionState(
         workspace_dir=".",
         messages=[],
-        next_task=parent,
-        next_task_id_to_run=parent.id,
+        current_task=parent,
+        current_task_id=parent.id,
         next_task_id_to_allocate=3,
     )
     lifecycle = _user_lifecycle(parent, session_state=session_state)
@@ -539,8 +539,8 @@ def test_lifecycle_tracks_next_task_transition():
 
     next_task = user_lifecycle.create_next_task(kind="common", title="Inspect files", enabled_task_kinds=["common"])
 
-    assert user_lifecycle._session_state.next_task_id_to_run == user_task.id
-    assert user_lifecycle._session_state.next_task is user_task
+    assert user_lifecycle._session_state.current_task_id == user_task.id
+    assert user_lifecycle._session_state.current_task is user_task
     assert next_task.id == 2
     assert next_task.parent_id == user_task.id
     assert user_task.pending_tasks == [next_task]
@@ -860,8 +860,8 @@ async def test_user_task_lifecycle_run_calls_llm_appends_message_and_returns_sta
     assert result is lifecycle._session_state
     assert lifecycle._session_state.messages == [seed, MessageEntry(id=2, message=assistant_message)]
     assert lifecycle._session_state.next_message_id == 3
-    assert lifecycle._session_state.next_task is user_task
-    assert lifecycle._session_state.next_task_id_to_run == user_task.id
+    assert lifecycle._session_state.current_task is user_task
+    assert lifecycle._session_state.current_task_id == user_task.id
     assert lifecycle._session_state.next_phase == "common_task"
     assert user_task.status == "done"
     assert [message.content[0].text for message in db.list_runner_messages("session_a")] == ["Done"]
@@ -887,8 +887,8 @@ async def test_user_task_lifecycle_run_keeps_done_task_for_compaction_when_neede
 
     assert result is lifecycle._session_state
     assert user_task.status == "done"
-    assert lifecycle._session_state.next_task is user_task
-    assert lifecycle._session_state.next_task_id_to_run == user_task.id
+    assert lifecycle._session_state.current_task is user_task
+    assert lifecycle._session_state.current_task_id == user_task.id
     assert lifecycle._session_state.next_phase == "common_task"
     assert db.get_managed_task(user_task.id).status == "done"
 
@@ -917,8 +917,8 @@ async def test_orchestrator_run_compact_one_turn(tmp_path):
 
     assert result is lifecycle._session_state
     assert user_task.status == "index_memory_upsert"
-    assert lifecycle._session_state.next_task is user_task
-    assert lifecycle._session_state.next_task_id_to_run == 1
+    assert lifecycle._session_state.current_task is user_task
+    assert lifecycle._session_state.current_task_id == 1
     assert agent_process.llm_calls[0]["system_prompt"] == USER_TASK_COMPACT_SYSTEM_PROMPT
     persisted_messages = db.list_runner_messages("session_a")
     assert [message.role for message in persisted_messages] == ["user", "assistant"]
@@ -988,7 +988,7 @@ async def test_user_task_lifecycle_run_executes_tools_and_returns_current_task(t
     assert lifecycle._session_state.next_tool_call_log_id == 8
     assert [child.tool_call_log_id for child in user_task.children] == [7]
     assert user_task.children[0].parent_id == user_task.id
-    assert lifecycle._session_state.next_task is user_task
+    assert lifecycle._session_state.current_task is user_task
     assert [type(message).__name__ for message in db.list_runner_messages("session_a")] == [
         "AssistantMessage",
         "ToolResultMessage",
@@ -1202,8 +1202,8 @@ async def test_user_task_lifecycle_compact_finished_replaces_messages(tmp_path):
     assert result is lifecycle._session_state
     assert user_task.status == "index_memory_upsert"
     assert user_task.end_message_id is None
-    assert lifecycle._session_state.next_task is user_task
-    assert lifecycle._session_state.next_task_id_to_run == 1
+    assert lifecycle._session_state.current_task is user_task
+    assert lifecycle._session_state.current_task_id == 1
     assert [entry.id for entry in lifecycle._session_state.messages] == [1, 2, 3]
     assert [entry.message.role for entry in lifecycle._session_state.messages] == ["user", "assistant", "assistant"]
     persisted_messages = db.list_runner_messages("session_a")
@@ -1215,8 +1215,8 @@ async def test_user_task_lifecycle_compact_finished_replaces_messages(tmp_path):
 
     assert result is lifecycle._session_state
     assert user_task.status == "compact_finished"
-    assert lifecycle._session_state.next_task is user_task
-    assert lifecycle._session_state.next_task_id_to_run == 1
+    assert lifecycle._session_state.current_task is user_task
+    assert lifecycle._session_state.current_task_id == 1
     assert [tool.name for tool in agent_process.llm_calls[0]["tools"]] == ["index_tree", "index_upsert"]
     assert "System metadata phase" in agent_process.llm_calls[0]["messages"][-1].content[0].text
     assert "Index memory upsert instructions:" in agent_process.llm_calls[0]["messages"][-1].content[0].text
@@ -1227,8 +1227,8 @@ async def test_user_task_lifecycle_compact_finished_replaces_messages(tmp_path):
 
     assert result is lifecycle._session_state
     assert user_task.status == "done"
-    assert lifecycle._session_state.next_task is None
-    assert lifecycle._session_state.next_task_id_to_run == 99
+    assert lifecycle._session_state.current_task is None
+    assert lifecycle._session_state.current_task_id == 99
     assert [entry.id for entry in lifecycle._session_state.messages] == [5, 6, 7]
     assert [entry.message.role for entry in lifecycle._session_state.messages] == ["user", "assistant", "tool_result"]
     assert lifecycle._session_state.messages[0].message.content[0].text == "Build feature"

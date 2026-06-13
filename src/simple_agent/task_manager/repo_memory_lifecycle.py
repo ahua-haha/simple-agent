@@ -49,9 +49,9 @@ class RepoMemoryLifecycle(BaseTaskLifecycle):
         self._session_state = session_state
         self.task_to_start = None
         self.finished_task = None
-        task = self._session_state.next_task
+        task = self._session_state.current_task
         if task is None:
-            raise TaskLifecycleError("Session state has no next task")
+            raise TaskLifecycleError("Session state has no current task")
         if task.kind != "repo_memory":
             raise TaskLifecycleError("Active lifecycle task is not a repo memory task")
         self.task = cast(RepoMemoryTask, task)
@@ -85,8 +85,8 @@ class RepoMemoryLifecycle(BaseTaskLifecycle):
     ) -> SessionState:
         task = self.task
         if task.status != "active":
-            self._session_state.next_task_id_to_run = task.parent_id
-            self._session_state.next_task = None
+            self._session_state.current_task_id = task.parent_id
+            self._session_state.current_task = None
             return self._session_state
         return await self.run_one_turn(
             agent_process=agent_process,
@@ -132,10 +132,10 @@ class RepoMemoryLifecycle(BaseTaskLifecycle):
             task.status = "done"
             task.result = _assistant_text(assistant_message)
             task.touch()
-            self._session_state.next_task_id_to_run = task.parent_id
-            self._session_state.next_task = None
+            self._session_state.current_task_id = task.parent_id
+            self._session_state.current_task = None
         elif task.status == "active":
-            self.set_next_task(task.id, task)
+            self.set_current_task(task.id, task)
 
         runtime_logger.log_handle_running(
             session_id=self._session_state._require_session_id(),

@@ -201,13 +201,13 @@ def test_session_runner_input_transition_creates_and_persists_user_task(tmp_path
 
     runner.run_input_transition("Build feature")
 
-    task = runner._session_state.next_task
+    task = runner._session_state.current_task
     assert isinstance(task, CommonTask)
     assert runner.user_task is task
     assert task.id == 1
     assert task.title == "Build feature"
     assert task.start_message_id == 1
-    assert runner._session_state.next_task_id_to_run == task.id
+    assert runner._session_state.current_task_id == task.id
     assert runner._session_state.next_task_id_to_allocate == 2
 
     assert len(runner._session_state.messages) == 1
@@ -219,8 +219,8 @@ def test_session_runner_input_transition_creates_and_persists_user_task(tmp_path
 
     runner.run_input_transition("Second task")
 
-    assert runner._session_state.next_task is task
-    assert runner._session_state.next_task_id_to_run == task.id
+    assert runner._session_state.current_task is task
+    assert runner._session_state.current_task_id == task.id
     assert [entry.message.content[0].text for entry in runner._session_state.messages] == ["Build feature"]
     persisted_messages = session._db.list_runner_messages(session.id)
     assert len(persisted_messages) == 1
@@ -242,8 +242,8 @@ async def test_session_runner_does_not_resolve_next_task_after_lifecycle_run(tmp
             self.session_state = session_state
 
         async def run(self, *, agent_process, cancel_event=None):
-            self.session_state.next_task_id_to_run = 999
-            self.session_state.next_task = None
+            self.session_state.current_task_id = 999
+            self.session_state.current_task = None
             return self.session_state
 
         def clear_data(self):
@@ -253,8 +253,8 @@ async def test_session_runner_does_not_resolve_next_task_after_lifecycle_run(tmp
     runner = session._runner
     runner.load()
     task = CommonTask(id=1, title="Build feature")
-    runner._session_state.next_task_id_to_run = task.id
-    runner._session_state.next_task = task
+    runner._session_state.current_task_id = task.id
+    runner._session_state.current_task = task
     runner._common_task = ShiftLifecycle()
 
     lifecycle = runner._common_task
@@ -266,8 +266,8 @@ async def test_session_runner_does_not_resolve_next_task_after_lifecycle_run(tmp
     lifecycle.clear_data()
 
     assert result is runner._session_state
-    assert runner._session_state.next_task_id_to_run == 999
-    assert runner._session_state.next_task is None
+    assert runner._session_state.current_task_id == 999
+    assert runner._session_state.current_task is None
 
 
 @pytest.mark.asyncio
@@ -284,8 +284,8 @@ async def test_session_runner_continues_when_lifecycle_sets_next_task_id_without
 
         async def run(self, *, agent_process, cancel_event=None):
             self.run_count += 1
-            self.session_state.next_task_id_to_run = None
-            self.session_state.next_task = None
+            self.session_state.current_task_id = None
+            self.session_state.current_task = None
             return self.session_state
 
         def clear_data(self):
@@ -299,8 +299,8 @@ async def test_session_runner_continues_when_lifecycle_sets_next_task_id_without
         db_session.commit()
 
     runner.load = lambda: None
-    runner._session_state.next_task_id_to_run = parent.id
-    runner._session_state.next_task = parent
+    runner._session_state.current_task_id = parent.id
+    runner._session_state.current_task = parent
     runner._common_task = ParentLifecycle()
 
     await runner.run(None)

@@ -104,8 +104,8 @@ class SessionState:
     next_message_id: int = 1
     next_tool_call_log_id: int = 0
     next_task_id_to_allocate: int | None = None
-    next_task_id_to_run: int | None = None
-    next_task: ManagedTask | None = None
+    current_task_id: int | None = None
+    current_task: ManagedTask | None = None
     next_phase: str | None = None  # "common_task" | "orchestrator" | None (use task.kind)
 
     def allocate_message_id(self) -> int:
@@ -298,9 +298,9 @@ class SessionState:
                 session=session,
             )
 
-    def set_next_task(self, task_id: int | None, task: ManagedTask | None) -> None:
-        self.next_task_id_to_run = task_id
-        self.next_task = task
+    def set_current_task(self, task_id: int | None, task: ManagedTask | None) -> None:
+        self.current_task_id = task_id
+        self.current_task = task
 
     def _message_index(self, message_id: int) -> int:
         for index, entry in enumerate(self.messages):
@@ -548,8 +548,8 @@ class BaseTaskLifecycle:
         self.task_to_start = task
         return task
 
-    def set_next_task(self, task_id: int | None, task: ManagedTask | None) -> None:
-        self._session_state.set_next_task(task_id, task)
+    def set_current_task(self, task_id: int | None, task: ManagedTask | None) -> None:
+        self._session_state.set_current_task(task_id, task)
 
     def stamp_finished_task(self, *, end_message_id: int) -> ManagedTask | None:
         task = self.finished_task
