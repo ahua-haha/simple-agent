@@ -11,10 +11,12 @@ from simple_agent.run_log import runtime_logger
 from simple_agent.index.indexer import AgentIndex
 from simple_agent.task_manager.lifecycle import (
     USER_TASK_COMPACT_SYSTEM_PROMPT,
+    USER_TASK_INDEX_MEMORY_SYSTEM_PROMPT,
     USER_TASK_SYSTEM_PROMPT,
     SessionState,
     TaskLifecycleError,
     CommonTaskLifecycle,
+    OrchestratorLifecycle,
 )
 from simple_agent.task_manager.repo_memory_lifecycle import RepoMemoryLifecycle
 from simple_agent.task_manager.models import RepoMemoryTask, ToolCallTask, CommonTask, task_from_metadata
@@ -46,6 +48,19 @@ def _user_lifecycle(
     if allocate_task_id is not None and session_state.next_task_id_to_allocate is None:
         session_state.next_task_id_to_allocate = allocate_task_id()
     lifecycle = CommonTaskLifecycle()
+    lifecycle.set_data(session_state)
+    return lifecycle
+
+
+def _orchestrator_lifecycle(
+    task: CommonTask,
+    *,
+    session_state: SessionState | None = None,
+) -> OrchestratorLifecycle:
+    session_state = session_state or SessionState(messages=[], workspace_dir=".")
+    session_state.next_task = task
+    session_state.next_task_id_to_run = task.id
+    lifecycle = OrchestratorLifecycle()
     lifecycle.set_data(session_state)
     return lifecycle
 
@@ -837,7 +852,7 @@ async def test_user_task_lifecycle_run_calls_llm_appends_message_and_returns_sta
 
     assert agent_process.llm_calls[0]["system_prompt"] == USER_TASK_SYSTEM_PROMPT
     tool_names = [tool.name for tool in agent_process.llm_calls[0]["tools"]]
-    assert tool_names[:3] == ["create_next_task", "start_next_task", "finish_common_task"]
+    assert tool_names[:2] == ["index_tree", "finish_common_task"]
     assert "read" in tool_names
     assert agent_process.llm_calls[0]["messages"][:-1] == [seed.message]
     assert "<system-instruction>" in agent_process.llm_calls[0]["messages"][-1].content[0].text
@@ -845,8 +860,9 @@ async def test_user_task_lifecycle_run_calls_llm_appends_message_and_returns_sta
     assert result is lifecycle._session_state
     assert lifecycle._session_state.messages == [seed, MessageEntry(id=2, message=assistant_message)]
     assert lifecycle._session_state.next_message_id == 3
-    assert lifecycle._session_state.next_task is None
-    assert lifecycle._session_state.next_task_id_to_run is None
+    assert lifecycle._session_state.next_task is user_task
+    assert lifecycle._session_state.next_task_id_to_run == user_task.id
+    assert lifecycle._session_state.next_phase == "common_task"
     assert user_task.status == "done"
     assert [message.content[0].text for message in db.list_runner_messages("session_a")] == ["Done"]
     assert db.get_managed_task(user_task.id).status == "done"
@@ -864,7 +880,6 @@ async def test_user_task_lifecycle_run_keeps_done_task_for_compaction_when_neede
         next_task_id_to_allocate=2,
     )
     lifecycle = _user_lifecycle(user_task, session_state=session_state)
-    lifecycle.should_compact_after_turn = lambda: True
     assistant_message = AssistantMessage(role="assistant", content=[TextContent(text="Done")])
     agent_process = FakeAgentProcess(assistant_message)
 
@@ -874,11 +889,12 @@ async def test_user_task_lifecycle_run_keeps_done_task_for_compaction_when_neede
     assert user_task.status == "done"
     assert lifecycle._session_state.next_task is user_task
     assert lifecycle._session_state.next_task_id_to_run == user_task.id
+    assert lifecycle._session_state.next_phase == "common_task"
     assert db.get_managed_task(user_task.id).status == "done"
 
 
 @pytest.mark.asyncio
-async def test_user_task_lifecycle_run_compacts_already_done_task(tmp_path):
+async def test_orchestrator_run_compact_one_turn(tmp_path):
     db = _make_db(tmp_path)
     user_task = CommonTask(id=1, parent_id=99, title="Build feature", status="done", start_message_id=1)
     user_message = UserMessage(content=[TextContent(text="Build feature")], timestamp=1)
@@ -894,10 +910,10 @@ async def test_user_task_lifecycle_run_compacts_already_done_task(tmp_path):
         db.upsert_managed_task(user_task, session=session)
         db.insert_runner_message("session_a", user_message, id=1, session=session)
         session.commit()
-    lifecycle = _user_lifecycle(user_task, session_state=session_state)
+    lifecycle = _orchestrator_lifecycle(user_task, session_state=session_state)
     agent_process = FakeAgentProcess(AssistantMessage(role="assistant", content=[TextContent(text="Done")]))
 
-    result = await lifecycle.run(agent_process=agent_process)
+    result = await lifecycle.run_compact_one_turn(agent_process=agent_process)
 
     assert result is lifecycle._session_state
     assert user_task.status == "index_memory_upsert"
@@ -961,7 +977,7 @@ async def test_user_task_lifecycle_run_executes_tools_and_returns_current_task(t
     assert agent_process.llm_calls[0]["system_prompt"] == USER_TASK_SYSTEM_PROMPT
     assert agent_process.tool_calls[0]["assistant_message"] is assistant_message
     tool_names = [tool.name for tool in agent_process.tool_calls[0]["tools"]]
-    assert tool_names[:3] == ["create_next_task", "start_next_task", "finish_common_task"]
+    assert tool_names[:2] == ["index_tree", "finish_common_task"]
     assert "read" in tool_names
     assert result is lifecycle._session_state
     assert lifecycle._session_state.messages == [
@@ -1023,54 +1039,14 @@ async def test_common_task_finish_tool_stamps_end_message_to_tool_result(tmp_pat
     assert lifecycle._session_state.messages[-1].message.tool_call_id == "call_1"
 
 
-@pytest.mark.asyncio
-async def test_user_task_lifecycle_run_syncs_created_common_task(tmp_path):
-    db = _make_db(tmp_path)
-    user_task = CommonTask(id=1, title="Build feature")
-    session_state = SessionState(
-        workspace_dir=".",
-        messages=[],
-        database=db,
-        session_id="session_a",
-        next_task_id_to_allocate=2,
-    )
-    lifecycle = _user_lifecycle(user_task, session_state=session_state)
-    assistant_message = AssistantMessage(
-        role="assistant",
-        content=[
-            ToolCall(
-                id="call_1",
-                name="create_next_task",
-                arguments={"kind": "common", "title": "Inspect lifecycle flow"},
-            )
-        ],
-    )
-    agent_process = ExecutingFakeAgentProcess(assistant_message)
-
-    await lifecycle.run(agent_process=agent_process)
-
-    children = db.list_managed_task_children(user_task.id)
-    common_tasks = [child for child in children if isinstance(child, CommonTask)]
-    tool_calls = [child for child in children if child.kind == "tool_call"]
-    assert len(common_tasks) == 0  # stays in pending_tasks until start_next_task
-    assert len(tool_calls) == 1
-    assert [child.kind for child in user_task.children] == ["tool_call"]
-    pending_kinds = [t.kind for t in user_task.pending_tasks]
-    assert "user_task" in pending_kinds
-    assert user_task.pending_tasks[0].title == "Inspect lifecycle flow"
-    assert user_task.pending_tasks[0].start_message_id is None
-    assert lifecycle._session_state.next_task_id_to_run == user_task.id
-    assert lifecycle._session_state.next_task is user_task
-
-
-def test_user_task_lifecycle_records_compacted_tool_call_log_id():
+def test_orchestrator_records_compacted_tool_call_log_id():
     user_task = CommonTask(
         id=1,
         title="Build feature",
         status="done",
         children=[ToolCallTask(id=2, parent_id=1, status="done", tool_call_log_id=7)],
     )
-    lifecycle = _user_lifecycle(user_task)
+    lifecycle = _orchestrator_lifecycle(user_task)
 
     lifecycle.record_compacted_tool_call_log(tool_call_log_id=7)
     lifecycle.record_compacted_tool_call_log(tool_call_log_id=7)
@@ -1143,7 +1119,7 @@ async def test_user_task_lifecycle_run_compact_one_turn_records_tool_call_log_id
         next_message_id=2,
         next_task_id_to_allocate=10,
     )
-    lifecycle = _user_lifecycle(user_task, session_state=session_state)
+    lifecycle = _orchestrator_lifecycle(user_task, session_state=session_state)
     agent_process = OneTurnCompactAgentProcess()
 
     result = await lifecycle.run_compact_one_turn(agent_process=agent_process)
@@ -1218,7 +1194,7 @@ async def test_user_task_lifecycle_compact_finished_replaces_messages(tmp_path):
             session=session,
         )
         session.commit()
-    lifecycle = _user_lifecycle(user_task, session_state=session_state)
+    lifecycle = _orchestrator_lifecycle(user_task, session_state=session_state)
     agent_process = FakeAgentProcess(AssistantMessage(role="assistant", content=[TextContent(text="compact done")]))
 
     result = await lifecycle.run_compact_one_turn(agent_process=agent_process)
@@ -1272,18 +1248,18 @@ async def test_user_task_lifecycle_compact_finished_replaces_messages(tmp_path):
     assert [child.id for child in persisted_children] == [2, 3]
 
 
-def test_user_task_lifecycle_should_compact_after_more_than_ten_tool_calls():
+def test_orchestrator_should_compact_after_more_than_ten_tool_calls():
     user_task = CommonTask(
         id=1,
         title="Build feature",
         children=[ToolCallTask(id=index + 2, parent_id=1, tool_call_log_id=index) for index in range(11)],
     )
-    lifecycle = _user_lifecycle(user_task)
+    lifecycle = _orchestrator_lifecycle(user_task)
 
     assert lifecycle.should_compact_after_turn() is True
 
 
-def test_user_task_lifecycle_should_compact_after_nested_tool_calls():
+def test_orchestrator_should_compact_after_nested_tool_calls():
     subtask = CommonTask(
         id=2,
         parent_id=1,
@@ -1294,6 +1270,6 @@ def test_user_task_lifecycle_should_compact_after_nested_tool_calls():
         ],
     )
     user_task = CommonTask(id=1, title="Build feature", children=[subtask])
-    lifecycle = _user_lifecycle(user_task)
+    lifecycle = _orchestrator_lifecycle(user_task)
 
     assert lifecycle.should_compact_after_turn() is True

@@ -7,7 +7,7 @@ import time
 from typing import TYPE_CHECKING, cast
 
 from pi.agent import AgentTool, AgentToolResult
-from pi.ai.types import AssistantMessage, TextContent, ToolCall, ToolResultMessage, UserMessage
+from pi.ai.types import TextContent, UserMessage
 
 from simple_agent.index.indexer import AgentIndex
 from simple_agent.run_log import runtime_logger
@@ -42,57 +42,6 @@ IMPORTANT: Focus on current task: {{ task }}. If the task is complex, decompose 
 </system-instruction>
 """
 
-
-USER_COMPACTION_INSTRUCTION_TEMPLATE = """\
-System metadata phase — auto-triggered, not requested by the user. Do NOT generate
-plain text or conversational responses; use only the provided tools.
-
-Compaction instructions:
-- Review the task view and record every must-include tool-call log id needed to preserve context.
-- Use only compact tools while recording useful tool-call log ids.
-- When all useful tool-call logs are recorded, respond without tool calls to finish compaction.
-
-Task view to compact:
-{{ task_view }}
-"""
-
-
-USER_INDEX_MEMORY_INSTRUCTION_TEMPLATE = """\
-System metadata phase — auto-triggered, not requested by the user. Do NOT generate
-plain text or conversational responses; use only the provided tools.
-
-Index memory upsert instructions:
-- Review the finished task.
-- First call index_tree to inspect the existing index memory and repository tree context for the task scope.
-
-When to update an index entry:
-- You explored and reviewed the entry thoroughly in this task, AND the entry is significant and key.
-- An existing description is wrong or outdated because the entry has been modified — amend it to match current reality.
-
-When NOT to update an index entry:
-- The entry already has a description that is proper, thorough, and comprehensive — no need to append or duplicate.
-- The entry was NOT explored or reviewed in this task — do not add a description for it.
-- The entry is not very important and its purpose can be easily inferred from its name — skip it.
-- Most importantly: do not update entries whose index descriptions are already thorough. Only update the most
-  significant entries touched by this task, or correct wrong / legacy descriptions caused by code changes.
-
-- Each upserted description should be short, factual, and say what the entry does.
-- If no index entry needs updating, finish immediately without any explanation — just respond without tool calls.
-- When useful memory is written, or no significant in-scope memory is needed, respond without tool calls to finish this phase.
-
-Task view:
-{{ task_view }}
-"""
-
-USER_TASK_COMPACT_SYSTEM_PROMPT = """You are in a system metadata phase — this is auto-triggered by the system,
-not requested by the user. Do NOT generate plain text or conversational responses.
-Use only the compact tools to record useful tool-call log IDs. When all useful
-tool-call logs are recorded, respond without tool calls to finish compaction."""
-
-USER_TASK_INDEX_MEMORY_SYSTEM_PROMPT = """You are in a system metadata phase — this is auto-triggered by the
-system, not requested by the user. Do NOT generate plain text or conversational
-responses. Use the index tools to inspect and update repository memory. When
-enough useful memory is written, respond without tool calls to finish this phase."""
 
 
 class CommonTaskLifecycle(BaseTaskLifecycle):
@@ -139,12 +88,39 @@ class CommonTaskLifecycle(BaseTaskLifecycle):
 
     def create_tools(self) -> list[AgentTool]:
         return [
-            *self.create_next_task_tools(enabled_task_kinds=["common"]),
-            self.build_start_next_task_tool(),
-            self.create_finish_common_task_tool(),
             self._agent_index.create_tree_tool(),
+            self.create_finish_common_task_tool(),
             *create_all_coding_tools(self._session_state.workspace_dir),
         ]
+
+    def create_finish_common_task_tool(self) -> AgentTool:
+        tool = AgentTool(
+            name="finish_common_task",
+            description=(
+                "Mark the current common task as completed. Call when this "
+                "task is fully satisfied and no child task is active."
+            ),
+            parameters={
+                "type": "object",
+                "properties": {
+                    "result": {"type": "string", "description": "Optional concise result for this common task"},
+                },
+                "required": [],
+            },
+        )
+
+        async def execute(tool_call_id, params, cancel_event=None, on_update=None):
+            task = self.finish_task(
+                result=params.get("result"),
+            )
+            return AgentToolResult(content=[TextContent(text=f"Common task finished: {task.result or task.title}")])
+
+        tool.execute = execute
+        return tool
+
+    def _should_orchestrate(self) -> bool:
+        # TODO: decide whether to route to orchestrator based on context
+        return False
 
     async def run(
         self,
@@ -152,31 +128,10 @@ class CommonTaskLifecycle(BaseTaskLifecycle):
         agent_process: AgentProcess,
         cancel_event: asyncio.Event | None = None,
     ) -> SessionState:
-        if self.task.status == "compact_finished":
-            return self.compact_finished_task()
-
-        if self.task.status == "index_memory_upsert":
-            return await self.run_index_memory_upsert_one_turn(
-                agent_process=agent_process,
-                cancel_event=cancel_event,
-            )
-
-        if self.task.status == "done":
-            return await self.run_compact_one_turn(
-                agent_process=agent_process,
-                cancel_event=cancel_event,
-            )
-
         return await self.run_one_turn(
             agent_process=agent_process,
             cancel_event=cancel_event,
         )
-
-    def should_compact_after_turn(self) -> bool:
-        # Sub-tasks (tasks with a parent) do not compact — only the root user task compacts.
-        if self.task.parent_id is not None:
-            return False
-        return _count_tool_calls(self.task.children) > 10
 
     async def run_one_turn(
         self,
@@ -217,29 +172,13 @@ class CommonTaskLifecycle(BaseTaskLifecycle):
         if not has_tool_call and task.status != "done":
             self.finish_task()
 
-        def route_after_turn() -> None:
-            task_to_start = self.task_to_start
-            if task_to_start is not None:
-                if hasattr(task_to_start, "start_message_id"):
-                    task_to_start.start_message_id = assistant_entry.id
-                self.set_next_task(task_to_start.id, task_to_start)
-                return
-
-            if self.finished_task is not None:
-                self.stamp_finished_task(end_message_id=turn_end_message_id)
-                if self.should_compact_after_turn():
-                    self.set_next_task(task.id, task)
-                    return
-                self.set_next_task(task.parent_id, None)
-                return
-
-            if has_tool_call:
-                self.set_next_task(task.id, task)
-                return
-
-        route_after_turn()
-
-        self.stamp_finished_task(end_message_id=turn_end_message_id)
+        # Route after turn
+        next_phase = "orchestrator" if self._should_orchestrate() else "common_task"
+        if self.finished_task is not None:
+            self.stamp_finished_task(end_message_id=turn_end_message_id)
+        if self.finished_task is not None or has_tool_call:
+            self._session_state.next_phase = next_phase
+            self.set_next_task(task.id, task)
 
         runtime_logger.log_handle_running(
             session_id=self._session_state._require_session_id(),
@@ -267,260 +206,6 @@ class CommonTaskLifecycle(BaseTaskLifecycle):
             session.commit()
         self.clear_turn_indicators()
         return self._session_state
-
-    # ------------------------------------------------------------------
-    # User-task compaction phase
-    # ------------------------------------------------------------------
-
-    def compaction_instruction_text(self) -> str:
-        task_view = TaskTreeRenderer(
-            format="tree",
-            depth=None,
-        ).render(self.task)
-        return render_prompt_template(
-            USER_COMPACTION_INSTRUCTION_TEMPLATE,
-            task_view=task_view,
-        )
-
-    async def run_compact_one_turn(
-        self,
-        *,
-        agent_process: AgentProcess,
-        cancel_event: asyncio.Event | None = None,
-    ) -> SessionState:
-        task = self.task
-        tools = self.create_compact_one_turn_tools()
-        user_instruction_message = UserMessage(
-            content=[TextContent(text=self.compaction_instruction_text())],
-            timestamp=int(time.time() * 1000),
-        )
-        run_messages = [*self._session_state.message_values(), user_instruction_message]
-        turn_result = await self.run_agent_turn(
-            agent_process=agent_process,
-            system_prompt=USER_TASK_COMPACT_SYSTEM_PROMPT,
-            messages=run_messages,
-            tools=tools,
-            parent_task=task,
-            cancel_event=cancel_event,
-        )
-        new_messages = [turn_result.assistant_entry, *turn_result.tool_result_entries]
-        self._session_state.append_messages(new_messages)
-
-        task.children.extend(turn_result.tool_call_tasks)
-        if turn_result.tool_call_tasks:
-            task.touch()
-
-        if turn_result.has_tool_call:
-            self.set_next_task(task.id, task)
-        else:
-            task.status = "index_memory_upsert"
-            task.touch()
-            self.set_next_task(task.id, task)
-
-        tasks_to_sync: list[ManagedTask] = [task, *task.children]
-        with self._session_state.create_database_session() as session:
-            self._session_state.append_messages_to_database(
-                messages=new_messages,
-                session=session,
-            )
-            self._session_state.append_tool_calls_to_database(
-                tool_calls=turn_result.tool_call_records,
-                session=session,
-            )
-            self._session_state.append_tasks_to_database(
-                tasks=tasks_to_sync,
-                session=session,
-            )
-            session.commit()
-        return self._session_state
-
-    def index_memory_instruction_text(self) -> str:
-        task_view = TaskTreeRenderer(
-            format="tree",
-            depth=None,
-        ).render(self.task)
-        return render_prompt_template(
-            USER_INDEX_MEMORY_INSTRUCTION_TEMPLATE,
-            task_view=task_view,
-        )
-
-    async def run_index_memory_upsert_one_turn(
-        self,
-        *,
-        agent_process: AgentProcess,
-        cancel_event: asyncio.Event | None = None,
-    ) -> SessionState:
-        task = self.task
-        tools = self._agent_index.create_tools()
-        user_instruction_message = UserMessage(
-            content=[TextContent(text=self.index_memory_instruction_text())],
-            timestamp=int(time.time() * 1000),
-        )
-        context_messages = list(self._session_state.messages)
-        run_messages = [*self._session_state.message_values(), user_instruction_message]
-        turn_result = await self.run_agent_turn(
-            agent_process=agent_process,
-            system_prompt=USER_TASK_INDEX_MEMORY_SYSTEM_PROMPT,
-            messages=run_messages,
-            tools=tools,
-            parent_task=task,
-            cancel_event=cancel_event,
-        )
-        assistant_message = turn_result.assistant_message
-        new_messages = [turn_result.assistant_entry, *turn_result.tool_result_entries]
-        self._session_state.append_messages(new_messages)
-
-        task.children.extend(turn_result.tool_call_tasks)
-        if turn_result.tool_call_tasks:
-            task.touch()
-
-        if turn_result.has_tool_call:
-            self.set_next_task(task.id, task)
-        else:
-            task.status = "compact_finished"
-            task.touch()
-            self.set_next_task(task.id, task)
-
-        runtime_logger.log_handle_running(
-            session_id=self._session_state._require_session_id(),
-            messages=context_messages,
-            user_instruction_message=user_instruction_message,
-            assistant_message_id=turn_result.assistant_entry.id,
-            assistant_message=assistant_message,
-            tool_result_entries=turn_result.tool_result_entries,
-        )
-
-        tasks_to_sync: list[ManagedTask] = [task, *task.children]
-        with self._session_state.create_database_session() as session:
-            self._session_state.append_messages_to_database(
-                messages=new_messages,
-                session=session,
-            )
-            self._session_state.append_tool_calls_to_database(
-                tool_calls=turn_result.tool_call_records,
-                session=session,
-            )
-            self._session_state.append_tasks_to_database(
-                tasks=tasks_to_sync,
-                session=session,
-            )
-            session.commit()
-        return self._session_state
-
-    def compact_finished_task(self) -> SessionState:
-        task = self.task
-        if task.start_message_id is None:
-            raise TaskLifecycleError("Compact task is missing start message id")
-        end_message_id = self._session_state.messages[-1].id
-
-        compacted_messages = self.format_messages_from_user_task(task)
-        replacement_entries = self._session_state.replace_message_range(
-            start_message_id=task.start_message_id,
-            end_message_id=end_message_id,
-            replacement_messages=compacted_messages,
-        )
-        task.status = "done"
-        task.touch()
-        self.set_next_task(task.parent_id, None)
-
-        with self._session_state.create_database_session() as session:
-            self._session_state.replace_message_range_in_database(
-                start_message_id=task.start_message_id,
-                end_message_id=end_message_id,
-                replacement_messages=replacement_entries,
-                session=session,
-            )
-            self._session_state.append_tasks_to_database(
-                tasks=[task, *task.children],
-                session=session,
-            )
-            session.commit()
-        return self._session_state
-
-    def create_finish_common_task_tool(self) -> AgentTool:
-        tool = AgentTool(
-            name="finish_common_task",
-            description=(
-                "Mark the current common task as completed. Call when this "
-                "task is fully satisfied and no child task is active."
-            ),
-            parameters={
-                "type": "object",
-                "properties": {
-                    "result": {"type": "string", "description": "Optional concise result for this common task"},
-                },
-                "required": [],
-            },
-        )
-
-        async def execute(tool_call_id, params, cancel_event=None, on_update=None):
-            task = self.finish_task(
-                result=params.get("result"),
-            )
-            return AgentToolResult(content=[TextContent(text=f"Common task finished: {task.result or task.title}")])
-
-        tool.execute = execute
-        return tool
-
-    def create_compact_one_turn_tools(self) -> list[AgentTool]:
-        record_tool = AgentTool(
-            name="record_compacted_tool_call_log",
-            description="Record one useful tool-call log id for the compacted user task.",
-            parameters={
-                "type": "object",
-                "properties": {
-                    "tool_call_log_id": {
-                        "type": "integer",
-                        "description": "Tool-call log id of the useful tool result to keep in compacted context.",
-                    },
-                },
-                "required": ["tool_call_log_id"],
-            },
-        )
-
-        async def record_execute(tool_call_id, params, cancel_event=None, on_update=None):
-            self.record_compacted_tool_call_log(
-                tool_call_log_id=params["tool_call_log_id"],
-            )
-            return AgentToolResult(content=[TextContent(text="recorded compacted tool call log")])
-
-        record_tool.execute = record_execute
-        return [record_tool]
-
-    def record_compacted_tool_call_log(self, *, tool_call_log_id: int) -> None:
-        if tool_call_log_id not in self.task.compacted_tool_call_log_ids:
-            self.task.compacted_tool_call_log_ids.append(tool_call_log_id)
-            self.task.touch()
-
-    def format_messages_from_user_task(self, user_task: CommonTask) -> list[UserMessage | AssistantMessage | ToolResultMessage]:
-        compacted_tool_calls = self._session_state.compacted_tool_calls(
-            user_task.compacted_tool_call_log_ids,
-        )
-        tool_calls = [
-            tool_call
-            for tool_call, _tool_result_message in compacted_tool_calls
-            if tool_call is not None
-        ]
-        tool_result_messages = [
-            tool_result_message
-            for _tool_call, tool_result_message in compacted_tool_calls
-        ]
-        tool_refs = [
-            message.tool_call_id
-            for message in tool_result_messages
-        ]
-        result_text = user_task.result or user_task.title
-        assistant_text = (
-            f"Finished task: {user_task.title}\n"
-            f"Result: {result_text}\n"
-            f"Following tool calls preserve useful context: {tool_refs}"
-        )
-        return [
-            UserMessage(content=[TextContent(text=user_task.title)], timestamp=int(time.time() * 1000)),
-            AssistantMessage(role="assistant", content=[TextContent(text=assistant_text), *tool_calls]),
-            *tool_result_messages,
-        ]
-
 
 def _count_tool_calls(tasks: list[ManagedTask]) -> int:
     count = 0
