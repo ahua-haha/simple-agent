@@ -34,8 +34,7 @@ USER_TASK_INSTRUCTION_TEMPLATE = """\
 {{ task_info }}
 {% endif %}
 
-IMPORTANT: Focus on current task: {{ task }}, if task is complex, consider decompose complex task and create sub task to do, and you can also use tools to first explore around and gather some useful context.
-You can create these following sub tasks.
+IMPORTANT: Focus on current task: {{ task }}. If the task is complex, decompose it into sub-tasks that explore and search for context using tools. Sub-tasks should gather facts and inspect code — do NOT create sub-tasks whose goal is to generate a text response or write a summary. Use tools directly whenever possible before delegating to a sub-task.
 
 {% if task_instruction %}
 {{ task_instruction }}
@@ -65,12 +64,20 @@ plain text or conversational responses; use only the provided tools.
 Index memory upsert instructions:
 - Review the finished task.
 - First call index_tree to inspect the existing index memory and repository tree context for the task scope.
-- Based on the task context, update the index memory with concise facts that will help future runs understand the repository.
-- Only update entries inside this task scope. Do not update files, directories, or symbols outside the finished task's scope.
-- If you update an entry, make sure the memory is synced with the current repository content; inspect the current content first when needed.
-- Do not add descriptions for every visible tree entry. Choose only the most significant entries touched or clarified by this task.
-- Omit entries whose purpose can be easily inferred from their name.
+
+When to update an index entry:
+- You explored and reviewed the entry thoroughly in this task, AND the entry is significant and key.
+- An existing description is wrong or outdated because the entry has been modified — amend it to match current reality.
+
+When NOT to update an index entry:
+- The entry already has a description that is proper, thorough, and comprehensive — no need to append or duplicate.
+- The entry was NOT explored or reviewed in this task — do not add a description for it.
+- The entry is not very important and its purpose can be easily inferred from its name — skip it.
+- Most importantly: do not update entries whose index descriptions are already thorough. Only update the most
+  significant entries touched by this task, or correct wrong / legacy descriptions caused by code changes.
+
 - Each upserted description should be short, factual, and say what the entry does.
+- If no index entry needs updating, finish immediately without any explanation — just respond without tool calls.
 - When useful memory is written, or no significant in-scope memory is needed, respond without tool calls to finish this phase.
 
 Task view:

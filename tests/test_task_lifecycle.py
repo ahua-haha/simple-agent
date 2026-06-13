@@ -113,9 +113,9 @@ def test_user_task_instruction_asks_for_complexity_check_when_tool_count_is_smal
     assert instruction.startswith("<system-instruction>")
     assert instruction.endswith("</system-instruction>")
     assert "## Current task process information" not in instruction
-    assert "You can create these following sub tasks." in instruction
+    assert "decompose it into sub-tasks" in instruction
     assert "Focus on current task: Build feature" in instruction
-    assert "consider decompose complex task and create sub task" in instruction
+    assert "explore and search for context using tools" in instruction
     assert "## Common Task" in instruction
     assert "## Reminder instruction" not in instruction
 
@@ -140,7 +140,7 @@ def test_user_task_instruction_does_not_force_next_task_after_six_tool_calls():
 
     assert "<system-instruction>" in instruction
     assert "## Current task process information" not in instruction
-    assert "You can create these following sub tasks." in instruction
+    assert "decompose it into sub-tasks" in instruction
     assert "Focus on current task: Build feature" in instruction
     assert "## Common Task" in instruction
     assert "## Reminder instruction" not in instruction

@@ -39,16 +39,17 @@ TASK_INSTRUCTION_TEMPLATE = """\
 {% if has_common_task %}
 ## Common Task
 When to use:
-- Use a common task for a recursive subtask that should have the same behavior as the current task.
-- Use it when the next unit of work may need its own decomposition, tool calls, finish handling, and compaction.
-- Keep the common task focused on one meaningful sub-goal, not the whole user request.
+- Use a common task to explore, search, and gather context using tools — not to generate text responses.
+- Use it when you need to investigate the codebase, inspect files, or collect information that informs the parent task.
+- Do NOT create a common task whose goal is to produce a summary, explanation, or text answer. Sub-tasks should use tools to find and return facts.
+- Keep the common task focused on one concrete exploration or search goal.
 
 How to create and start:
-- Call `create_next_task(kind="common", title="<focused subtask goal>", metadata={})`.
-- Put the concrete subtask goal in the title.
+- Call `create_next_task(kind="common", title="<exploration goal>", metadata={})`.
+- Put the concrete exploration goal in the title (e.g., "Find how session runner dispatches lifecycles").
 - Omit metadata or pass an empty object.
 - The tool returns the allocated task id. Call `start_next_task(task_id=<returned id>)` to begin execution.
-- Example: {"kind":"common","title":"Summarize session runner lifecycle flow","metadata":{}}
+- Example: {"kind":"common","title":"Explore task lifecycle dispatch flow in session runner","metadata":{}}
 
 {% endif %}
 {% if has_repo_memory_task %}
@@ -71,6 +72,7 @@ How to create and start:
 - Do not invent metadata keys unless the selected task kind asks for them.
 - Keep the created task focused on the next unit of work, not the whole user request.
 - Always call `start_next_task` with the id returned by `create_next_task` to begin the new task.
+- Sub-tasks exist to explore and gather context with tools — never create a sub-task just to generate a text response.
 """
 
 
