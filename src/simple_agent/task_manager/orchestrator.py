@@ -208,33 +208,53 @@ class OrchestratorLifecycle(BaseTaskLifecycle):
     ) -> SessionState:
         """Inspect context and manage the task plan.
 
-        1. Prepare: build the current task plan from the task tree, prompt,
-           tools, and message buffer
+        1. Prepare: build prompt, tools, and message buffer
         2. Run: call _run_loop to let the agent review and update the plan
-        3. Post-handle: read task_plan and sync the task tree
+        3. Post-handle: if a sub-task was started, allocate id and route to it
         """
-        # 1. Prepare: build task plan from current task tree state
-        # TODO: construct the markdown task plan from self.task.children:
-        #   - [x] for done tasks, - [ ] for active tasks
-        # Set as initial task_plan so the agent sees the current state.
-        # system_prompt = ...
-        # instruction_message = UserMessage(...)
-        # tools = [self._build_update_task_plan_tool()]
-        # buffer: list[AgentMessage] = [instruction_message]
+        task = self.task
 
-        # 2. Run: let the agent review and update the task plan
-        # await self._run_loop(...)
+        # ── 1. Prepare ──────────────────────────────────────────────────
+        # TODO: build system_prompt and instruction message
+        system_prompt = ""  # TODO
+        instruction_message = UserMessage(
+            content=[TextContent(text="")],  # TODO
+            timestamp=int(time.time() * 1000),
+        )
+        tools: list[AgentTool] = [
+            self._build_update_task_plan_tool(),
+            self.build_start_next_task_tool(enabled_task_kinds=["common"]),
+        ]
+        buffer: list[AgentMessage] = [
+            *self._session_state.message_values(),
+            instruction_message,
+        ]
 
-        # 3. Post-handle: sync task_plan back to the task tree
-        # TODO: parse task_plan markdown, create new sub-tasks for new
-        #   pending items, mark completed items as done.
-        # pending = self._session_state.task_plan
-        # if pending is not None:
-        #     self._sync_task_plan(pending)
+        # ── 2. Run ──────────────────────────────────────────────────────
+        await self._run_loop(
+            system_prompt=system_prompt,
+            messages=buffer,
+            tools=tools,
+            agent_process=agent_process,
+            cancel_event=cancel_event,
+        )
 
-        # For now: route back to CommonTaskLifecycle
-        self._session_state.next_phase = "common_task"
-        self.set_current_task(self.task.id, self.task)
+        # ── 3. Post-handle ──────────────────────────────────────────────
+        task_to_start = self.task_to_start
+        if task_to_start is not None:
+            # Allocate id and append to parent.children
+            task_to_start.id = self._session_state.allocate_task_id()
+            task.children.append(task_to_start)
+            task.touch()
+            # Route to the new sub-task
+            self._session_state.next_phase = "common_task"
+            self.set_current_task(task_to_start.id, task_to_start)
+        else:
+            # Route back to CommonTaskLifecycle to continue current task
+            self._session_state.next_phase = "common_task"
+            self.set_current_task(task.id, task)
+
+        self.task_to_start = None
         return self._session_state
 
     async def _run_loop(
