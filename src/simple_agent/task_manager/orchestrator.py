@@ -107,13 +107,17 @@ Based on current task progress:
 And task plan:
 {{ task_plan }}
 
-Determine whether to create a sub-task or keep running the current task.
+Determine whether to update the task plan, create a sub-task, or keep running.
 
-When to create a sub-task:
-- TODO: define criteria
+When to update the task plan (use update_task_plan):
+1. Based on the task context, mark already-finished tasks as [x].
+2. If the current task is complex, decompose it and add new pending tasks as [ ].
+3. Based on task progress, think about the next task to run and reflect it in the plan.
+   If the remaining work is simple, keep running the current task without changes.
 
-When to keep running the current task:
-- TODO: define criteria
+When to create a sub-task (use start_next_task):
+1. If the remaining work is complex, consider decomposing it into sub-tasks.
+2. If the remaining work is simple to complete, do NOT create a sub-task — just keep running.
 
 If no action is needed, respond without tool calls."""
 
