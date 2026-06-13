@@ -9,12 +9,10 @@ from typing import TYPE_CHECKING, Callable
 from pi.ai.types import TextContent, UserMessage
 
 from simple_agent.message_store import MessageEntry
-from simple_agent.task_manager.base_lifecycle import (
-    BaseTaskLifecycle,
-    SessionState,
-)
+from simple_agent.task_manager.base_lifecycle import SessionState
 from simple_agent.task_manager.repo_memory_lifecycle import RepoMemoryLifecycle
 from simple_agent.task_manager.task_lifecycle import CommonTaskLifecycle
+from simple_agent.task_manager.orchestrator import OrchestratorLifecycle
 from simple_agent.task_manager.models import ManagedTask, CommonTask
 
 if TYPE_CHECKING:
@@ -33,7 +31,9 @@ class SessionRunner:
     _cancel_event: asyncio.Event
     _last_error: str | None
     _user_task: CommonTask | None
-    _lifecycles: dict[str, BaseTaskLifecycle]
+    _common_task: CommonTaskLifecycle
+    _orchestrator: OrchestratorLifecycle
+    _repo_memory: RepoMemoryLifecycle
     _session_state: SessionState
     _user_paused: bool
 
@@ -53,10 +53,9 @@ class SessionRunner:
         self._cancel_event = cancel_event
         self._last_error = None
         self._user_task = None
-        self._lifecycles = {
-            "user_task": CommonTaskLifecycle(),
-            "repo_memory": RepoMemoryLifecycle(),
-        }
+        self._common_task = CommonTaskLifecycle()
+        self._orchestrator = OrchestratorLifecycle()
+        self._repo_memory = RepoMemoryLifecycle()
         self._session_state = SessionState(
             messages=[],
             session_id=self._session_id,
@@ -104,7 +103,28 @@ class SessionRunner:
         while self._session_state.next_task_id_to_run is not None:
             if self._user_paused:
                 break
-            await self.run_active_lifecycle()
+
+            task = self._resolve_next_task()
+            if task is None:
+                raise RuntimeError("No active task")
+
+            phase = self._session_state.next_phase
+            if phase == "orchestrator":
+                lifecycle = self._orchestrator
+            elif phase == "common_task":
+                lifecycle = self._common_task
+            else:
+                lifecycle = self._common_task
+
+            lifecycle.set_data(self._session_state)
+            try:
+                await lifecycle.run(
+                    agent_process=self._agent_process,
+                    cancel_event=self._cancel_event,
+                )
+            finally:
+                lifecycle.clear_data()
+
             with self._db.create_session() as session:
                 self.sync_metadata(session=session)
                 session.commit()
@@ -152,21 +172,6 @@ class SessionRunner:
         with self._db.create_session() as session:
             return self._db.get_managed_task(self._user_task.id, session=session)
 
-    async def run_active_lifecycle(self):
-        task = self._resolve_next_task()
-        if task is None:
-            raise RuntimeError("No active task")
-        lifecycle = self.get_lifecycle(task)
-        lifecycle.set_data(self._session_state)
-        try:
-            result = await lifecycle.run(
-                agent_process=self._agent_process,
-                cancel_event=self._cancel_event,
-            )
-        finally:
-            lifecycle.clear_data()
-        return result
-
     def _resolve_next_task(self) -> ManagedTask | None:
         next_task_id = self._session_state.next_task_id_to_run
         if next_task_id is None:
@@ -179,12 +184,6 @@ class SessionRunner:
             raise RuntimeError(f"Next task {next_task_id} is missing")
         self._session_state.next_task = task
         return task
-
-    def get_lifecycle(self, task: ManagedTask) -> BaseTaskLifecycle:
-        lifecycle = self._lifecycles.get(task.kind)
-        if lifecycle is None:
-            raise RuntimeError(f"{task.kind} lifecycle is not registered")
-        return lifecycle
 
     def build_tree(self, task_id: int) -> ManagedTask | None:
         with self._db.create_session() as session:

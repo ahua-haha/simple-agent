@@ -152,25 +152,11 @@ class OrchestratorLifecycle(BaseTaskLifecycle):
         agent_process: AgentProcess,
         cancel_event: asyncio.Event | None = None,
     ) -> SessionState:
-        if self.task.status == "compact_finished":
-            return self.compact_finished_task()
-
-        if self.task.status == "index_memory_upsert":
-            return await self.run_index_memory_upsert_one_turn(
-                agent_process=agent_process,
-                cancel_event=cancel_event,
-            )
-
-        if self.task.status == "done":
-            return await self.run_compact_one_turn(
-                agent_process=agent_process,
-                cancel_event=cancel_event,
-            )
-
-        return await self.run_one_turn(
-            agent_process=agent_process,
-            cancel_event=cancel_event,
-        )
+        # TODO: inspect context, create/start sub-tasks, trigger compaction, etc.
+        # For now, route back to CommonTaskLifecycle to continue the current task.
+        self._session_state.next_phase = "common_task"
+        self.set_next_task(self.task.id, self.task)
+        return self._session_state
 
     def should_compact_after_turn(self) -> bool:
         # Sub-tasks (tasks with a parent) do not compact — only the root user task compacts.

@@ -106,6 +106,7 @@ class SessionState:
     next_task_id_to_allocate: int | None = None
     next_task_id_to_run: int | None = None
     next_task: ManagedTask | None = None
+    next_phase: str | None = None  # "common_task" | "orchestrator" | None (use task.kind)
 
     def allocate_message_id(self) -> int:
         message_id = self.next_message_id
