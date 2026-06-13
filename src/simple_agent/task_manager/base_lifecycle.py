@@ -63,7 +63,7 @@ How to create and start:
 - Metadata must include `index_db_path`.
 - Metadata may include `repo_path`; omit it when the current repository root is correct.
 - Metadata shape: {"repo_path":"<repo path>","index_db_path":"<index database path>"}.
-- Example: {"kind":"repo_memory","title":"Write memory for task lifecycle design","metadata":{"repo_path":".","index_db_path":".agent-index.db"}}
+- Example: {"kind":"repo_memory","title":"Write memory for task lifecycle design","metadata":{"repo_path":".","index_db_path":".index.db"}}
 
 {% endif %}
 ## Task Creation Rules

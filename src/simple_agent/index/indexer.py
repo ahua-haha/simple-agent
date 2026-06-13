@@ -52,16 +52,19 @@ class AgentIndex:
 
     def __init__(
         self,
-        db_path: str = "./data/agent_index.db",
+        db_path: str = ".index.db",
         *,
         base_dir: str = ".",
         repo_watcher: RepoWatcher | None = None,
     ):
         self._base_dir = Path(base_dir).resolve()
         self._repo_watcher = repo_watcher
-        os.makedirs(os.path.dirname(db_path) or ".", exist_ok=True)
+        db_path_resolved = str(self._base_dir / db_path)
+        parent_dir = os.path.dirname(db_path_resolved)
+        if parent_dir and parent_dir != ".":
+            os.makedirs(parent_dir, exist_ok=True)
         self._engine = create_engine(
-            f"sqlite:///{db_path}",
+            f"sqlite:///{db_path_resolved}",
             connect_args={"check_same_thread": False},
         )
         SQLModel.metadata.create_all(self._engine)
