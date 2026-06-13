@@ -152,6 +152,7 @@ class SessionRunner:
         )
         self._user_task = task
         self._session_state.set_current_task(task.id, task)
+        self._session_state.next_phase = "orchestrator"
         self._last_error = None
 
         with self._db.create_session() as session:

@@ -119,8 +119,7 @@ class CommonTaskLifecycle(BaseTaskLifecycle):
         return tool
 
     def _should_orchestrate(self) -> bool:
-        # TODO: decide whether to route to orchestrator based on context
-        return False
+        return self.finished_task is not None
 
     async def run(
         self,

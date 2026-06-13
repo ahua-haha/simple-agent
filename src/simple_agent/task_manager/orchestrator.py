@@ -132,15 +132,49 @@ class OrchestratorLifecycle(BaseTaskLifecycle):
         self.finished_task = None
         task = self._session_state.current_task
         if task is None:
-            raise TaskLifecycleError("Session state has no next task")
+            raise TaskLifecycleError("Session state has no current task")
         if task.kind != "user_task":
-            raise TaskLifecycleError("Active lifecycle task is not a user task")
+            raise TaskLifecycleError("Orchestrator expects a user_task")
         self.task = cast(CommonTask, task)
         self._agent_index = AgentIndex(base_dir=self._session_state.workspace_dir)
 
     def clear_data(self) -> None:
         super().clear_data()
         self._agent_index = None
+
+    def _resolve_task(self) -> ManagedTask | None:
+        """Resolve the current task from session state, rebuilding from DB if needed."""
+        task_id = self._session_state.current_task_id
+        if task_id is None:
+            self._session_state.current_task = None
+            return None
+        task = self._session_state.current_task
+        if task is None or task.id != task_id:
+            task = self._build_tree(task_id)
+        if task is None:
+            raise TaskLifecycleError(f"Task {task_id} is missing")
+        self._session_state.current_task = task
+        return task
+
+    def _build_tree(self, task_id: int) -> ManagedTask | None:
+        """Load a task tree from the database by root task id."""
+        database = self._session_state.database
+        if database is None:
+            return None
+        with database.create_session() as session:
+            root = database.get_managed_task(task_id, session=session)
+            if root is None or root.id is None:
+                return None
+
+            def attach_children(t: ManagedTask) -> None:
+                t.children = []
+                for child in database.list_managed_task_children(t.id, session=session):
+                    if child.id is not None:
+                        attach_children(child)
+                        t.children.append(child)
+
+            attach_children(root)
+            return root
 
     def instruction_text(self) -> str:
         tool_call_count = _count_tool_calls(self.task.children)
@@ -232,13 +266,28 @@ class OrchestratorLifecycle(BaseTaskLifecycle):
         agent_process: AgentProcess,
         cancel_event: asyncio.Event | None = None,
     ) -> SessionState:
-        """Inspect context and manage the task plan.
+        """Inspect context and manage task transitions.
 
+        0. Check status: if done, route to parent
         1. Prepare: build prompt, tools, and message buffer
         2. Run: call _run_loop to let the agent review and update the plan
         3. Post-handle: if a sub-task was started, allocate id and route to it
         """
         task = self.task
+
+        # ── 0. Check status: if done, transition to parent ──────────────
+        if task.status == "done":
+            if task.parent_id is None:
+                # Root task done — end the run
+                self._session_state.next_phase = None
+                self.set_current_task(None, None)
+                return self._session_state
+            # Resolve parent task and continue with it
+            self.set_current_task(task.parent_id, None)
+            task = self._resolve_task()
+            if task is None or task.kind != "user_task":
+                raise TaskLifecycleError("Parent task not found or not a user_task")
+            self.task = cast(CommonTask, task)
 
         # ── 1. Prepare ──────────────────────────────────────────────────
         system_prompt = ORCHESTRATOR_SYSTEM_PROMPT

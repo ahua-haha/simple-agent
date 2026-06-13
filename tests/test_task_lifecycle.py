@@ -862,7 +862,7 @@ async def test_user_task_lifecycle_run_calls_llm_appends_message_and_returns_sta
     assert lifecycle._session_state.next_message_id == 3
     assert lifecycle._session_state.current_task is user_task
     assert lifecycle._session_state.current_task_id == user_task.id
-    assert lifecycle._session_state.next_phase == "common_task"
+    assert lifecycle._session_state.next_phase == "orchestrator"
     assert user_task.status == "done"
     assert [message.content[0].text for message in db.list_runner_messages("session_a")] == ["Done"]
     assert db.get_managed_task(user_task.id).status == "done"
@@ -889,7 +889,7 @@ async def test_user_task_lifecycle_run_keeps_done_task_for_compaction_when_neede
     assert user_task.status == "done"
     assert lifecycle._session_state.current_task is user_task
     assert lifecycle._session_state.current_task_id == user_task.id
-    assert lifecycle._session_state.next_phase == "common_task"
+    assert lifecycle._session_state.next_phase == "orchestrator"
     assert db.get_managed_task(user_task.id).status == "done"
 
 
