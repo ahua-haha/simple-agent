@@ -41,7 +41,6 @@ class CommonTask(BaseTask):
     start_message_id: int | None = None
     end_message_id: int | None = None
     compacted_tool_call_log_ids: list[int] = Field(default_factory=list)
-    pending_tasks: list["ManagedTask"] = Field(default_factory=list, exclude=True)
 
     def format_for_render(self, *, tool_call: Any | None = None, sequence: int | None = None) -> str:
         return f"user_task [{self.status}] {self.title}"

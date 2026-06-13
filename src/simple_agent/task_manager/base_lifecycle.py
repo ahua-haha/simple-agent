@@ -107,6 +107,7 @@ class SessionState:
     current_task_id: int | None = None
     current_task: ManagedTask | None = None
     next_phase: str | None = None  # "common_task" | "orchestrator" | None (use task.kind)
+    task_plan: str | None = None  # orchestrator: markdown task plan for the current task tree
 
     def allocate_message_id(self) -> int:
         message_id = self.next_message_id
@@ -525,24 +526,17 @@ class BaseTaskLifecycle:
         else:
             raise TaskLifecycleError(f"Unsupported next task kind: {kind}")
 
-        if not isinstance(parent, CommonTask):
-            raise TaskLifecycleError("Only common tasks can hold pending child tasks")
-        parent.pending_tasks.append(task)
         parent.touch()
         return task
 
     def start_next_task(self, *, task_id: int) -> ManagedTask:
         parent = self._require_task()
         task: ManagedTask | None = None
-        if isinstance(parent, CommonTask):
-            for pending_task in parent.pending_tasks:
-                if pending_task.id == task_id:
-                    task = pending_task
-                    break
-            if task is not None:
-                parent.pending_tasks.remove(task)
-                parent.children.append(task)
-                parent.touch()
+        # Look for task_id in parent.children (sub-tasks already added)
+        for child in parent.children:
+            if child.id == task_id:
+                task = child
+                break
         if task is None:
             raise TaskLifecycleError(f"Task does not exist under current task: {task_id}")
         self.task_to_start = task

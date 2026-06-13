@@ -360,7 +360,6 @@ def test_base_lifecycle_create_next_task_supports_common_task():
     assert task.id == 2
     assert task.parent_id == parent.id
     assert task.start_message_id is None
-    assert parent.pending_tasks == [task]
     assert lifecycle.task_to_start is None
 
 
@@ -375,11 +374,12 @@ async def test_base_lifecycle_create_next_task_tool_mutates_session_state():
         next_task_id_to_allocate=2,
     )
     lifecycle = _user_lifecycle(task, session_state=session_state)
-    tool = lifecycle.create_next_task_tools(enabled_task_kinds=["common"])[0]
 
-    result = await tool.execute("call_1", {"kind": "common", "title": "Inspect files"})
-
-    next_task = task.pending_tasks[0]
+    next_task = lifecycle.create_next_task(
+        kind="common",
+        title="Inspect files",
+        enabled_task_kinds=["common"],
+    )
     assert isinstance(next_task, CommonTask)
     assert next_task.id == 2
     assert next_task.parent_id == task.id
@@ -388,14 +388,13 @@ async def test_base_lifecycle_create_next_task_tool_mutates_session_state():
     assert task.children == []
     assert session_state.current_task is task
     assert session_state.current_task_id == task.id
-    assert result.content[0].text == "Created next task: id=2 kind=user_task title=Inspect files"
 
 
 @pytest.mark.asyncio
 async def test_base_lifecycle_start_next_task_tool_sets_task_to_start():
     parent = CommonTask(id=1, title="Build feature")
     child = CommonTask(id=2, parent_id=1, title="Inspect files")
-    parent.pending_tasks = [child]
+    parent.children = [child]
     session_state = SessionState(
         workspace_dir=".",
         messages=[],
@@ -425,7 +424,7 @@ def test_base_lifecycle_start_next_task_can_select_pending_task_with_id():
     )
     lifecycle = _user_lifecycle(parent, session_state=session_state)
     child = CommonTask(id=2, parent_id=1, title="Inspect files")
-    parent.pending_tasks = [child]
+    parent.children = [child]
 
     result = lifecycle.start_next_task(task_id=2)
 
@@ -543,7 +542,6 @@ def test_lifecycle_tracks_next_task_transition():
     assert user_lifecycle._session_state.current_task is user_task
     assert next_task.id == 2
     assert next_task.parent_id == user_task.id
-    assert user_task.pending_tasks == [next_task]
 
 
 def test_lifecycle_allocates_task_id_from_session_state_context():

@@ -153,8 +153,87 @@ class OrchestratorLifecycle(BaseTaskLifecycle):
         agent_process: AgentProcess,
         cancel_event: asyncio.Event | None = None,
     ) -> SessionState:
-        # TODO: inspect context, create/start sub-tasks, trigger compaction, etc.
-        # For now, route back to CommonTaskLifecycle to continue the current task.
+        return await self._manage_task(
+            agent_process=agent_process,
+            cancel_event=cancel_event,
+        )
+
+    def _build_update_task_plan_tool(self) -> AgentTool:
+        """Build a tool that updates the full task plan on SessionState.
+
+        The agent passes a markdown task list representing the entire task tree
+        plan. Completed tasks are `- [x]`, pending tasks are `- [ ]`.
+        The orchestrator reads this in _manage_task post-handle to sync the
+        actual task tree.
+        """
+        tool = AgentTool(
+            name="update_task_plan",
+            description=(
+                "Update the full task plan. Pass a markdown task list where "
+                "`- [x]` marks completed tasks and `- [ ]` marks pending tasks. "
+                "The orchestrator will sync the actual task tree from this plan. "
+                "Include ALL tasks (completed and pending) each time you call this."
+            ),
+            parameters={
+                "type": "object",
+                "properties": {
+                    "task_plan": {
+                        "type": "string",
+                        "description": (
+                            "The full markdown task plan, e.g.:\n"
+                            "## Tasks\n\n"
+                            "- [x] Completed task A\n"
+                            "- [ ] Pending task B\n"
+                            "- [ ] Pending task C\n"
+                        ),
+                    },
+                },
+                "required": ["task_plan"],
+            },
+        )
+
+        async def execute(tool_call_id, params, cancel_event=None, on_update=None):
+            self._session_state.task_plan = params["task_plan"]
+            return AgentToolResult(
+                content=[TextContent(text="Task plan updated.")]
+            )
+
+        tool.execute = execute
+        return tool
+
+    async def _manage_task(
+        self,
+        *,
+        agent_process: AgentProcess,
+        cancel_event: asyncio.Event | None = None,
+    ) -> SessionState:
+        """Inspect context and manage the task plan.
+
+        1. Prepare: build the current task plan from the task tree, prompt,
+           tools, and message buffer
+        2. Run: call _run_loop to let the agent review and update the plan
+        3. Post-handle: read task_plan and sync the task tree
+        """
+        # 1. Prepare: build task plan from current task tree state
+        # TODO: construct the markdown task plan from self.task.children:
+        #   - [x] for done tasks, - [ ] for active tasks
+        # Set as initial task_plan so the agent sees the current state.
+        # system_prompt = ...
+        # instruction_message = UserMessage(...)
+        # tools = [self._build_update_task_plan_tool()]
+        # buffer: list[AgentMessage] = [instruction_message]
+
+        # 2. Run: let the agent review and update the task plan
+        # await self._run_loop(...)
+
+        # 3. Post-handle: sync task_plan back to the task tree
+        # TODO: parse task_plan markdown, create new sub-tasks for new
+        #   pending items, mark completed items as done.
+        # pending = self._session_state.task_plan
+        # if pending is not None:
+        #     self._sync_task_plan(pending)
+
+        # For now: route back to CommonTaskLifecycle
         self._session_state.next_phase = "common_task"
         self.set_current_task(self.task.id, self.task)
         return self._session_state
