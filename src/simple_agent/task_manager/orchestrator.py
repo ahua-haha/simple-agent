@@ -140,7 +140,7 @@ class OrchestratorLifecycle(BaseTaskLifecycle):
 
     def create_tools(self) -> list[AgentTool]:
         return [
-            *self.create_next_task_tools(enabled_task_kinds=["common"]),
+            self.build_start_next_task_tool(enabled_task_kinds=["common"]),
             self.create_finish_common_task_tool(),
             self._agent_index.create_tree_tool(),
             *create_all_coding_tools(self._session_state.workspace_dir),

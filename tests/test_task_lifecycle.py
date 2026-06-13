@@ -333,10 +333,10 @@ def test_base_lifecycle_provides_next_task_instruction_and_tool():
     )
     lifecycle = _user_lifecycle(task, session_state=session_state)
 
-    next_task_tools = lifecycle.create_next_task_tools(enabled_task_kinds=["common"])
+    tool = lifecycle.build_start_next_task_tool(enabled_task_kinds=["common"])
 
-    assert [tool.name for tool in next_task_tools] == ["start_next_task"]
-    assert next_task_tools[0].parameters["properties"]["kind"]["enum"] == ["common"]
+    assert tool.name == "start_next_task"
+    assert tool.parameters["properties"]["kind"]["enum"] == ["common"]
 
 
 def test_base_lifecycle_create_next_task_supports_common_task():

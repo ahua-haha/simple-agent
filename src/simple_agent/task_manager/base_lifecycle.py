@@ -410,13 +410,6 @@ class BaseTaskLifecycle:
             has_tool_call=has_tool_call,
         )
 
-    def create_next_task_tools(
-        self,
-        *,
-        enabled_task_kinds: list[str] | tuple[str, ...] | None = None,
-    ) -> list[AgentTool]:
-        return [self.build_start_next_task_tool(enabled_task_kinds=enabled_task_kinds)]
-
     def build_start_next_task_tool(
         self,
         *,
