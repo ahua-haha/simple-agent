@@ -7,6 +7,7 @@ import time
 from typing import TYPE_CHECKING, cast
 
 from pi.agent import AgentTool, AgentToolResult
+from pi.agent.types import AgentMessage
 from pi.ai.types import AssistantMessage, TextContent, ToolCall, ToolResultMessage, UserMessage
 
 from simple_agent.index.indexer import AgentIndex
@@ -157,6 +158,40 @@ class OrchestratorLifecycle(BaseTaskLifecycle):
         self._session_state.next_phase = "common_task"
         self.set_current_task(self.task.id, self.task)
         return self._session_state
+
+    async def _run_loop(
+        self,
+        *,
+        system_prompt: str,
+        messages: list[AgentMessage],
+        tools: list[AgentTool],
+        agent_process: AgentProcess,
+        cancel_event: asyncio.Event | None = None,
+    ) -> None:
+        """Run an LLM/tool loop on a caller-owned message buffer.
+
+        Does NOT modify session_state or the database. *messages* is mutated
+        in-place: assistant and tool-result messages are appended to it.
+        The caller provides the initial messages and owns post-handling.
+        """
+        while True:
+            assistant_message = await agent_process.call_llm_step(
+                system_prompt=system_prompt,
+                messages=messages,
+                tools=tools,
+                cancel_event=cancel_event,
+            )
+            messages.append(assistant_message)
+
+            tool_results = await agent_process.run_tool_calls_step(
+                tools=tools,
+                assistant_message=assistant_message,
+                cancel_event=cancel_event,
+            )
+            messages.extend(tool_results)
+
+            if not tool_results:
+                break
 
     def should_compact_after_turn(self) -> bool:
         # Sub-tasks (tasks with a parent) do not compact — only the root user task compacts.
