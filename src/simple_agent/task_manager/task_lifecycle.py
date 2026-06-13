@@ -172,13 +172,12 @@ class CommonTaskLifecycle(BaseTaskLifecycle):
         if not has_tool_call and task.status != "done":
             self.finish_task()
 
-        # Route after turn
-        next_phase = "orchestrator" if self._should_orchestrate() else "common_task"
         if self.finished_task is not None:
             self.stamp_finished_task(end_message_id=turn_end_message_id)
-        if self.finished_task is not None or has_tool_call:
-            self._session_state.next_phase = next_phase
-            self.set_next_task(task.id, task)
+
+        # Route after turn
+        next_phase = "orchestrator" if self._should_orchestrate() else "common_task"
+        self._session_state.next_phase = next_phase
 
         runtime_logger.log_handle_running(
             session_id=self._session_state._require_session_id(),
