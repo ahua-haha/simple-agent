@@ -83,15 +83,17 @@ class ToolCallTask(BaseTask):
         return cls(id=id, parent_id=parent_id, status=status, **_metadata_dict(metadata))
 
 
-class UserTask(BaseTask):
+class UserTask(BaseModel):
     """Single user task that holds all metadata during an agent run.
 
-    Replaces the task tree pattern. The task_plan markdown tracks sub-goals
-    instead of creating child CommonTask objects. Tool calls are tracked via
-    tool_call_log_ids and the children list.
+    Standalone model — does not inherit from BaseTask. The task_plan
+    markdown tracks sub-goals. Tool calls are tracked via tool_call_log_ids
+    and the children list.
     """
 
+    id: int | None = None
     kind: Literal["user_task"] = "user_task"
+    status: TaskStatus = "active"
     title: str
     result: str | None = None
     error: str | None = None
@@ -100,20 +102,27 @@ class UserTask(BaseTask):
     task_plan: str | None = None
     tool_call_log_ids: list[int] = Field(default_factory=list)
     compacted_tool_call_log_ids: list[int] = Field(default_factory=list)
+    created_at: float = Field(default_factory=time.time)
+    updated_at: float = Field(default_factory=time.time)
+
+    def touch(self) -> None:
+        self.updated_at = time.time()
 
     def format_for_render(self, *, tool_call: Any | None = None, sequence: int | None = None) -> str:
         return f"user_task [{self.status}] {self.title}"
+
+    def metadata_json(self) -> str:
+        return self.model_dump_json(exclude={"id", "kind", "status", "children"})
 
     @classmethod
     def from_metadata(
         cls,
         *,
         id: int | None,
-        parent_id: int | None = None,
         status: str,
         metadata: str,
     ) -> "UserTask":
-        return cls(id=id, parent_id=parent_id, status=status, **_metadata_dict(metadata))
+        return cls(id=id, status=status, **_metadata_dict(metadata))
 
 
 class RepoMemoryTask(BaseTask):
@@ -139,7 +148,7 @@ class RepoMemoryTask(BaseTask):
         return cls(id=id, parent_id=parent_id, status=status, **_metadata_dict(metadata))
 
 
-ManagedTask = CommonTask | UserTask | ToolCallTask | RepoMemoryTask
+ManagedTask = CommonTask | ToolCallTask | RepoMemoryTask
 
 
 def task_from_metadata(
@@ -151,7 +160,7 @@ def task_from_metadata(
     metadata: str,
 ) -> ManagedTask:
     if kind == "user_task":
-        return UserTask.from_metadata(id=id, parent_id=parent_id, status=status, metadata=metadata)
+        return CommonTask.from_metadata(id=id, parent_id=parent_id, status=status, metadata=metadata)
     if kind == "tool_call":
         return ToolCallTask.from_metadata(id=id, parent_id=parent_id, status=status, metadata=metadata)
     if kind == "repo_memory":
