@@ -387,7 +387,7 @@ def flatten_tasks(tasks) -> list:
     while stack:
         task = stack.pop()
         flattened.append(task)
-        stack.extend(reversed(task.children))
+        stack.extend(reversed(getattr(task, "children", [])))
     return flattened
 
 

@@ -60,7 +60,7 @@ class CommonTaskLifecycle(BaseTaskLifecycle):
         self._agent_index = None
 
     def instruction_text(self) -> str:
-        tool_call_count = _count_tool_calls(self.task.children)
+        tool_call_count = len(self.task.tool_call_log_ids)
         task_info = None
         if tool_call_count > 10:
             task_info = TaskTreeRenderer(format="tree", depth=1).render(self.task)
@@ -149,14 +149,14 @@ class CommonTaskLifecycle(BaseTaskLifecycle):
         assistant_entry = turn_result.assistant_entry
         tool_result_entries = turn_result.tool_result_entries
         tool_call_records = turn_result.tool_call_records
-        tool_call_tasks = turn_result.tool_call_tasks
+        tool_call_log_ids = turn_result.tool_call_log_ids
         has_tool_call = turn_result.has_tool_call
         new_messages = [assistant_entry, *tool_result_entries]
         turn_end_message_id = new_messages[-1].id
         self._session_state.append_messages(new_messages)
 
-        task.children.extend(tool_call_tasks)
-        if tool_call_tasks:
+        task.tool_call_log_ids.extend(tool_call_log_ids)
+        if tool_call_log_ids:
             task.touch()
 
         if not has_tool_call and task.status != "done":
@@ -178,7 +178,7 @@ class CommonTaskLifecycle(BaseTaskLifecycle):
             tool_result_entries=tool_result_entries,
         )
 
-        tasks_to_sync: list[ManagedTask] = [task, *task.children]
+        tasks_to_sync = [task]
         with self._session_state.create_database_session() as session:
             self._session_state.append_messages_to_database(
                 messages=new_messages,
@@ -195,11 +195,3 @@ class CommonTaskLifecycle(BaseTaskLifecycle):
             session.commit()
         self.clear_turn_indicators()
         return self._session_state
-
-def _count_tool_calls(tasks: list[ManagedTask]) -> int:
-    count = 0
-    for task in tasks:
-        if task.kind == "tool_call":
-            count += 1
-        count += _count_tool_calls(task.children)
-    return count

@@ -36,7 +36,7 @@ class TaskTreeRenderer:
         if self._depth is not None and depth >= self._depth:
             return
 
-        for child in task.children:
+        for child in getattr(task, "children", []):
             self._render_task(child, depth=depth + 1)
 
     def _append_task(self, task: ManagedTask, *, depth: int) -> None:
@@ -64,13 +64,13 @@ class TaskTreeRenderer:
 
 def _flat_tool_calls(task: ManagedTask) -> list[ToolCallTask]:
     tool_calls: list[ToolCallTask] = []
-    stack = list(reversed(task.children))
+    stack = list(reversed(getattr(task, "children", [])))
     while stack:
         child = stack.pop()
         if isinstance(child, ToolCallTask):
             tool_calls.append(child)
         else:
-            stack.extend(reversed(child.children))
+            stack.extend(reversed(getattr(child, "children", [])))
     return tool_calls
 
 
@@ -83,11 +83,13 @@ def build_task_tree(tasks: list[ManagedTask]) -> list[ManagedTask]:
     }
     roots: list[ManagedTask] = []
     for task in tasks:
-        task.children = []
+        if hasattr(task, "children"):
+            task.children = []
 
     for task in tasks:
-        if task.parent_id is not None and task.parent_id in by_id:
-            by_id[task.parent_id].children.append(task)
+        parent_id = getattr(task, "parent_id", None)
+        if parent_id is not None and parent_id in by_id:
+            by_id[parent_id].children.append(task)
         else:
             roots.append(task)
     return roots

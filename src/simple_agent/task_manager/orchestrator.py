@@ -138,7 +138,7 @@ class OrchestratorLifecycle(BaseTaskLifecycle):
         self._agent_index = None
 
     def instruction_text(self) -> str:
-        tool_call_count = _count_tool_calls(self.task.children)
+        tool_call_count = len(self.task.tool_call_log_ids)
         task_info = None
         if tool_call_count > 10:
             task_info = TaskTreeRenderer(format="tree", depth=1).render(self.task)
@@ -312,7 +312,7 @@ class OrchestratorLifecycle(BaseTaskLifecycle):
                 break
 
     def should_compact_after_turn(self) -> bool:
-        return _count_tool_calls(self.task.children) > 10
+        return len(self.task.tool_call_log_ids) > 10
 
     async def run_one_turn(
         self,
@@ -340,14 +340,14 @@ class OrchestratorLifecycle(BaseTaskLifecycle):
         assistant_entry = turn_result.assistant_entry
         tool_result_entries = turn_result.tool_result_entries
         tool_call_records = turn_result.tool_call_records
-        tool_call_tasks = turn_result.tool_call_tasks
+        tool_call_log_ids = turn_result.tool_call_log_ids
         has_tool_call = turn_result.has_tool_call
         new_messages = [assistant_entry, *tool_result_entries]
         turn_end_message_id = new_messages[-1].id
         self._session_state.append_messages(new_messages)
 
-        task.children.extend(tool_call_tasks)
-        if tool_call_tasks:
+        task.tool_call_log_ids.extend(tool_call_log_ids)
+        if tool_call_log_ids:
             task.touch()
 
         if not has_tool_call and task.status != "done":
@@ -380,7 +380,7 @@ class OrchestratorLifecycle(BaseTaskLifecycle):
             tool_result_entries=tool_result_entries,
         )
 
-        tasks_to_sync: list[ManagedTask] = [task, *task.children]
+        tasks_to_sync: list[ManagedTask] = [task]
         with self._session_state.create_database_session() as session:
             self._session_state.append_messages_to_database(
                 messages=new_messages,
@@ -436,8 +436,8 @@ class OrchestratorLifecycle(BaseTaskLifecycle):
         new_messages = [turn_result.assistant_entry, *turn_result.tool_result_entries]
         self._session_state.append_messages(new_messages)
 
-        task.children.extend(turn_result.tool_call_tasks)
-        if turn_result.tool_call_tasks:
+        task.tool_call_log_ids.extend(turn_result.tool_call_log_ids)
+        if turn_result.tool_call_log_ids:
             task.touch()
 
         if turn_result.has_tool_call:
@@ -447,7 +447,7 @@ class OrchestratorLifecycle(BaseTaskLifecycle):
             task.touch()
             self.set_current_task(task.id, task)
 
-        tasks_to_sync: list[ManagedTask] = [task, *task.children]
+        tasks_to_sync: list[ManagedTask] = [task]
         with self._session_state.create_database_session() as session:
             self._session_state.append_messages_to_database(
                 messages=new_messages,
@@ -500,8 +500,8 @@ class OrchestratorLifecycle(BaseTaskLifecycle):
         new_messages = [turn_result.assistant_entry, *turn_result.tool_result_entries]
         self._session_state.append_messages(new_messages)
 
-        task.children.extend(turn_result.tool_call_tasks)
-        if turn_result.tool_call_tasks:
+        task.tool_call_log_ids.extend(turn_result.tool_call_log_ids)
+        if turn_result.tool_call_log_ids:
             task.touch()
 
         if turn_result.has_tool_call:
@@ -520,7 +520,7 @@ class OrchestratorLifecycle(BaseTaskLifecycle):
             tool_result_entries=turn_result.tool_result_entries,
         )
 
-        tasks_to_sync: list[ManagedTask] = [task, *task.children]
+        tasks_to_sync: list[ManagedTask] = [task]
         with self._session_state.create_database_session() as session:
             self._session_state.append_messages_to_database(
                 messages=new_messages,
@@ -561,7 +561,7 @@ class OrchestratorLifecycle(BaseTaskLifecycle):
                 session=session,
             )
             self._session_state.append_tasks_to_database(
-                tasks=[task, *task.children],
+                tasks=[task],
                 session=session,
             )
             session.commit()
@@ -650,12 +650,3 @@ class OrchestratorLifecycle(BaseTaskLifecycle):
             AssistantMessage(role="assistant", content=[TextContent(text=assistant_text), *tool_calls]),
             *tool_result_messages,
         ]
-
-
-def _count_tool_calls(tasks: list[ManagedTask]) -> int:
-    count = 0
-    for task in tasks:
-        if task.kind == "tool_call":
-            count += 1
-        count += _count_tool_calls(task.children)
-    return count

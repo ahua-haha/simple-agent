@@ -314,7 +314,7 @@ class AgentTurnResult:
     assistant_entry: MessageEntry
     tool_result_entries: list[MessageEntry]
     tool_call_records: list[tuple[int, ToolCall | None, ToolResultMessage]]
-    tool_call_tasks: list[ToolCallTask]
+    tool_call_log_ids: list[int]
     has_tool_call: bool
 
 
@@ -370,7 +370,7 @@ class BaseTaskLifecycle:
         )
         tool_results: list[ToolResultMessage] = []
         tool_call_records: list[tuple[int, ToolCall | None, ToolResultMessage]] = []
-        tool_call_tasks: list[ToolCallTask] = []
+        tool_call_log_ids: list[int] = []
         has_tool_call = _assistant_has_tool_calls(assistant_message)
         if has_tool_call:
             tool_results = await agent_process.run_tool_calls_step(
@@ -383,6 +383,7 @@ class BaseTaskLifecycle:
                 tool_result_messages=tool_results,
                 parent_task=parent_task,
             )
+            tool_call_log_ids = [t.tool_call_log_id for t in tool_call_tasks if t.tool_call_log_id is not None]
 
         tool_result_entries = [
             MessageEntry(id=self._session_state.allocate_message_id(), message=tool_result)
@@ -393,7 +394,7 @@ class BaseTaskLifecycle:
             assistant_entry=assistant_entry,
             tool_result_entries=tool_result_entries,
             tool_call_records=tool_call_records,
-            tool_call_tasks=tool_call_tasks,
+            tool_call_log_ids=tool_call_log_ids,
             has_tool_call=has_tool_call,
         )
 
