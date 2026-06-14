@@ -5,11 +5,13 @@ repository memory, and a web UI.
 
 ## Demo
 
-<img src="assets/demo-1.png" alt="Demo 1" width="400">
+<img src="assets/demo-1.png" alt="Demo 1" width="800">
 
-<img src="assets/demo-2.png" alt="Demo 2" width="400">
+<img src="assets/demo-2.png" alt="Demo 2" width="800">
 
-<img src="assets/demo-3.png" alt="Demo 3" width="400">
+<img src="assets/demo-3.png" alt="Demo 3" width="800">
+
+<video src="https://raw.githubusercontent.com/AHua-haha/simple-agent/main/assets/demo.mp4" controls width="800"></video>
 
 ## Structure
 
