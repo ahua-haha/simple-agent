@@ -58,6 +58,6 @@ export function getWorkspaceFileById(
 export function getWorkspaceViewModes(
   file: WorkspaceFile,
 ): WorkspaceViewMode[] {
-  if (file.language === "markdown") return ["raw", "preview", "wysiwyg"];
+  if (file.language === "markdown") return ["raw", "preview"];
   return ["raw"];
 }
