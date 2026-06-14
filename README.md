@@ -5,7 +5,11 @@ repository memory, and a web UI.
 
 ## Demo
 
-![Demo](assets/demo-3.png)
+![Demo 1](assets/demo-1.png)
+
+![Demo 2](assets/demo-2.png)
+
+![Demo 3](assets/demo-3.png)
 
 ## Structure
 
