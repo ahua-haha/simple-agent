@@ -9,9 +9,7 @@ from pathlib import Path
 from typing import Any, Literal
 
 from simple_agent.db.db import Database
-from simple_agent.index import AgentIndex
-from simple_agent.task_manager.models import RepoMemoryTask
-from simple_agent.task_manager.review import TaskTreeRenderer, build_task_tree
+from simple_agent.task_manager.review import TaskTreeRenderer
 
 ToolResultMode = Literal["none", "full"]
 
@@ -44,8 +42,6 @@ class InspectState:
     playback_state: PlaybackState = field(default_factory=PlaybackState)
     playback_moves: list[dict] = field(default_factory=list)
     playback_context: PlaybackContext = field(default_factory=lambda: PlaybackContext(tool_results={}))
-    index_tasks: list[RepoMemoryTask] = field(default_factory=list)
-    selected_index_task: RepoMemoryTask | None = None
 
 
 def main() -> None:
@@ -129,8 +125,6 @@ def run_direct_command(
         select_session(args, state)
     elif name == "tasks":
         print_selected_task_tree(args, state)
-    elif name == "index":
-        handle_index_command(args, state)
     elif name in {"list", "ls", "show", "move", "tool"}:
         if not ensure_playback_loaded(state):
             return
@@ -153,8 +147,6 @@ def handle_repl_command(command: str, state: InspectState) -> None:
         select_session(args, state)
     elif name == "tasks":
         print_selected_task_tree(args, state)
-    elif name == "index":
-        handle_index_command(args, state)
     elif name in {"list", "ls", "show", "move", "tool"}:
         if not ensure_playback_loaded(state):
             return
@@ -198,8 +190,6 @@ def select_session(args: list[str], state: InspectState, *, announce: bool = Tru
     state.selected = selected
     state.playback_moves = []
     state.playback_context = PlaybackContext(tool_results={})
-    state.index_tasks = []
-    state.selected_index_task = None
     if announce:
         print(f"[selected] {state.sessions.index(selected) + 1}. {selected.session_id}")
     return True
@@ -252,143 +242,16 @@ def print_selected_task_tree(args: list[str], state: InspectState) -> None:
             return
         index += 1
 
-    roots = build_task_tree(Database(str(state.selected.db_file)).list_managed_tasks())
+    tasks = Database(str(state.selected.db_file)).list_user_tasks()
     if root_id is not None:
-        roots = [root for root in roots if root.id == root_id]
-    if not roots:
-        print(f"[error] no task tree found for {state.selected.session_id}")
+        tasks = [t for t in tasks if t.id == root_id]
+    if not tasks:
+        print(f"[error] no tasks found for {state.selected.session_id}")
         return
-    for root_index, root in enumerate(roots):
-        if root_index:
+    for task_index, task in enumerate(tasks):
+        if task_index:
             print()
-        print(TaskTreeRenderer(format=format_value, depth=depth).render(root))
-
-
-def handle_index_command(args: list[str], state: InspectState) -> None:
-    if not args:
-        print("[error] use: index list | index use <index-number> | index tree [path] [--depth N] [--entry-limit N] [--db PATH] [--repo PATH]")
-        return
-    command = args[0]
-    rest = args[1:]
-    if command == "list":
-        print_index_tasks(state)
-    elif command == "use":
-        select_index_task(rest, state)
-    elif command == "tree":
-        print_index_tree(rest, state)
-    else:
-        print(f"[unknown index command] {command}")
-        print("[error] use: index list | index use <index-number> | index tree [path] [--depth N] [--entry-limit N] [--db PATH] [--repo PATH]")
-
-
-def print_index_tasks(state: InspectState) -> None:
-    tasks = load_index_tasks(state)
-    print(f"[index] count={len(tasks)}")
-    for index, task in enumerate(tasks, start=1):
-        selected = "*" if state.selected_index_task and task.id == state.selected_index_task.id else " "
-        print(f"{selected}{index}. {task.title} db={task.index_db_path} repo={task.repo_path}")
-
-
-def select_index_task(args: list[str], state: InspectState) -> None:
-    tasks = load_index_tasks(state)
-    if not args:
-        print("[error] index use <index-number>")
-        return
-    selector = args[0]
-    if not selector.isdigit():
-        print("[error] index use <index-number>")
-        return
-    index = int(selector)
-    if index < 1 or index > len(tasks):
-        print(f"[error] index task out of range: {index}")
-        return
-    state.selected_index_task = tasks[index - 1]
-    print(f"[selected index] {index}. {state.selected_index_task.title}")
-
-
-def print_index_tree(args: list[str], state: InspectState) -> None:
-    try:
-        path, depth, entry_limit, db_path, repo_path = parse_index_tree_args(args)
-    except ValueError as exc:
-        print(f"[error] {exc}")
-        print("[error] use: index tree [path] [--depth N] [--entry-limit N] [--db PATH] [--repo PATH]")
-        return
-    selected_task = state.selected_index_task
-    if db_path is None or repo_path is None:
-        if selected_task is None:
-            tasks = load_index_tasks(state)
-            if len(tasks) == 1:
-                selected_task = tasks[0]
-                state.selected_index_task = selected_task
-            elif len(tasks) > 1:
-                print("[error] multiple repo indexes found; run index use <index-number> or pass --db and --repo")
-                return
-            else:
-                print("[error] no repo index found; pass --db and --repo")
-                return
-        db_path = db_path or selected_task.index_db_path
-        repo_path = repo_path or selected_task.repo_path
-    output = AgentIndex(db_path, base_dir=repo_path).tree(path=path, depth=depth, entry_limit=entry_limit)
-    print(output)
-
-
-def parse_index_tree_args(args: list[str]) -> tuple[str, int | None, int | None, str | None, str | None]:
-    path = ""
-    depth = None
-    entry_limit = None
-    db_path = None
-    repo_path = None
-    index = 0
-    while index < len(args):
-        value = args[index]
-        if value == "--depth" and index + 1 < len(args):
-            depth = int(args[index + 1])
-            index += 2
-        elif value == "--entry-limit" and index + 1 < len(args):
-            entry_limit = int(args[index + 1])
-            index += 2
-        elif value == "--db" and index + 1 < len(args):
-            db_path = args[index + 1]
-            index += 2
-        elif value == "--repo" and index + 1 < len(args):
-            repo_path = args[index + 1]
-            index += 2
-        elif value.startswith("--"):
-            raise ValueError(f"Unknown index tree option: {value}")
-        elif not path:
-            path = value
-            index += 1
-        else:
-            raise ValueError(f"Unexpected index tree argument: {value}")
-    return path, depth, entry_limit, db_path, repo_path
-
-
-def load_index_tasks(state: InspectState) -> list[RepoMemoryTask]:
-    if state.selected is None:
-        print("[error] select a session first: use <session-number|session-id>")
-        return []
-    if state.selected.db_file is None:
-        print(f"[error] selected session has no database: {state.selected.session_id}")
-        return []
-    if state.index_tasks:
-        return state.index_tasks
-    roots = build_task_tree(Database(str(state.selected.db_file)).list_managed_tasks())
-    state.index_tasks = [
-        task
-        for task in flatten_tasks(roots)
-        if isinstance(task, RepoMemoryTask)
-    ]
-    return state.index_tasks
-
-
-def flatten_tasks(tasks) -> list:
-    flattened = []
-    stack = list(reversed(tasks))
-    while stack:
-        task = stack.pop()
-        flattened.append(task)
-        stack.extend(reversed(getattr(task, "children", [])))
-    return flattened
+        print(TaskTreeRenderer(format=format_value, depth=depth).render(task))
 
 
 def load_moves(log_file: Path) -> list[dict[str, Any]]:
@@ -712,9 +575,6 @@ def print_repl_help() -> None:
     print("  show <move-id> [none|<char-limit>|full]")
     print("  tool none|<char-limit>|full")
     print("  tasks [tree|flat] [--depth N] [--root-id ID]")
-    print("  index list")
-    print("  index use <index-number>")
-    print("  index tree [path] [--depth N] [--entry-limit N] [--db PATH] [--repo PATH]")
     print("  quit")
 
 

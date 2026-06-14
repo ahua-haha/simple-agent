@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import time
 
 from pydantic import BaseModel, TypeAdapter
@@ -9,7 +10,7 @@ from sqlalchemy import Column, String
 from sqlmodel import SQLModel, Field
 
 from pi.agent.types import AgentMessage
-from simple_agent.task_manager.models import task_from_metadata
+from simple_agent.task_manager.models import UserTask
 
 
 # ── DB record classes ────────────────────────────────────────────────
@@ -26,10 +27,9 @@ class SessionRecord(SQLModel, table=True):
 
 
 class TaskRecord(SQLModel, table=True):
-    """SQLite model for task-manager tasks."""
+    """SQLite model for user tasks."""
 
     id: int | None = Field(default=None, primary_key=True)
-    parent_id: int | None = Field(default=None, index=True)
     kind: str = Field(index=True)
     status: str = Field(default="active", index=True)
     metadata_json: str = Field(sa_column=Column("metadata", String))
@@ -98,22 +98,21 @@ def agent_message_from_json(payload: str) -> AgentMessage:
     return _single_message_adapter.validate_json(payload)
 
 
-def managed_task_to_record(task: Any) -> TaskRecord:
+def user_task_to_record(task: UserTask) -> TaskRecord:
     return TaskRecord(
         id=task.id,
-        parent_id=getattr(task, "parent_id", None),
         kind=task.kind,
         status=task.status,
         metadata_json=task.metadata_json(),
     )
 
 
-def managed_task_from_record(record: TaskRecord) -> Any:
-    return task_from_metadata(
+def user_task_from_record(record: TaskRecord) -> UserTask:
+    metadata = json.loads(record.metadata_json or "{}")
+    return UserTask(
         id=record.id,
-        kind=record.kind,
         status=record.status,
-        metadata=record.metadata_json,
+        **metadata,
     )
 
 

@@ -10,7 +10,6 @@ from pi.ai.types import TextContent, UserMessage
 
 from simple_agent.message_store import MessageEntry
 from simple_agent.task_manager.base_lifecycle import SessionState
-from simple_agent.task_manager.repo_memory_lifecycle import RepoMemoryLifecycle
 from simple_agent.task_manager.task_lifecycle import CommonTaskLifecycle
 from simple_agent.task_manager.orchestrator import OrchestratorLifecycle
 from simple_agent.task_manager.models import UserTask
@@ -33,7 +32,6 @@ class SessionRunner:
     _user_task: UserTask | None
     _common_task: CommonTaskLifecycle
     _orchestrator: OrchestratorLifecycle
-    _repo_memory: RepoMemoryLifecycle
     _session_state: SessionState
     _user_paused: bool
 
@@ -55,7 +53,6 @@ class SessionRunner:
         self._user_task = None
         self._common_task = CommonTaskLifecycle()
         self._orchestrator = OrchestratorLifecycle()
-        self._repo_memory = RepoMemoryLifecycle()
         self._session_state = SessionState(
             messages=[],
             session_id=self._session_id,
@@ -115,8 +112,6 @@ class SessionRunner:
                 lifecycle = self._orchestrator
             elif phase == "common_task":
                 lifecycle = self._common_task
-            elif phase == "repo_memory":
-                lifecycle = self._repo_memory
             else:
                 break
 
@@ -171,11 +166,11 @@ class SessionRunner:
             self.sync_metadata(session=session)
             session.commit()
 
-    def _current_user_task_from_database(self) -> Any | None:
+    def _current_user_task_from_database(self) -> UserTask | None:
         if self._user_task is None:
             return None
         with self._db.create_session() as session:
-            return self._db.get_managed_task(self._user_task.id, session=session)
+            return self._db.get_user_task(self._user_task.id, session=session)
 
     def _load_session_state(self, *, session: Session) -> None:
         self._session_state = SessionState(
@@ -188,7 +183,7 @@ class SessionRunner:
             workspace_dir=self._workspace_dir,
             next_message_id=self._db.next_runner_message_id(session=session),
             next_tool_call_log_id=self._db.next_runner_tool_call_id(self._session_id, session=session),
-            next_task_id_to_allocate=self._db.next_managed_task_id(session=session),
+            next_task_id_to_allocate=self._db.next_user_task_id(session=session),
         )
 
     @property

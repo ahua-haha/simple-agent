@@ -18,7 +18,6 @@ from simple_agent.task_manager.base_lifecycle import (
     TaskLifecycleError,
     USER_TASK_SYSTEM_PROMPT,
     render_prompt_template,
-    task_instruction_text,
 )
 from simple_agent.task_manager.models import UserTask
 from simple_agent.task_manager.review import TaskTreeRenderer
@@ -26,22 +25,6 @@ from simple_agent.tool.common_tools import create_all_coding_tools
 
 if TYPE_CHECKING:
     from simple_agent.process.agent_process import AgentProcess
-
-
-USER_TASK_INSTRUCTION_TEMPLATE = """\
-<system-instruction>
-{% if task_info %}
-## Current task process information
-{{ task_info }}
-{% endif %}
-
-IMPORTANT: Focus on current task: {{ task }}. If the task is complex, decompose it into sub-tasks that explore and search for context using tools. Sub-tasks should gather facts and inspect code — do NOT create sub-tasks whose goal is to generate a text response or write a summary. Use tools directly whenever possible before delegating to a sub-task.
-
-{% if task_instruction %}
-{{ task_instruction }}
-{% endif %}
-</system-instruction>
-"""
 
 
 USER_COMPACTION_INSTRUCTION_TEMPLATE = """\
@@ -137,21 +120,6 @@ class OrchestratorLifecycle(BaseTaskLifecycle):
     def clear_data(self) -> None:
         super().clear_data()
         self._agent_index = None
-
-    def instruction_text(self) -> str:
-        tool_call_count = len(self.task.tool_call_log_ids)
-        task_info = None
-        if tool_call_count > 10:
-            task_info = TaskTreeRenderer(format="tree", depth=1).render(self.task)
-        return render_prompt_template(
-            USER_TASK_INSTRUCTION_TEMPLATE,
-            task=self.task.title,
-            task_info=task_info,
-            task_instruction=task_instruction_text(
-                has_common_task=True,
-                has_repo_memory_task=False,
-            ),
-        )
 
     def finish_task(self, *, result: str | None = None) -> UserTask:
         self.task.status = "done"

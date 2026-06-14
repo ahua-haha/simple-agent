@@ -35,43 +35,6 @@ def render_prompt_template(template: str, **context) -> str:
     return _PROMPT_ENV.from_string(template).render(**context).strip()
 
 
-TASK_INSTRUCTION_TEMPLATE = """\
-{% if has_common_task %}
-## Common Task
-When to use:
-- Use a common task to explore, search, and gather context using tools — not to generate text responses.
-- Use it when you need to investigate the codebase, inspect files, or collect information that informs the parent task.
-- Do NOT create a common task whose goal is to produce a summary, explanation, or text answer. Sub-tasks should use tools to find and return facts.
-- Keep the common task focused on one concrete exploration or search goal.
-
-Example sub-task title: "Explore task lifecycle dispatch flow in session runner"
-
-{% endif %}
-{% if has_repo_memory_task %}
-## Repo Memory Task
-When to use:
-- Use a repo memory task when the next step is to write durable repository memory with AgentIndex.
-- Use it after exploring or changing repository structure when the useful result should be saved for future runs.
-- Use it when the task is about recording concise descriptions of files, modules, or architecture.
-
-Repo memory example: {"repo_path":".","index_db_path":".index.db"}
-
-{% endif %}
-## Task Creation Rules
-- Do not invent metadata keys unless the selected task kind asks for them.
-- Keep the created task focused on the next unit of work, not the whole user request.
-- Use tools to explore and gather context — never generate text responses when a tool can provide the answer.
-"""
-
-
-def task_instruction_text(*, has_common_task: bool, has_repo_memory_task: bool) -> str:
-    return render_prompt_template(
-        TASK_INSTRUCTION_TEMPLATE,
-        has_common_task=has_common_task,
-        has_repo_memory_task=has_repo_memory_task,
-    )
-
-
 USER_TASK_SYSTEM_PROMPT = """You are a helpful coding agent.
 
 Be concise, practical, and honest about uncertainty. Use available tools
@@ -220,7 +183,7 @@ class SessionState:
     ) -> None:
         database = self._require_database()
         for task in tasks:
-            database.upsert_managed_task(task, session=session)
+            database.upsert_user_task(task, session=session)
 
     def replace_message_range_in_database(
         self,
