@@ -109,10 +109,6 @@ class CommonTaskLifecycle(BaseTaskLifecycle):
         tool.execute = execute
         return tool
 
-    def _should_orchestrate(self) -> bool:
-        # Always route to orchestrator after each turn
-        return True
-
     async def run(
         self,
         *,
@@ -157,8 +153,16 @@ class CommonTaskLifecycle(BaseTaskLifecycle):
         if tool_call_log_ids:
             task.touch()
 
-        # Route after turn — always go to orchestrator
-        self._session_state.next_phase = "orchestrator"
+        # If no tool calls, the agent produced a final text response
+        if not turn_result.has_tool_call:
+            task.response = "<system-response> current task end with final response."
+            task.touch()
+
+        # Route after turn: orchestrator if response is set, else continue
+        if task.response is not None:
+            self._session_state.next_phase = "orchestrator"
+        else:
+            self._session_state.next_phase = "common_task"
 
         runtime_logger.log_handle_running(
             session_id=self._session_state._require_session_id(),
