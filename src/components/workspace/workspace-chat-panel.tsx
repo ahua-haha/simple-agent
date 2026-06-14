@@ -33,13 +33,13 @@ export function WorkspaceChatPanel() {
               variant="outline"
               size="icon"
               onClick={() => setOpen(true)}
-              className="absolute left-3 top-1/2 z-10 size-9 -translate-y-1/2 rounded-full bg-background shadow-md"
+              className="absolute right-3 top-1/2 z-10 size-9 -translate-y-1/2 rounded-full bg-background shadow-md"
               aria-label="Open AI chat"
             >
               <MessageSquareIcon className="size-4" />
             </Button>
           </TooltipTrigger>
-          <TooltipContent side="right">Open AI chat</TooltipContent>
+          <TooltipContent side="left">Open AI chat</TooltipContent>
         </Tooltip>
       )}
 

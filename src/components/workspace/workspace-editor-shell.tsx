@@ -91,8 +91,8 @@ export function WorkspaceEditorShell({
 
   return (
     <section className="flex min-w-0 flex-1 flex-col bg-background">
-      <header className="flex h-14 shrink-0 items-center justify-between gap-4 border-b px-4">
-        <div className="flex min-w-0 items-center gap-3">
+      <header className="flex h-14 shrink-0 items-center gap-4 border-b px-4">
+        <div className="flex min-w-0 flex-1 items-center gap-3">
           <FileIcon className="size-4 shrink-0 text-muted-foreground" />
           <div className="min-w-0">
             <div className="flex items-center gap-2">
@@ -104,7 +104,14 @@ export function WorkspaceEditorShell({
             </p>
           </div>
         </div>
-        <div className="flex items-center gap-2">
+        <div className="flex shrink-0 items-center justify-center">
+          <FileViewSwitcher
+            value={viewMode}
+            modes={availableViewModes}
+            onValueChange={onViewModeChange}
+          />
+        </div>
+        <div className="flex flex-1 items-center justify-end gap-2">
           {dirty && onSave && (
             <Button
               type="button"
@@ -121,11 +128,6 @@ export function WorkspaceEditorShell({
               Save
             </Button>
           )}
-          <FileViewSwitcher
-            value={viewMode}
-            modes={availableViewModes}
-            onValueChange={onViewModeChange}
-          />
         </div>
       </header>
       <Separator />
