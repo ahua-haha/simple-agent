@@ -109,10 +109,11 @@ class UserTask(BaseTask):
         cls,
         *,
         id: int | None,
+        parent_id: int | None = None,
         status: str,
         metadata: str,
     ) -> "UserTask":
-        return cls(id=id, status=status, **_metadata_dict(metadata))
+        return cls(id=id, parent_id=parent_id, status=status, **_metadata_dict(metadata))
 
 
 class RepoMemoryTask(BaseTask):
@@ -150,7 +151,7 @@ def task_from_metadata(
     metadata: str,
 ) -> ManagedTask:
     if kind == "user_task":
-        return CommonTask.from_metadata(id=id, parent_id=parent_id, status=status, metadata=metadata)
+        return UserTask.from_metadata(id=id, parent_id=parent_id, status=status, metadata=metadata)
     if kind == "tool_call":
         return ToolCallTask.from_metadata(id=id, parent_id=parent_id, status=status, metadata=metadata)
     if kind == "repo_memory":

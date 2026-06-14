@@ -12,7 +12,7 @@ from pi.agent.types import AgentMessage
 from pi.ai.types import AssistantMessage, TextContent, ToolCall, ToolResultMessage
 
 from simple_agent.message_store import MessageEntry
-from simple_agent.task_manager.models import CommonTask, ManagedTask, RepoMemoryTask, ToolCallTask
+from simple_agent.task_manager.models import CommonTask, ManagedTask, RepoMemoryTask, ToolCallTask, UserTask
 
 if TYPE_CHECKING:
     from simple_agent.db.db import Database
@@ -470,7 +470,7 @@ class BaseTaskLifecycle:
         title: str,
         metadata: dict | None = None,
         enabled_task_kinds: list[str] | tuple[str, ...] | None = None,
-    ) -> CommonTask | RepoMemoryTask:
+    ) -> UserTask | RepoMemoryTask:
         """Create a sub-task object and set task_to_start. Does NOT allocate an id or append to parent."""
         enabled_kinds = self._validate_enabled_task_kinds(enabled_task_kinds)
         if kind not in enabled_kinds:
@@ -478,7 +478,7 @@ class BaseTaskLifecycle:
         parent = self._require_task()
         metadata = metadata or {}
         if kind == "common":
-            task = CommonTask(
+            task = UserTask(
                 parent_id=parent.id,
                 title=title,
             )

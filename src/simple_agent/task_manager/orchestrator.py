@@ -20,7 +20,7 @@ from simple_agent.task_manager.base_lifecycle import (
     render_prompt_template,
     task_instruction_text,
 )
-from simple_agent.task_manager.models import ManagedTask, ToolCallTask, CommonTask
+from simple_agent.task_manager.models import ManagedTask, ToolCallTask, CommonTask, UserTask
 from simple_agent.task_manager.review import TaskTreeRenderer
 from simple_agent.tool.common_tools import create_all_coding_tools
 
@@ -123,7 +123,7 @@ If no action is needed, respond without tool calls."""
 
 
 class OrchestratorLifecycle(BaseTaskLifecycle):
-    task: CommonTask | None
+    task: UserTask | None
     _agent_index: AgentIndex | None
 
     def set_data(self, session_state: SessionState) -> None:
@@ -135,7 +135,7 @@ class OrchestratorLifecycle(BaseTaskLifecycle):
             raise TaskLifecycleError("Session state has no current task")
         if task.kind != "user_task":
             raise TaskLifecycleError("Orchestrator expects a user_task")
-        self.task = cast(CommonTask, task)
+        self.task = cast(UserTask, task)
         self._agent_index = AgentIndex(base_dir=self._session_state.workspace_dir)
 
     def clear_data(self) -> None:
@@ -191,7 +191,7 @@ class OrchestratorLifecycle(BaseTaskLifecycle):
             ),
         )
 
-    def finish_task(self, *, result: str | None = None) -> CommonTask:
+    def finish_task(self, *, result: str | None = None) -> UserTask:
         self.task.status = "done"
         self.task.result = result
         self.task.touch()
@@ -252,7 +252,7 @@ class OrchestratorLifecycle(BaseTaskLifecycle):
         )
 
         async def execute(tool_call_id, params, cancel_event=None, on_update=None):
-            self._session_state.task_plan = params["task_plan"]
+            self.task.task_plan = params["task_plan"]
             return AgentToolResult(
                 content=[TextContent(text="Task plan updated.")]
             )
@@ -287,12 +287,12 @@ class OrchestratorLifecycle(BaseTaskLifecycle):
             task = self._resolve_task()
             if task is None or task.kind != "user_task":
                 raise TaskLifecycleError("Parent task not found or not a user_task")
-            self.task = cast(CommonTask, task)
+            self.task = cast(UserTask, task)
 
         # ── 1. Prepare ──────────────────────────────────────────────────
         system_prompt = ORCHESTRATOR_SYSTEM_PROMPT
         task_progress = TaskTreeRenderer(format="tree", depth=1).render(task)
-        task_plan = self._session_state.task_plan or "(no plan yet)"
+        task_plan = self.task.task_plan or "(no plan yet)"
         instruction_text = render_prompt_template(
             ORCHESTRATOR_INSTRUCTION_TEMPLATE,
             task_progress=task_progress,
@@ -692,7 +692,7 @@ class OrchestratorLifecycle(BaseTaskLifecycle):
             self.task.compacted_tool_call_log_ids.append(tool_call_log_id)
             self.task.touch()
 
-    def format_messages_from_user_task(self, user_task: CommonTask) -> list[UserMessage | AssistantMessage | ToolResultMessage]:
+    def format_messages_from_user_task(self, user_task: UserTask) -> list[UserMessage | AssistantMessage | ToolResultMessage]:
         compacted_tool_calls = self._session_state.compacted_tool_calls(
             user_task.compacted_tool_call_log_ids,
         )

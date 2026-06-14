@@ -19,7 +19,7 @@ from simple_agent.task_manager.lifecycle import (
     OrchestratorLifecycle,
 )
 from simple_agent.task_manager.repo_memory_lifecycle import RepoMemoryLifecycle
-from simple_agent.task_manager.models import RepoMemoryTask, ToolCallTask, CommonTask, task_from_metadata
+from simple_agent.task_manager.models import RepoMemoryTask, ToolCallTask, CommonTask, UserTask, task_from_metadata
 
 
 def _make_db(tmp_path):
@@ -352,7 +352,7 @@ def test_base_lifecycle_create_next_task_supports_common_task():
         enabled_task_kinds=["common"],
     )
 
-    assert isinstance(task, CommonTask)
+    assert isinstance(task, UserTask)
     assert task.parent_id == parent.id
     assert task.start_message_id is None
     assert lifecycle.task_to_start is task
@@ -375,7 +375,7 @@ async def test_base_lifecycle_create_next_task_tool_mutates_session_state():
         title="Inspect files",
         enabled_task_kinds=["common"],
     )
-    assert isinstance(next_task, CommonTask)
+    assert isinstance(next_task, UserTask)
     assert next_task.parent_id == task.id
     assert next_task.start_message_id is None
     assert lifecycle.task_to_start is next_task
@@ -400,7 +400,7 @@ async def test_base_lifecycle_start_next_task_tool_creates_and_starts():
     result = await tool.execute("call_1", {"kind": "common", "title": "Inspect files"})
 
     child = lifecycle.task_to_start
-    assert isinstance(child, CommonTask)
+    assert isinstance(child, UserTask)
     assert child.title == "Inspect files"
     assert child.parent_id == parent.id
     assert session_state.current_task is parent
@@ -693,8 +693,8 @@ def test_session_state_appends_tool_calls_to_database(tmp_path):
 def test_session_state_appends_tasks_to_database(tmp_path):
     db = _make_db(tmp_path)
     session_state = SessionState(messages=[], workspace_dir=".", database=db, session_id="session_a")
-    user_task = CommonTask(id=1, title="Build feature")
-    child_task = CommonTask(id=2, parent_id=1, title="Inspect files")
+    user_task = UserTask(id=1, title="Build feature")
+    child_task = UserTask(id=2, parent_id=1, title="Inspect files")
 
     with session_state.create_database_session() as session:
         session_state.append_tasks_to_database(

@@ -18,7 +18,7 @@ from simple_agent.task_manager.base_lifecycle import (
     USER_TASK_SYSTEM_PROMPT,
     render_prompt_template,
 )
-from simple_agent.task_manager.models import ManagedTask, ToolCallTask, CommonTask
+from simple_agent.task_manager.models import ManagedTask, ToolCallTask, CommonTask, UserTask
 from simple_agent.task_manager.review import TaskTreeRenderer
 from simple_agent.tool.common_tools import create_all_coding_tools
 
@@ -41,7 +41,7 @@ IMPORTANT: If you have finished the current task, you MUST immediately call `fin
 
 
 class CommonTaskLifecycle(BaseTaskLifecycle):
-    task: CommonTask | None
+    task: UserTask | None
     _agent_index: AgentIndex | None
 
     def set_data(self, session_state: SessionState) -> None:
@@ -53,7 +53,7 @@ class CommonTaskLifecycle(BaseTaskLifecycle):
             raise TaskLifecycleError("Session state has no next task")
         if task.kind != "user_task":
             raise TaskLifecycleError("Active lifecycle task is not a user task")
-        self.task = cast(CommonTask, task)
+        self.task = cast(UserTask, task)
         self._agent_index = AgentIndex(base_dir=self._session_state.workspace_dir)
 
     def clear_data(self) -> None:
@@ -71,7 +71,7 @@ class CommonTaskLifecycle(BaseTaskLifecycle):
             task_info=task_info,
         )
 
-    def finish_task(self, *, result: str | None = None) -> CommonTask:
+    def finish_task(self, *, result: str | None = None) -> UserTask:
         self.task.status = "done"
         self.task.result = result
         self.task.touch()
