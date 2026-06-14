@@ -292,16 +292,13 @@ class AgentTurnResult:
 class BaseTaskLifecycle:
     _session_state: SessionState
     task: UserTask | None
-    finished_task: UserTask | None
 
     def clear_data(self) -> None:
         self.task = None
-        self.finished_task = None
 
     def set_data(self, session_state: SessionState) -> None:
         self._session_state = session_state
         self.task = None
-        self.finished_task = None
         raise NotImplementedError(f"{type(self).__name__}.set_data is not implemented")
 
     async def run_agent_turn(
@@ -372,18 +369,6 @@ class BaseTaskLifecycle:
 
     def set_current_task(self, task_id: int | None, task: Any | None) -> None:
         self._session_state.set_current_task(task_id, task)
-
-    def stamp_finished_task(self, *, end_message_id: int) -> Any | None:
-        task = self.finished_task
-        if task is None:
-            return None
-        if hasattr(task, "end_message_id"):
-            task.end_message_id = end_message_id
-        task.touch()
-        return task
-
-    def clear_turn_indicators(self) -> None:
-        self.finished_task = None
 
     async def run(
         self,

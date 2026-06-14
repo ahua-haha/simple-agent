@@ -47,7 +47,6 @@ class RepoMemoryLifecycle(BaseTaskLifecycle):
 
     def set_data(self, session_state: SessionState) -> None:
         self._session_state = session_state
-        self.finished_task = None
         task = self._session_state.current_task
         if task is None:
             raise TaskLifecycleError("Session state has no current task")

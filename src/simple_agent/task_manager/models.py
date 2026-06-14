@@ -29,6 +29,8 @@ class UserTask(BaseModel):
     start_message_id: int | None = None
     end_message_id: int | None = None
     task_plan: str | None = None
+    instruction: str | None = None
+    response: str | None = None
     tool_call_log_ids: list[int] = Field(default_factory=list)
     compacted_tool_call_log_ids: list[int] = Field(default_factory=list)
     created_at: float = Field(default_factory=time.time)

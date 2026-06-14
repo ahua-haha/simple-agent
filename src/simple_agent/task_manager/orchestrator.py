@@ -101,15 +101,22 @@ Inspect the task progress and task plan, then decide whether to create a
 sub-task, update the task plan, or do nothing and let the current task continue."""
 
 ORCHESTRATOR_INSTRUCTION_TEMPLATE = """\
+{% if response %}
+## Agent Response
+{{ response }}
+{% endif %}
+
 Based on current task progress:
 {{ task_progress }}
 
 And task plan:
 {{ task_plan }}
 
-Determine whether to update the task plan or keep running.
+Review the agent's response and task progress. Decide what to do next:
+- Use `set_instruction` to give the agent a new task to work on.
+- Use `update_task_plan` to mark finished items and add new pending items.
 
-When to update the task plan (use update_task_plan):
+When to update the task plan:
 1. Based on the task context, mark already-finished tasks as [x].
 2. If the current task is complex, decompose it and add new pending tasks as [ ].
 3. Based on task progress, think about the next task to run and reflect it in the plan.
@@ -124,7 +131,6 @@ class OrchestratorLifecycle(BaseTaskLifecycle):
 
     def set_data(self, session_state: SessionState) -> None:
         self._session_state = session_state
-        self.finished_task = None
         task = self._session_state.current_task
         if task is None:
             raise TaskLifecycleError("Session state has no current task")
@@ -176,6 +182,34 @@ class OrchestratorLifecycle(BaseTaskLifecycle):
             agent_process=agent_process,
             cancel_event=cancel_event,
         )
+
+    def _build_set_instruction_tool(self) -> AgentTool:
+        """Build a tool that lets the orchestrator set an instruction for the task agent."""
+        tool = AgentTool(
+            name="set_instruction",
+            description=(
+                "Set an instruction for the task agent. The agent will see this "
+                "as its current task to work on. Call this to guide the agent "
+                "on what to do next."
+            ),
+            parameters={
+                "type": "object",
+                "properties": {
+                    "instruction": {
+                        "type": "string",
+                        "description": "The instruction for the task agent.",
+                    },
+                },
+                "required": ["instruction"],
+            },
+        )
+
+        async def execute(tool_call_id, params, cancel_event=None, on_update=None):
+            self.task.instruction = params["instruction"]
+            return AgentToolResult(content=[TextContent(text="Instruction set.")])
+
+        tool.execute = execute
+        return tool
 
     def _build_update_task_plan_tool(self) -> AgentTool:
         """Build a tool that updates the full task plan on SessionState.
@@ -241,6 +275,7 @@ class OrchestratorLifecycle(BaseTaskLifecycle):
         task_plan = self.task.task_plan or "(no plan yet)"
         instruction_text = render_prompt_template(
             ORCHESTRATOR_INSTRUCTION_TEMPLATE,
+            response=self.task.response,
             task_progress=task_progress,
             task_plan=task_plan,
         )
@@ -249,6 +284,7 @@ class OrchestratorLifecycle(BaseTaskLifecycle):
             timestamp=int(time.time() * 1000),
         )
         tools: list[AgentTool] = [
+            self._build_set_instruction_tool(),
             self._build_update_task_plan_tool(),
         ]
         buffer: list[AgentMessage] = [

@@ -28,13 +28,17 @@ if TYPE_CHECKING:
 
 USER_TASK_INSTRUCTION_TEMPLATE = """\
 <system-instruction>
+{% if instruction %}
+## Orchestrator Instruction
+{{ instruction }}
+{% endif %}
+
 {% if task_info %}
 ## Current task process information
 {{ task_info }}
 {% endif %}
 
-IMPORTANT: Focus on current task: {{ task }}. Use tools to explore, search, and gather context. Inspect files, run commands, and collect facts needed to complete the task.
-IMPORTANT: If you have finished the current task, you MUST immediately call `finish_common_task` to mark it as done.
+Focus on the orchestrator instruction above. Use tools to explore, search, and gather context. When you have completed the work, call `response_instruction` with a summary of what you accomplished.
 </system-instruction>
 """
 
@@ -46,7 +50,6 @@ class CommonTaskLifecycle(BaseTaskLifecycle):
 
     def set_data(self, session_state: SessionState) -> None:
         self._session_state = session_state
-        self.finished_task = None
         task = self._session_state.current_task
         if task is None:
             raise TaskLifecycleError("Session state has no next task")
@@ -66,51 +69,49 @@ class CommonTaskLifecycle(BaseTaskLifecycle):
             task_info = TaskTreeRenderer(format="tree", depth=1).render(self.task)
         return render_prompt_template(
             USER_TASK_INSTRUCTION_TEMPLATE,
-            task=self.task.title,
+            instruction=self.task.instruction,
             task_info=task_info,
         )
-
-    def finish_task(self, *, result: str | None = None) -> UserTask:
-        self.task.status = "done"
-        self.task.result = result
-        self.task.touch()
-        self.finished_task = self.task
-        return self.task
 
     def create_tools(self) -> list[AgentTool]:
         return [
             self._agent_index.create_tree_tool(),
-            self.create_finish_common_task_tool(),
+            self._create_response_instruction_tool(),
             *create_all_coding_tools(self._session_state.workspace_dir),
         ]
 
-    def create_finish_common_task_tool(self) -> AgentTool:
+    def _create_response_instruction_tool(self) -> AgentTool:
+        """Build a tool that lets the agent respond with a result and finish the task."""
         tool = AgentTool(
-            name="finish_common_task",
+            name="response_instruction",
             description=(
-                "Mark the current common task as completed. Call when this "
-                "task is fully satisfied and no child task is active."
+                "Respond to the orchestrator's instruction. Call this when you "
+                "have completed the work described in the instruction. Provide a "
+                "concise summary of what was done."
             ),
             parameters={
                 "type": "object",
                 "properties": {
-                    "result": {"type": "string", "description": "Optional concise result for this common task"},
+                    "response": {
+                        "type": "string",
+                        "description": "Summary of what was accomplished in response to the instruction.",
+                    },
                 },
-                "required": [],
+                "required": ["response"],
             },
         )
 
         async def execute(tool_call_id, params, cancel_event=None, on_update=None):
-            task = self.finish_task(
-                result=params.get("result"),
-            )
-            return AgentToolResult(content=[TextContent(text=f"Common task finished: {task.result or task.title}")])
+            self.task.response = params["response"]
+            self.task.touch()
+            return AgentToolResult(content=[TextContent(text="Response recorded.")])
 
         tool.execute = execute
         return tool
 
     def _should_orchestrate(self) -> bool:
-        return self.finished_task is not None
+        # Always route to orchestrator after each turn
+        return True
 
     async def run(
         self,
@@ -149,24 +150,15 @@ class CommonTaskLifecycle(BaseTaskLifecycle):
         tool_result_entries = turn_result.tool_result_entries
         tool_call_records = turn_result.tool_call_records
         tool_call_log_ids = turn_result.tool_call_log_ids
-        has_tool_call = turn_result.has_tool_call
         new_messages = [assistant_entry, *tool_result_entries]
-        turn_end_message_id = new_messages[-1].id
         self._session_state.append_messages(new_messages)
 
         task.tool_call_log_ids.extend(tool_call_log_ids)
         if tool_call_log_ids:
             task.touch()
 
-        if not has_tool_call and task.status != "done":
-            self.finish_task()
-
-        if self.finished_task is not None:
-            self.stamp_finished_task(end_message_id=turn_end_message_id)
-
-        # Route after turn
-        next_phase = "orchestrator" if self._should_orchestrate() else "common_task"
-        self._session_state.next_phase = next_phase
+        # Route after turn — always go to orchestrator
+        self._session_state.next_phase = "orchestrator"
 
         runtime_logger.log_handle_running(
             session_id=self._session_state._require_session_id(),
@@ -192,5 +184,4 @@ class CommonTaskLifecycle(BaseTaskLifecycle):
                 session=session,
             )
             session.commit()
-        self.clear_turn_indicators()
         return self._session_state
