@@ -5,7 +5,7 @@ repository memory, and a web UI.
 
 ## Demo
 
-<video src="assets/demo.mov" controls width="60%"></video>
+<video src="assets/demo.mp4" controls width="60%"></video>
 
 ## Structure
 
