@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import asyncio
 from dataclasses import dataclass
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 from jinja2 import Environment, StrictUndefined
 from pi.agent import AgentTool
@@ -12,7 +12,7 @@ from pi.agent.types import AgentMessage
 from pi.ai.types import AssistantMessage, ToolCall, ToolResultMessage
 
 from simple_agent.message_store import MessageEntry
-from simple_agent.task_manager.models import ManagedTask, ToolCallTask
+from simple_agent.task_manager.models import UserTask
 
 if TYPE_CHECKING:
     from simple_agent.db.db import Database
@@ -93,9 +93,8 @@ class SessionState:
     next_tool_call_log_id: int = 0
     next_task_id_to_allocate: int | None = None
     current_task_id: int | None = None
-    current_task: ManagedTask | None = None
-    next_phase: str | None = None  # "common_task" | "orchestrator" | None (use task.kind)
-    task_plan: str | None = None  # orchestrator: markdown task plan for the current task tree
+    current_task: UserTask | None = None
+    next_phase: str | None = None  # "common_task" | "orchestrator" | None
 
     def allocate_message_id(self) -> int:
         message_id = self.next_message_id
@@ -155,34 +154,6 @@ class SessionState:
             *self.messages[end_index + 1:],
         ]
         return replacement_entries
-
-    def create_tool_call_record_task_entries(
-        self,
-        *,
-        assistant_message: AssistantMessage,
-        tool_result_messages: list[ToolResultMessage],
-        parent_task: ManagedTask,
-    ) -> tuple[list[tuple[int, ToolCall | None, ToolResultMessage]], list[ToolCallTask]]:
-        tool_call_records: list[tuple[int, ToolCall | None, ToolResultMessage]] = []
-        tool_call_tasks: list[ToolCallTask] = []
-        for tool_result_message in tool_result_messages:
-            log_id = self.allocate_tool_call_log_id()
-            tool_call = _tool_call_for_result(
-                assistant_message=assistant_message,
-                tool_result_message=tool_result_message,
-            )
-            tool_call_records.append((log_id, tool_call, tool_result_message))
-            tool_call_tasks.append(
-                ToolCallTask(
-                    id=self.allocate_task_id(),
-                    status="done",
-                    parent_id=parent_task.id,
-                    tool_call_log_id=log_id,
-                    tool_call_name=tool_call.name if tool_call is not None else tool_result_message.tool_name,
-                    tool_call_args=tool_call.arguments if tool_call is not None else None,
-                )
-            )
-        return tool_call_records, tool_call_tasks
 
     def compacted_tool_calls(self, tool_call_log_ids: list[int]) -> list[tuple[ToolCall | None, ToolResultMessage]]:
         database = self._require_database()
@@ -244,7 +215,7 @@ class SessionState:
     def append_tasks_to_database(
         self,
         *,
-        tasks: list[ManagedTask],
+        tasks: list[Any],
         session: SqlSession,
     ) -> None:
         database = self._require_database()
@@ -287,7 +258,7 @@ class SessionState:
                 session=session,
             )
 
-    def set_current_task(self, task_id: int | None, task: ManagedTask | None) -> None:
+    def set_current_task(self, task_id: int | None, task: Any | None) -> None:
         self.current_task_id = task_id
         self.current_task = task
 
@@ -320,8 +291,8 @@ class AgentTurnResult:
 
 class BaseTaskLifecycle:
     _session_state: SessionState
-    task: ManagedTask | None
-    finished_task: ManagedTask | None
+    task: UserTask | None
+    finished_task: UserTask | None
 
     def clear_data(self) -> None:
         self.task = None
@@ -340,7 +311,6 @@ class BaseTaskLifecycle:
         system_prompt: str,
         messages: list[AgentMessage],
         tools: list[AgentTool],
-        parent_task: ManagedTask,
         cancel_event: asyncio.Event | None = None,
     ) -> AgentTurnResult:
         """Run one LLM/tool turn and build transient records for post handling.
@@ -378,12 +348,14 @@ class BaseTaskLifecycle:
                 assistant_message=assistant_message,
                 cancel_event=cancel_event,
             )
-            tool_call_records, tool_call_tasks = self._session_state.create_tool_call_record_task_entries(
-                assistant_message=assistant_message,
-                tool_result_messages=tool_results,
-                parent_task=parent_task,
-            )
-            tool_call_log_ids = [t.tool_call_log_id for t in tool_call_tasks if t.tool_call_log_id is not None]
+            for tool_result_message in tool_results:
+                log_id = self._session_state.allocate_tool_call_log_id()
+                tool_call = _tool_call_for_result(
+                    assistant_message=assistant_message,
+                    tool_result_message=tool_result_message,
+                )
+                tool_call_records.append((log_id, tool_call, tool_result_message))
+                tool_call_log_ids.append(log_id)
 
         tool_result_entries = [
             MessageEntry(id=self._session_state.allocate_message_id(), message=tool_result)
@@ -398,10 +370,10 @@ class BaseTaskLifecycle:
             has_tool_call=has_tool_call,
         )
 
-    def set_current_task(self, task_id: int | None, task: ManagedTask | None) -> None:
+    def set_current_task(self, task_id: int | None, task: Any | None) -> None:
         self._session_state.set_current_task(task_id, task)
 
-    def stamp_finished_task(self, *, end_message_id: int) -> ManagedTask | None:
+    def stamp_finished_task(self, *, end_message_id: int) -> Any | None:
         task = self.finished_task
         if task is None:
             return None

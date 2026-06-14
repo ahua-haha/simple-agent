@@ -111,7 +111,6 @@ def managed_task_to_record(task: Any) -> TaskRecord:
 def managed_task_from_record(record: TaskRecord) -> Any:
     return task_from_metadata(
         id=record.id,
-        parent_id=record.parent_id,
         kind=record.kind,
         status=record.status,
         metadata=record.metadata_json,

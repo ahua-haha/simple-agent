@@ -12,27 +12,6 @@ TaskKind = Literal["user_task", "tool_call", "repo_memory"]
 TaskStatus = Literal["active", "done", "error", "index_memory_upsert", "compact_finished"]
 
 
-class BaseTask(BaseModel):
-    """Common in-memory task fields."""
-
-    id: int | None = None
-    parent_id: int | None = None
-    kind: TaskKind
-    status: TaskStatus = "active"
-    children: list["ManagedTask"] = Field(default_factory=list, exclude=True)
-    created_at: float = Field(default_factory=time.time)
-    updated_at: float = Field(default_factory=time.time)
-
-    def touch(self) -> None:
-        self.updated_at = time.time()
-
-    def metadata_json(self) -> str:
-        return self.model_dump_json(exclude={"id", "parent_id", "kind", "status", "children"})
-
-    def format_for_render(self, *, tool_call: Any | None = None, sequence: int | None = None) -> str:
-        return f"{self.kind} [{self.status}] {_task_title(self)}"
-
-
 class UserTask(BaseModel):
     """Single user task that holds all metadata during an agent run.
 
@@ -75,13 +54,23 @@ class UserTask(BaseModel):
         return cls(id=id, status=status, **_metadata_dict(metadata))
 
 
-class RepoMemoryTask(BaseTask):
+class RepoMemoryTask(BaseModel):
+    id: int | None = None
     kind: Literal["repo_memory"] = "repo_memory"
+    status: TaskStatus = "active"
     title: str
     repo_path: str = "."
     index_db_path: str
     result: str | None = None
     error: str | None = None
+    created_at: float = Field(default_factory=time.time)
+    updated_at: float = Field(default_factory=time.time)
+
+    def touch(self) -> None:
+        self.updated_at = time.time()
+
+    def metadata_json(self) -> str:
+        return self.model_dump_json(exclude={"id", "kind", "status"})
 
     def format_for_render(self, *, tool_call: Any | None = None, sequence: int | None = None) -> str:
         return f"repo_memory [{self.status}] {self.title}"
@@ -91,11 +80,10 @@ class RepoMemoryTask(BaseTask):
         cls,
         *,
         id: int | None,
-        parent_id: int | None,
         status: str,
         metadata: str,
     ) -> "RepoMemoryTask":
-        return cls(id=id, parent_id=parent_id, status=status, **_metadata_dict(metadata))
+        return cls(id=id, status=status, **_metadata_dict(metadata))
 
 
 ManagedTask = RepoMemoryTask
@@ -104,13 +92,12 @@ ManagedTask = RepoMemoryTask
 def task_from_metadata(
     *,
     id: int | None,
-    parent_id: int | None,
     kind: str,
     status: str,
     metadata: str,
 ) -> ManagedTask:
     if kind == "repo_memory":
-        return RepoMemoryTask.from_metadata(id=id, parent_id=parent_id, status=status, metadata=metadata)
+        return RepoMemoryTask.from_metadata(id=id, status=status, metadata=metadata)
     raise ValueError(f"Unknown task kind: {kind}")
 
 
