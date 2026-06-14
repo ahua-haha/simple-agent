@@ -9,6 +9,7 @@ from simple_agent.task_manager.models import (
     RepoMemoryTask,
     ToolCallTask,
     CommonTask,
+    UserTask,
 )
 from simple_agent.task_manager.review import TaskTreeRenderer
 
@@ -22,4 +23,5 @@ __all__ = [
     "CommonTaskLifecycle",
     "OrchestratorLifecycle",
     "CommonTask",
+    "UserTask",
 ]

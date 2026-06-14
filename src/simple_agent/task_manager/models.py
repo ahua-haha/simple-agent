@@ -83,6 +83,38 @@ class ToolCallTask(BaseTask):
         return cls(id=id, parent_id=parent_id, status=status, **_metadata_dict(metadata))
 
 
+class UserTask(BaseTask):
+    """Single user task that holds all metadata during an agent run.
+
+    Replaces the task tree pattern. The task_plan markdown tracks sub-goals
+    instead of creating child CommonTask objects. Tool calls are tracked via
+    tool_call_log_ids and the children list.
+    """
+
+    kind: Literal["user_task"] = "user_task"
+    title: str
+    result: str | None = None
+    error: str | None = None
+    start_message_id: int | None = None
+    end_message_id: int | None = None
+    task_plan: str | None = None
+    tool_call_log_ids: list[int] = Field(default_factory=list)
+    compacted_tool_call_log_ids: list[int] = Field(default_factory=list)
+
+    def format_for_render(self, *, tool_call: Any | None = None, sequence: int | None = None) -> str:
+        return f"user_task [{self.status}] {self.title}"
+
+    @classmethod
+    def from_metadata(
+        cls,
+        *,
+        id: int | None,
+        status: str,
+        metadata: str,
+    ) -> "UserTask":
+        return cls(id=id, status=status, **_metadata_dict(metadata))
+
+
 class RepoMemoryTask(BaseTask):
     kind: Literal["repo_memory"] = "repo_memory"
     title: str
@@ -106,7 +138,7 @@ class RepoMemoryTask(BaseTask):
         return cls(id=id, parent_id=parent_id, status=status, **_metadata_dict(metadata))
 
 
-ManagedTask = CommonTask | ToolCallTask | RepoMemoryTask
+ManagedTask = CommonTask | UserTask | ToolCallTask | RepoMemoryTask
 
 
 def task_from_metadata(
