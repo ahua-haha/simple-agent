@@ -5,7 +5,7 @@ repository memory, and a web UI.
 
 ## Demo
 
-<video src="https://raw.githubusercontent.com/AHua-haha/simple-agent/main/assets/demo.mp4" controls width="60%"></video>
+![Demo](assets/demo-3.png)
 
 ## Structure
 
