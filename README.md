@@ -5,11 +5,11 @@ repository memory, and a web UI.
 
 ## Demo
 
-![Demo 1](assets/demo-1.png)
+<img src="assets/demo-1.png" alt="Demo 1" width="400">
 
-![Demo 2](assets/demo-2.png)
+<img src="assets/demo-2.png" alt="Demo 2" width="400">
 
-![Demo 3](assets/demo-3.png)
+<img src="assets/demo-3.png" alt="Demo 3" width="400">
 
 ## Structure
 
