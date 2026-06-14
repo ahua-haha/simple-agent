@@ -2,9 +2,7 @@
 
 from __future__ import annotations
 
-from typing import Literal
-
-from simple_agent.task_manager.models import ManagedTask, ToolCallTask
+from typing import Any, Literal
 
 
 TaskTreeRenderFormat = Literal["tree", "flat"]
@@ -22,11 +20,11 @@ class TaskTreeRenderer:
         self._lines: list[str] = ["Task tree:"]
         self._next_tool_call_seq = 1
 
-    def render(self, root_task: ManagedTask) -> str:
+    def render(self, root_task: Any) -> str:
         self._render_task(root_task, depth=0)
         return "\n".join(self._lines)
 
-    def _render_task(self, task: ManagedTask, *, depth: int) -> None:
+    def _render_task(self, task: Any, *, depth: int) -> None:
         self._append_task(task, depth=depth)
         if self._format == "flat":
             for tool_call in _flat_tool_calls(task):
@@ -39,17 +37,16 @@ class TaskTreeRenderer:
         for child in getattr(task, "children", []):
             self._render_task(child, depth=depth + 1)
 
-    def _append_task(self, task: ManagedTask, *, depth: int) -> None:
+    def _append_task(self, task: Any, *, depth: int) -> None:
         sequence = None
-        tool_call = None
-        if isinstance(task, ToolCallTask):
+        if getattr(task, "kind", None) == "tool_call":
             sequence = self._next_tool_call_seq
             self._next_tool_call_seq += 1
 
         self._lines.append(
-            f"{self._indent(depth)}- {task.format_for_render(tool_call=tool_call, sequence=sequence)}"
+            f"{self._indent(depth)}- {task.format_for_render(tool_call=None, sequence=sequence)}"
         )
-        if task.kind == "tool_call":
+        if getattr(task, "kind", None) == "tool_call":
             return
         result = getattr(task, "result", None)
         error = getattr(task, "error", None)
@@ -62,26 +59,26 @@ class TaskTreeRenderer:
         return "  " * depth
 
 
-def _flat_tool_calls(task: ManagedTask) -> list[ToolCallTask]:
-    tool_calls: list[ToolCallTask] = []
+def _flat_tool_calls(task: Any) -> list[Any]:
+    tool_calls: list[Any] = []
     stack = list(reversed(getattr(task, "children", [])))
     while stack:
         child = stack.pop()
-        if isinstance(child, ToolCallTask):
+        if getattr(child, "kind", None) == "tool_call":
             tool_calls.append(child)
         else:
             stack.extend(reversed(getattr(child, "children", [])))
     return tool_calls
 
 
-def build_task_tree(tasks: list[ManagedTask]) -> list[ManagedTask]:
+def build_task_tree(tasks: list[Any]) -> list[Any]:
     """Build in-memory task trees from flat persisted tasks without changing order."""
     by_id = {
         task.id: task
         for task in tasks
-        if task.id is not None
+        if getattr(task, "id", None) is not None
     }
-    roots: list[ManagedTask] = []
+    roots: list[Any] = []
     for task in tasks:
         if hasattr(task, "children"):
             task.children = []

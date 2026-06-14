@@ -18,7 +18,7 @@ from simple_agent.task_manager.base_lifecycle import (
     USER_TASK_SYSTEM_PROMPT,
     render_prompt_template,
 )
-from simple_agent.task_manager.models import ManagedTask, RepoMemoryTask
+from simple_agent.task_manager.models import RepoMemoryTask
 from simple_agent.tool.common_tools import create_all_coding_tools
 
 
@@ -111,17 +111,15 @@ class RepoMemoryLifecycle(BaseTaskLifecycle):
             system_prompt=USER_TASK_SYSTEM_PROMPT,
             messages=run_messages,
             tools=tools,
-            parent_task=task,
             cancel_event=cancel_event,
         )
         assistant_message = turn_result.assistant_message
         assistant_entry = turn_result.assistant_entry
         tool_result_entries = turn_result.tool_result_entries
         tool_call_records = turn_result.tool_call_records
-        tool_call_tasks = turn_result.tool_call_tasks
+        tool_call_log_ids = turn_result.tool_call_log_ids
         if turn_result.has_tool_call:
-            task.children.extend(tool_call_tasks)
-            if tool_call_tasks:
+            if tool_call_log_ids:
                 task.touch()
 
         new_messages = [assistant_entry, *tool_result_entries]
@@ -145,7 +143,7 @@ class RepoMemoryLifecycle(BaseTaskLifecycle):
             tool_result_entries=tool_result_entries,
         )
 
-        tasks_to_sync: list[ManagedTask] = [task, *task.children]
+        tasks_to_sync = [task, *task.children]
         with self._session_state.create_database_session() as session:
             self._session_state.append_messages_to_database(
                 messages=new_messages,

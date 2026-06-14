@@ -9,7 +9,7 @@ from sqlalchemy import Column, String
 from sqlmodel import SQLModel, Field
 
 from pi.agent.types import AgentMessage
-from simple_agent.task_manager.models import ManagedTask, task_from_metadata
+from simple_agent.task_manager.models import task_from_metadata
 
 
 # ── DB record classes ────────────────────────────────────────────────
@@ -98,17 +98,17 @@ def agent_message_from_json(payload: str) -> AgentMessage:
     return _single_message_adapter.validate_json(payload)
 
 
-def managed_task_to_record(task: ManagedTask) -> TaskRecord:
+def managed_task_to_record(task: Any) -> TaskRecord:
     return TaskRecord(
         id=task.id,
-        parent_id=task.parent_id,
+        parent_id=getattr(task, "parent_id", None),
         kind=task.kind,
         status=task.status,
         metadata_json=task.metadata_json(),
     )
 
 
-def managed_task_from_record(record: TaskRecord) -> ManagedTask:
+def managed_task_from_record(record: TaskRecord) -> Any:
     return task_from_metadata(
         id=record.id,
         parent_id=record.parent_id,

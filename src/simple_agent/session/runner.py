@@ -13,7 +13,7 @@ from simple_agent.task_manager.base_lifecycle import SessionState
 from simple_agent.task_manager.repo_memory_lifecycle import RepoMemoryLifecycle
 from simple_agent.task_manager.task_lifecycle import CommonTaskLifecycle
 from simple_agent.task_manager.orchestrator import OrchestratorLifecycle
-from simple_agent.task_manager.models import ManagedTask, UserTask
+from simple_agent.task_manager.models import UserTask
 
 if TYPE_CHECKING:
     from simple_agent.db.db import Database
@@ -167,13 +167,13 @@ class SessionRunner:
             self.sync_metadata(session=session)
             session.commit()
 
-    def _current_user_task_from_database(self) -> ManagedTask | None:
+    def _current_user_task_from_database(self) -> Any | None:
         if self._user_task is None:
             return None
         with self._db.create_session() as session:
             return self._db.get_managed_task(self._user_task.id, session=session)
 
-    def _resolve_current_task(self) -> ManagedTask | None:
+    def _resolve_current_task(self) -> Any | None:
         task_id = self._session_state.current_task_id
         if task_id is None:
             self._session_state.current_task = None

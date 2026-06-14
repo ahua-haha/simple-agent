@@ -33,56 +33,6 @@ class BaseTask(BaseModel):
         return f"{self.kind} [{self.status}] {_task_title(self)}"
 
 
-class CommonTask(BaseTask):
-    kind: Literal["user_task"] = "user_task"
-    title: str
-    result: str | None = None
-    error: str | None = None
-    start_message_id: int | None = None
-    end_message_id: int | None = None
-    compacted_tool_call_log_ids: list[int] = Field(default_factory=list)
-
-    def format_for_render(self, *, tool_call: Any | None = None, sequence: int | None = None) -> str:
-        return f"user_task [{self.status}] {self.title}"
-
-    @classmethod
-    def from_metadata(
-        cls,
-        *,
-        id: int | None,
-        parent_id: int | None,
-        status: str,
-        metadata: str,
-    ) -> "CommonTask":
-        return cls(id=id, parent_id=parent_id, status=status, **_metadata_dict(metadata))
-
-
-class ToolCallTask(BaseTask):
-    kind: Literal["tool_call"] = "tool_call"
-    tool_call_log_id: int | None = None
-    tool_call_name: str | None = None
-    tool_call_args: Any | None = None
-
-    def format_for_render(self, *, tool_call: Any | None = None, sequence: int | None = None) -> str:
-        seq = sequence if sequence is not None else "?"
-        tool_name = self.tool_call_name or "unknown_tool"
-        line = f"tool_call {seq}. {tool_name}"
-        if self.tool_call_args is not None:
-            line += f" args: {_truncate_text(_format_tool_call_args(self.tool_call_args), limit=120)}"
-        return line
-
-    @classmethod
-    def from_metadata(
-        cls,
-        *,
-        id: int | None,
-        parent_id: int | None,
-        status: str,
-        metadata: str,
-    ) -> "ToolCallTask":
-        return cls(id=id, parent_id=parent_id, status=status, **_metadata_dict(metadata))
-
-
 class UserTask(BaseModel):
     """Single user task that holds all metadata during an agent run.
 
@@ -148,7 +98,7 @@ class RepoMemoryTask(BaseTask):
         return cls(id=id, parent_id=parent_id, status=status, **_metadata_dict(metadata))
 
 
-ManagedTask = CommonTask | ToolCallTask | RepoMemoryTask
+ManagedTask = RepoMemoryTask
 
 
 def task_from_metadata(
@@ -159,10 +109,6 @@ def task_from_metadata(
     status: str,
     metadata: str,
 ) -> ManagedTask:
-    if kind == "user_task":
-        return CommonTask.from_metadata(id=id, parent_id=parent_id, status=status, metadata=metadata)
-    if kind == "tool_call":
-        return ToolCallTask.from_metadata(id=id, parent_id=parent_id, status=status, metadata=metadata)
     if kind == "repo_memory":
         return RepoMemoryTask.from_metadata(id=id, parent_id=parent_id, status=status, metadata=metadata)
     raise ValueError(f"Unknown task kind: {kind}")
@@ -175,7 +121,7 @@ def _metadata_dict(metadata: str) -> dict:
     return payload
 
 
-def _task_title(task: BaseTask) -> str:
+def _task_title(task: Any) -> str:
     title = getattr(task, "title", None)
     return str(title) if title is not None else ""
 
