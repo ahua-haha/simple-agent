@@ -11,7 +11,7 @@ repository memory, and a web UI.
 
 <img src="assets/demo-3.png" alt="Demo 3" width="800">
 
-<video src="assets/demo.mp4" controls width="800"></video>
+![Demo Video](assets/demo.gif)
 
 ## Structure
 
