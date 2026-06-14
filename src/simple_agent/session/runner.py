@@ -100,21 +100,25 @@ class SessionRunner:
         self.load()
         self.run_input_transition(user_input)
 
-        while self._session_state.current_task_id is not None:
+        while True:
             if self._user_paused:
                 break
 
-            task = self._resolve_current_task()
-            if task is None:
-                raise RuntimeError("No active task")
-
             phase = self._session_state.next_phase
+            if phase is None:
+                break
+            if phase == "done":
+                self._session_state.set_current_task(None, None)
+                break
+
             if phase == "orchestrator":
                 lifecycle = self._orchestrator
             elif phase == "common_task":
                 lifecycle = self._common_task
+            elif phase == "repo_memory":
+                lifecycle = self._repo_memory
             else:
-                lifecycle = self._common_task
+                break
 
             lifecycle.set_data(self._session_state)
             try:
@@ -172,20 +176,6 @@ class SessionRunner:
             return None
         with self._db.create_session() as session:
             return self._db.get_managed_task(self._user_task.id, session=session)
-
-    def _resolve_current_task(self) -> Any | None:
-        task_id = self._session_state.current_task_id
-        if task_id is None:
-            self._session_state.current_task = None
-            return None
-        task = self._session_state.current_task
-        if task is None or task.id != task_id:
-            with self._db.create_session() as session:
-                task = self._db.get_managed_task(task_id, session=session)
-        if task is None:
-            raise RuntimeError(f"Task {task_id} is missing")
-        self._session_state.current_task = task
-        return task
 
     def _load_session_state(self, *, session: Session) -> None:
         self._session_state = SessionState(

@@ -83,8 +83,7 @@ class RepoMemoryLifecycle(BaseTaskLifecycle):
     ) -> SessionState:
         task = self.task
         if task.status != "active":
-            self._session_state.current_task_id = None
-            self._session_state.current_task = None
+            self._session_state.next_phase = "done"
             return self._session_state
         return await self.run_one_turn(
             agent_process=agent_process,
@@ -128,10 +127,9 @@ class RepoMemoryLifecycle(BaseTaskLifecycle):
             task.status = "done"
             task.result = _assistant_text(assistant_message)
             task.touch()
-            self._session_state.current_task_id = None
-            self._session_state.current_task = None
-        elif task.status == "active":
-            self.set_current_task(task.id, task)
+            self._session_state.next_phase = "done"
+        else:
+            self._session_state.next_phase = "repo_memory"
 
         runtime_logger.log_handle_running(
             session_id=self._session_state._require_session_id(),

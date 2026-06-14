@@ -97,17 +97,20 @@ enough useful memory is written, respond without tool calls to finish this phase
 
 ORCHESTRATOR_SYSTEM_PROMPT = """You are an orchestrator agent. Your job is to help the agent manage tasks.
 NEVER generate a text response — use only the provided tools.
-Inspect the task progress and task plan, then decide whether to create a
-sub-task, update the task plan, or do nothing and let the current task continue."""
+Inspect the task progress and task plan, then decide whether to set an
+instruction, update the task plan, finish the task, or do nothing."""
 
 ORCHESTRATOR_INSTRUCTION_TEMPLATE = """\
 {{ task_info }}
 
-You MUST call `set_instruction` to instruct the agent what to do next.
-If there is no specific sub-task to assign, set the user's original task as the instruction.
+You MUST call ONE of the following tools:
+- `set_instruction` — to instruct the agent what to do next. If there is no specific
+  sub-task to assign, set the user's original task as the instruction.
+- `finish_task` — to mark the entire task as completed. Call this when all items in
+  the task plan are done and the user's request is fully satisfied.
 
-Review the task state and decide:
-- Use `update_task_plan` to mark finished items and add new pending items.
+You MAY also call:
+- `update_task_plan` — to mark finished items as [x] and add new pending items as [ ].
 
 When to update the task plan:
 1. Based on the task context, mark already-finished tasks as [x].
@@ -174,6 +177,38 @@ class OrchestratorLifecycle(BaseTaskLifecycle):
             agent_process=agent_process,
             cancel_event=cancel_event,
         )
+
+    def _build_finish_task_tool(self) -> AgentTool:
+        """Build a tool that lets the orchestrator mark the task as done."""
+        tool = AgentTool(
+            name="finish_task",
+            description=(
+                "Mark the entire task as completed. Call this when all items "
+                "in the task plan are done and the user's request is fully "
+                "satisfied."
+            ),
+            parameters={
+                "type": "object",
+                "properties": {
+                    "result": {
+                        "type": "string",
+                        "description": "Optional summary of what was accomplished.",
+                    },
+                },
+                "required": [],
+            },
+        )
+
+        async def execute(tool_call_id, params, cancel_event=None, on_update=None):
+            self.task.status = "done"
+            self.task.result = params.get("result")
+            self.task.touch()
+            return AgentToolResult(
+                content=[TextContent(text="Task marked as done.")]
+            )
+
+        tool.execute = execute
+        return tool
 
     def _build_set_instruction_tool(self) -> AgentTool:
         """Build a tool that lets the orchestrator set an instruction for the task agent."""
@@ -255,9 +290,9 @@ class OrchestratorLifecycle(BaseTaskLifecycle):
         """Inspect context and manage the task plan.
 
         0. Check status: if done, end the run
-        1. Prepare: build prompt, tools, and message buffer
-        2. Run: call _run_loop to let the agent review and update the plan
-        3. Post-handle: route back to CommonTaskLifecycle
+        1. Prepare: build prompt, tools (set_instruction, update_task_plan, finish_task), and message buffer
+        2. Run: call _run_loop to let the agent manage the task
+        3. Post-handle: set next_phase to "done" or "common_task"
         """
         task = self.task
 
@@ -274,6 +309,7 @@ class OrchestratorLifecycle(BaseTaskLifecycle):
         tools: list[AgentTool] = [
             self._build_set_instruction_tool(),
             self._build_update_task_plan_tool(),
+            self._build_finish_task_tool(),
         ]
         buffer: list[AgentMessage] = [
             *self._session_state.message_values(),
@@ -290,8 +326,10 @@ class OrchestratorLifecycle(BaseTaskLifecycle):
         )
 
         # ── 3. Post-handle ──────────────────────────────────────────────
-        self._session_state.next_phase = "common_task"
-        self.set_current_task(task.id, task)
+        if task.status == "done":
+            self._session_state.next_phase = "done"
+        else:
+            self._session_state.next_phase = "common_task"
         return self._session_state
 
     async def _run_loop(
