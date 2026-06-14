@@ -161,7 +161,6 @@ class OrchestratorLifecycle(BaseTaskLifecycle):
 
     def create_tools(self) -> list[AgentTool]:
         return [
-            self.build_start_next_task_tool(enabled_task_kinds=["common"]),
             self.create_finish_common_task_tool(),
             self._agent_index.create_tree_tool(),
             *create_all_coding_tools(self._session_state.workspace_dir),
@@ -235,12 +234,6 @@ class OrchestratorLifecycle(BaseTaskLifecycle):
         3. Post-handle: route back to CommonTaskLifecycle
         """
         task = self.task
-
-        # ── 0. Check status: if done, end the run ────────────────────────
-        if task.status == "done":
-            self._session_state.next_phase = None
-            self.set_current_task(None, None)
-            return self._session_state
 
         # ── 1. Prepare ──────────────────────────────────────────────────
         system_prompt = ORCHESTRATOR_SYSTEM_PROMPT
