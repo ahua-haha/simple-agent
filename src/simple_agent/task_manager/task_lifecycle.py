@@ -19,7 +19,6 @@ from simple_agent.task_manager.base_lifecycle import (
     render_prompt_template,
 )
 from simple_agent.task_manager.models import UserTask
-from simple_agent.task_manager.review import TaskTreeRenderer
 from simple_agent.tool.common_tools import create_all_coding_tools
 
 if TYPE_CHECKING:
@@ -29,16 +28,15 @@ if TYPE_CHECKING:
 USER_TASK_INSTRUCTION_TEMPLATE = """\
 <system-instruction>
 {% if instruction %}
-## Orchestrator Instruction
+You MUST follow this instruction: to complete the task
 {{ instruction }}
 {% endif %}
 
-{% if task_info %}
-## Current task process information
-{{ task_info }}
-{% endif %}
+Call `response_instruction` IMMEDIATELY when:
+- You complete the instruction
+- You run into an error
 
-Focus on the orchestrator instruction above. Use tools to explore, search, and gather context. When you have completed the work, call `response_instruction` with a summary of what you accomplished.
+Provide useful information about what you accomplished or what went wrong.
 </system-instruction>
 """
 
@@ -63,14 +61,9 @@ class CommonTaskLifecycle(BaseTaskLifecycle):
         self._agent_index = None
 
     def instruction_text(self) -> str:
-        tool_call_count = len(self.task.tool_call_log_ids)
-        task_info = None
-        if tool_call_count > 10:
-            task_info = TaskTreeRenderer(format="tree", depth=1).render(self.task)
         return render_prompt_template(
             USER_TASK_INSTRUCTION_TEMPLATE,
             instruction=self.task.instruction,
-            task_info=task_info,
         )
 
     def create_tools(self) -> list[AgentTool]:
