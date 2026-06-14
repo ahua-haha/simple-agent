@@ -3,79 +3,134 @@
 import { FileTree } from "@/components/workspace/file-tree";
 import { WorkspaceChatPanel } from "@/components/workspace/workspace-chat-panel";
 import { WorkspaceEditorShell } from "@/components/workspace/workspace-editor-shell";
+import { WorkspacePicker } from "@/components/workspace/workspace-picker";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { Separator } from "@/components/ui/separator";
-import {
-  getFirstWorkspaceFile,
-  getWorkspaceFileById,
-  getWorkspaceViewModes,
-  workspaceTree,
-  type WorkspaceViewMode,
-} from "@/lib/workspace-sample-data";
+import { Button } from "@/components/ui/button";
+import { getWorkspaceViewModes } from "@/lib/workspace-types";
+import { useWorkspaceStore } from "@/lib/workspace-store";
+import type { WorkspaceViewMode } from "@/lib/workspace-types";
+import { XIcon } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
 
 export default function WorkspacePage() {
-  const firstFile = useMemo(() => getFirstWorkspaceFile(workspaceTree), []);
-  const [selectedFileId, setSelectedFileId] = useState(firstFile.id);
+  const {
+    workspacePath,
+    workspaceName,
+    fileTree,
+    isLoadingTree,
+    treeError,
+    selectedFileId,
+    openedFiles,
+    isLoadingFile,
+    isSaving,
+    openWorkspace,
+    closeWorkspace,
+    selectFile,
+    updateFileContent,
+    saveCurrentFile,
+  } = useWorkspaceStore();
+
   const [viewMode, setViewMode] = useState<WorkspaceViewMode>("raw");
-  const [editedContents, setEditedContents] = useState<Record<string, string>>(
-    {},
-  );
 
-  const selectedFile =
-    getWorkspaceFileById(workspaceTree, selectedFileId) ?? firstFile;
-  const availableViewModes = getWorkspaceViewModes(selectedFile);
-  const content = editedContents[selectedFile.id] ?? selectedFile.content;
-  const dirty = content !== selectedFile.content;
+  // Derive current file state (always called, even when no workspace)
+  const selectedFile = selectedFileId ? openedFiles[selectedFileId] : undefined;
+  const content = selectedFile?.content ?? "";
+  const dirty = selectedFile
+    ? selectedFile.content !== selectedFile.originalContent
+    : false;
+  const availableViewModes = useMemo(() => {
+    if (!selectedFile) return ["raw"] as WorkspaceViewMode[];
+    return getWorkspaceViewModes({
+      type: "file",
+      id: selectedFileId!,
+      name: selectedFile.name,
+      path: selectedFile.path,
+      language: selectedFile.language,
+      content: selectedFile.content,
+    });
+  }, [selectedFile, selectedFileId]);
 
+  // Reset view mode when switching files if current mode isn't available
   useEffect(() => {
     if (!availableViewModes.includes(viewMode)) {
       setViewMode("raw");
     }
   }, [availableViewModes, viewMode]);
 
+  // If no workspace is open, show the picker
+  if (!workspacePath) {
+    return <WorkspacePicker />;
+  }
+
+  const editorFile = selectedFile
+    ? {
+        name: selectedFile.name,
+        path: selectedFile.path,
+        language: selectedFile.language,
+        isBinary: selectedFile.isBinary,
+      }
+    : undefined;
+
   return (
     <main className="flex h-dvh overflow-hidden bg-background text-foreground">
+      {/* Sidebar */}
       <aside className="flex w-72 shrink-0 flex-col border-r bg-muted/30">
-        <div className="flex h-14 shrink-0 items-center px-4">
-          <div>
-            <h1 className="text-sm font-medium">Workspace</h1>
-            <p className="text-xs text-muted-foreground">Sample files</p>
+        <div className="flex h-14 shrink-0 items-center justify-between px-4">
+          <div className="min-w-0">
+            <h1 className="truncate text-sm font-medium">{workspaceName}</h1>
+            <p className="truncate text-xs text-muted-foreground">
+              {workspacePath}
+            </p>
           </div>
+          <Button
+            type="button"
+            variant="ghost"
+            size="icon"
+            onClick={closeWorkspace}
+            className="size-7 shrink-0"
+            aria-label="Close workspace"
+          >
+            <XIcon className="size-4" />
+          </Button>
         </div>
         <Separator />
         <ScrollArea className="min-h-0 flex-1">
           <div className="p-2">
             <FileTree
-              root={workspaceTree}
-              selectedFileId={selectedFile.id}
-              onSelectFile={(fileId) => {
-                setSelectedFileId(fileId);
-                const nextFile =
-                  getWorkspaceFileById(workspaceTree, fileId) ?? firstFile;
-                if (!getWorkspaceViewModes(nextFile).includes(viewMode)) {
-                  setViewMode("raw");
-                }
-              }}
+              root={fileTree}
+              selectedFileId={selectedFileId}
+              onSelectFile={selectFile}
+              isLoading={isLoadingTree}
+              error={treeError}
             />
           </div>
         </ScrollArea>
       </aside>
+
+      {/* Editor area */}
       <section className="relative flex min-w-0 flex-1">
-        <WorkspaceEditorShell
-          file={selectedFile}
-          content={content}
-          dirty={dirty}
-          viewMode={viewMode}
-          availableViewModes={availableViewModes}
-          onViewModeChange={setViewMode}
-          onContentChange={(nextContent) =>
-            setEditedContents((current) => ({
-              ...current,
-              [selectedFile.id]: nextContent,
-            }))
-          }
-        />
+        {isLoadingFile ? (
+          <div className="flex flex-1 items-center justify-center">
+            <p className="text-sm text-muted-foreground">Loading file…</p>
+          </div>
+        ) : (
+          <WorkspaceEditorShell
+            file={editorFile}
+            content={content}
+            dirty={dirty}
+            viewMode={viewMode}
+            availableViewModes={availableViewModes}
+            onViewModeChange={setViewMode}
+            onContentChange={(nextContent) => {
+              if (selectedFileId) {
+                updateFileContent(selectedFileId, nextContent);
+              }
+            }}
+            onSave={saveCurrentFile}
+            isSaving={isSaving}
+          />
+        )}
         <WorkspaceChatPanel />
       </section>
     </main>

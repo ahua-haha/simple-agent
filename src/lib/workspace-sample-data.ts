@@ -1,25 +1,12 @@
-export type WorkspaceLanguage = "typescript" | "markdown" | "json" | "text";
+import type { WorkspaceFolder } from "./workspace-types";
 
-export type WorkspaceViewMode = "raw" | "preview" | "wysiwyg";
-
-export type WorkspaceFile = {
-  type: "file";
-  id: string;
-  name: string;
-  path: string;
-  language: WorkspaceLanguage;
-  content: string;
-};
-
-export type WorkspaceFolder = {
-  type: "folder";
-  id: string;
-  name: string;
-  path: string;
-  children: WorkspaceNode[];
-};
-
-export type WorkspaceNode = WorkspaceFile | WorkspaceFolder;
+export type {
+  WorkspaceLanguage,
+  WorkspaceViewMode,
+  WorkspaceFile,
+  WorkspaceFolder,
+  WorkspaceNode,
+} from "./workspace-types";
 
 export const workspaceTree: WorkspaceFolder = {
   type: "folder",
@@ -142,30 +129,10 @@ Only the raw editor is available.
     },
   ],
 };
-
-export function flattenWorkspaceFiles(node: WorkspaceNode): WorkspaceFile[] {
-  if (node.type === "file") return [node];
-  return node.children.flatMap(flattenWorkspaceFiles);
-}
-
-export function getFirstWorkspaceFile(root: WorkspaceFolder): WorkspaceFile {
-  const firstFile = flattenWorkspaceFiles(root)[0];
-  if (!firstFile) {
-    throw new Error("Workspace sample data must contain at least one file");
-  }
-  return firstFile;
-}
-
-export function getWorkspaceFileById(
-  root: WorkspaceFolder,
-  fileId: string,
-): WorkspaceFile | undefined {
-  return flattenWorkspaceFiles(root).find((file) => file.id === fileId);
-}
-
-export function getWorkspaceViewModes(
-  file: WorkspaceFile,
-): WorkspaceViewMode[] {
-  if (file.language === "markdown") return ["raw", "preview", "wysiwyg"];
-  return ["raw"];
-}
+// Helper functions are now in workspace-types.ts
+export {
+  flattenWorkspaceFiles,
+  getFirstWorkspaceFile,
+  getWorkspaceFileById,
+  getWorkspaceViewModes,
+} from "./workspace-types";

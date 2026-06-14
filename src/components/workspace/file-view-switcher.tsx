@@ -1,7 +1,7 @@
 "use client";
 
 import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
-import type { WorkspaceViewMode } from "@/lib/workspace-sample-data";
+import type { WorkspaceViewMode } from "@/lib/workspace-types";
 
 type FileViewSwitcherProps = {
   value: WorkspaceViewMode;
