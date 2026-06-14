@@ -7,12 +7,12 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
 from jinja2 import Environment, StrictUndefined
-from pi.agent import AgentTool, AgentToolResult
+from pi.agent import AgentTool
 from pi.agent.types import AgentMessage
-from pi.ai.types import AssistantMessage, TextContent, ToolCall, ToolResultMessage
+from pi.ai.types import AssistantMessage, ToolCall, ToolResultMessage
 
 from simple_agent.message_store import MessageEntry
-from simple_agent.task_manager.models import CommonTask, ManagedTask, RepoMemoryTask, ToolCallTask, UserTask
+from simple_agent.task_manager.models import ManagedTask, ToolCallTask
 
 if TYPE_CHECKING:
     from simple_agent.db.db import Database
@@ -44,11 +44,7 @@ When to use:
 - Do NOT create a common task whose goal is to produce a summary, explanation, or text answer. Sub-tasks should use tools to find and return facts.
 - Keep the common task focused on one concrete exploration or search goal.
 
-How to create and start:
-- Call `start_next_task(kind="common", title="<exploration goal>", metadata={})` to create and start a sub-task in one call.
-- Put the concrete exploration goal in the title (e.g., "Find how session runner dispatches lifecycles").
-- Omit metadata or pass an empty object.
-- Example: {"kind":"common","title":"Explore task lifecycle dispatch flow in session runner","metadata":{}}
+Example sub-task title: "Explore task lifecycle dispatch flow in session runner"
 
 {% endif %}
 {% if has_repo_memory_task %}
@@ -58,19 +54,13 @@ When to use:
 - Use it after exploring or changing repository structure when the useful result should be saved for future runs.
 - Use it when the task is about recording concise descriptions of files, modules, or architecture.
 
-How to create and start:
-- Call `start_next_task(kind="repo_memory", title="<memory writing goal>", metadata={...})` to create and start a sub-task in one call.
-- Metadata must include `index_db_path`.
-- Metadata may include `repo_path`; omit it when the current repository root is correct.
-- Metadata shape: {"repo_path":"<repo path>","index_db_path":"<index database path>"}.
-- Example: {"kind":"repo_memory","title":"Write memory for task lifecycle design","metadata":{"repo_path":".","index_db_path":".index.db"}}
+Repo memory example: {"repo_path":".","index_db_path":".index.db"}
 
 {% endif %}
 ## Task Creation Rules
 - Do not invent metadata keys unless the selected task kind asks for them.
 - Keep the created task focused on the next unit of work, not the whole user request.
-- Call `start_next_task` to create and start a sub-task in a single call. The sub-task is created and routed immediately.
-- Sub-tasks exist to explore and gather context with tools — never create a sub-task just to generate a text response.
+- Use tools to explore and gather context — never generate text responses when a tool can provide the answer.
 """
 
 
@@ -331,18 +321,15 @@ class AgentTurnResult:
 class BaseTaskLifecycle:
     _session_state: SessionState
     task: ManagedTask | None
-    task_to_start: ManagedTask | None
     finished_task: ManagedTask | None
 
     def clear_data(self) -> None:
         self.task = None
-        self.task_to_start = None
         self.finished_task = None
 
     def set_data(self, session_state: SessionState) -> None:
         self._session_state = session_state
         self.task = None
-        self.task_to_start = None
         self.finished_task = None
         raise NotImplementedError(f"{type(self).__name__}.set_data is not implemented")
 
@@ -410,95 +397,6 @@ class BaseTaskLifecycle:
             has_tool_call=has_tool_call,
         )
 
-    def build_start_next_task_tool(
-        self,
-        *,
-        enabled_task_kinds: list[str] | tuple[str, ...] | None = None,
-    ) -> AgentTool:
-        """Build a tool that creates and starts a sub-task in one call."""
-        enabled_kinds = self._validate_enabled_task_kinds(enabled_task_kinds)
-
-        tool = AgentTool(
-            name="start_next_task",
-            description=(
-                "Create a sub-task and make it the next task to run. "
-                "Use this when you are ready to delegate work to a child task."
-            ),
-            parameters={
-                "type": "object",
-                "properties": {
-                    "kind": {
-                        "type": "string",
-                        "enum": enabled_kinds,
-                        "description": "The type of sub-task to create.",
-                    },
-                    "title": {
-                        "type": "string",
-                        "description": "Short title for the sub-task.",
-                    },
-                    "metadata": {
-                        "type": "object",
-                        "description": (
-                            "Task-specific metadata. For repo_memory include "
-                            "repo_path and index_db_path. Common tasks usually omit this."
-                        ),
-                        "additionalProperties": True,
-                    },
-                },
-                "required": ["kind", "title"],
-            },
-        )
-
-        async def execute(tool_call_id, params, cancel_event=None, on_update=None):
-            task = self.start_next_task(
-                kind=params["kind"],
-                title=params["title"],
-                metadata=params.get("metadata"),
-                enabled_task_kinds=enabled_kinds,
-            )
-            return AgentToolResult(
-                content=[TextContent(text=f"Started sub-task: {task.kind} {task.title}")]
-            )
-
-        tool.execute = execute
-        return tool
-
-    def start_next_task(
-        self,
-        *,
-        kind: str,
-        title: str,
-        metadata: dict | None = None,
-        enabled_task_kinds: list[str] | tuple[str, ...] | None = None,
-    ) -> UserTask | RepoMemoryTask:
-        """Create a sub-task object and set task_to_start. Does NOT allocate an id or append to parent."""
-        enabled_kinds = self._validate_enabled_task_kinds(enabled_task_kinds)
-        if kind not in enabled_kinds:
-            raise TaskLifecycleError(f"Task kind is disabled: {kind}")
-        parent = self._require_task()
-        metadata = metadata or {}
-        if kind == "common":
-            task = UserTask(
-                parent_id=parent.id,
-                title=title,
-            )
-        elif kind == "repo_memory":
-            repo_path = metadata.get("repo_path")
-            index_db_path = metadata.get("index_db_path")
-            if index_db_path is None:
-                raise TaskLifecycleError("repo_memory task requires index_db_path")
-            task = RepoMemoryTask(
-                parent_id=parent.id,
-                title=title,
-                repo_path=repo_path or self._session_state.workspace_dir,
-                index_db_path=index_db_path,
-            )
-        else:
-            raise TaskLifecycleError(f"Unsupported next task kind: {kind}")
-
-        self.task_to_start = task
-        return task
-
     def set_current_task(self, task_id: int | None, task: ManagedTask | None) -> None:
         self._session_state.set_current_task(task_id, task)
 
@@ -512,26 +410,7 @@ class BaseTaskLifecycle:
         return task
 
     def clear_turn_indicators(self) -> None:
-        self.task_to_start = None
         self.finished_task = None
-
-    def _validate_enabled_task_kinds(
-        self,
-        enabled_task_kinds: list[str] | tuple[str, ...] | None,
-    ) -> list[str]:
-        enabled_kinds = list(enabled_task_kinds or ("common", "repo_memory"))
-        invalid = [kind for kind in enabled_kinds if kind not in ("common", "repo_memory")]
-        if invalid:
-            raise TaskLifecycleError(f"Unsupported task kind enabled: {invalid[0]}")
-        return enabled_kinds
-
-    def _require_task(self) -> ManagedTask:
-        parent = self.task
-        if parent is None:
-            raise TaskLifecycleError("Lifecycle has no current task to attach next task")
-        if parent.id is None:
-            raise TaskLifecycleError("Current task must have an id before creating a next task")
-        return parent
 
     async def run(
         self,

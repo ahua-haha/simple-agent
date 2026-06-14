@@ -20,7 +20,7 @@ from simple_agent.task_manager.base_lifecycle import (
     render_prompt_template,
     task_instruction_text,
 )
-from simple_agent.task_manager.models import ManagedTask, ToolCallTask, CommonTask, UserTask
+from simple_agent.task_manager.models import ManagedTask, ToolCallTask, UserTask
 from simple_agent.task_manager.review import TaskTreeRenderer
 from simple_agent.tool.common_tools import create_all_coding_tools
 
@@ -107,17 +107,13 @@ Based on current task progress:
 And task plan:
 {{ task_plan }}
 
-Determine whether to update the task plan, create a sub-task, or keep running.
+Determine whether to update the task plan or keep running.
 
 When to update the task plan (use update_task_plan):
 1. Based on the task context, mark already-finished tasks as [x].
 2. If the current task is complex, decompose it and add new pending tasks as [ ].
 3. Based on task progress, think about the next task to run and reflect it in the plan.
    If the remaining work is simple, keep running the current task without changes.
-
-When to create a sub-task (use start_next_task):
-1. If the remaining work is complex, consider decomposing it into sub-tasks.
-2. If the remaining work is simple to complete, do NOT create a sub-task — just keep running.
 
 If no action is needed, respond without tool calls."""
 
@@ -128,7 +124,6 @@ class OrchestratorLifecycle(BaseTaskLifecycle):
 
     def set_data(self, session_state: SessionState) -> None:
         self._session_state = session_state
-        self.task_to_start = None
         self.finished_task = None
         task = self._session_state.current_task
         if task is None:
@@ -141,40 +136,6 @@ class OrchestratorLifecycle(BaseTaskLifecycle):
     def clear_data(self) -> None:
         super().clear_data()
         self._agent_index = None
-
-    def _resolve_task(self) -> ManagedTask | None:
-        """Resolve the current task from session state, rebuilding from DB if needed."""
-        task_id = self._session_state.current_task_id
-        if task_id is None:
-            self._session_state.current_task = None
-            return None
-        task = self._session_state.current_task
-        if task is None or task.id != task_id:
-            task = self._build_tree(task_id)
-        if task is None:
-            raise TaskLifecycleError(f"Task {task_id} is missing")
-        self._session_state.current_task = task
-        return task
-
-    def _build_tree(self, task_id: int) -> ManagedTask | None:
-        """Load a task tree from the database by root task id."""
-        database = self._session_state.database
-        if database is None:
-            return None
-        with database.create_session() as session:
-            root = database.get_managed_task(task_id, session=session)
-            if root is None or root.id is None:
-                return None
-
-            def attach_children(t: ManagedTask) -> None:
-                t.children = []
-                for child in database.list_managed_task_children(t.id, session=session):
-                    if child.id is not None:
-                        attach_children(child)
-                        t.children.append(child)
-
-            attach_children(root)
-            return root
 
     def instruction_text(self) -> str:
         tool_call_count = _count_tool_calls(self.task.children)
@@ -266,28 +227,20 @@ class OrchestratorLifecycle(BaseTaskLifecycle):
         agent_process: AgentProcess,
         cancel_event: asyncio.Event | None = None,
     ) -> SessionState:
-        """Inspect context and manage task transitions.
+        """Inspect context and manage the task plan.
 
-        0. Check status: if done, route to parent
+        0. Check status: if done, end the run
         1. Prepare: build prompt, tools, and message buffer
         2. Run: call _run_loop to let the agent review and update the plan
-        3. Post-handle: if a sub-task was started, allocate id and route to it
+        3. Post-handle: route back to CommonTaskLifecycle
         """
         task = self.task
 
-        # ── 0. Check status: if done, transition to parent ──────────────
+        # ── 0. Check status: if done, end the run ────────────────────────
         if task.status == "done":
-            if task.parent_id is None:
-                # Root task done — end the run
-                self._session_state.next_phase = None
-                self.set_current_task(None, None)
-                return self._session_state
-            # Resolve parent task and continue with it
-            self.set_current_task(task.parent_id, None)
-            task = self._resolve_task()
-            if task is None or task.kind != "user_task":
-                raise TaskLifecycleError("Parent task not found or not a user_task")
-            self.task = cast(UserTask, task)
+            self._session_state.next_phase = None
+            self.set_current_task(None, None)
+            return self._session_state
 
         # ── 1. Prepare ──────────────────────────────────────────────────
         system_prompt = ORCHESTRATOR_SYSTEM_PROMPT
@@ -304,7 +257,6 @@ class OrchestratorLifecycle(BaseTaskLifecycle):
         )
         tools: list[AgentTool] = [
             self._build_update_task_plan_tool(),
-            self.build_start_next_task_tool(enabled_task_kinds=["common"]),
         ]
         buffer: list[AgentMessage] = [
             *self._session_state.message_values(),
@@ -321,21 +273,8 @@ class OrchestratorLifecycle(BaseTaskLifecycle):
         )
 
         # ── 3. Post-handle ──────────────────────────────────────────────
-        task_to_start = self.task_to_start
-        if task_to_start is not None:
-            # Allocate id and append to parent.children
-            task_to_start.id = self._session_state.allocate_task_id()
-            task.children.append(task_to_start)
-            task.touch()
-            # Route to the new sub-task
-            self._session_state.next_phase = "common_task"
-            self.set_current_task(task_to_start.id, task_to_start)
-        else:
-            # Route back to CommonTaskLifecycle to continue current task
-            self._session_state.next_phase = "common_task"
-            self.set_current_task(task.id, task)
-
-        self.task_to_start = None
+        self._session_state.next_phase = "common_task"
+        self.set_current_task(task.id, task)
         return self._session_state
 
     async def _run_loop(
@@ -373,9 +312,6 @@ class OrchestratorLifecycle(BaseTaskLifecycle):
                 break
 
     def should_compact_after_turn(self) -> bool:
-        # Sub-tasks (tasks with a parent) do not compact — only the root user task compacts.
-        if self.task.parent_id is not None:
-            return False
         return _count_tool_calls(self.task.children) > 10
 
     async def run_one_turn(
@@ -418,19 +354,12 @@ class OrchestratorLifecycle(BaseTaskLifecycle):
             self.finish_task()
 
         def route_after_turn() -> None:
-            task_to_start = self.task_to_start
-            if task_to_start is not None:
-                if hasattr(task_to_start, "start_message_id"):
-                    task_to_start.start_message_id = assistant_entry.id
-                self.set_current_task(task_to_start.id, task_to_start)
-                return
-
             if self.finished_task is not None:
                 self.stamp_finished_task(end_message_id=turn_end_message_id)
                 if self.should_compact_after_turn():
                     self.set_current_task(task.id, task)
                     return
-                self.set_current_task(task.parent_id, None)
+                self.set_current_task(None, None)
                 return
 
             if has_tool_call:
@@ -439,7 +368,8 @@ class OrchestratorLifecycle(BaseTaskLifecycle):
 
         route_after_turn()
 
-        self.stamp_finished_task(end_message_id=turn_end_message_id)
+        if self.finished_task is not None:
+            self.stamp_finished_task(end_message_id=turn_end_message_id)
 
         runtime_logger.log_handle_running(
             session_id=self._session_state._require_session_id(),
@@ -621,7 +551,7 @@ class OrchestratorLifecycle(BaseTaskLifecycle):
         )
         task.status = "done"
         task.touch()
-        self.set_current_task(task.parent_id, None)
+        self.set_current_task(None, None)
 
         with self._session_state.create_database_session() as session:
             self._session_state.replace_message_range_in_database(

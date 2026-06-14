@@ -318,118 +318,6 @@ def test_user_task_persists_compacted_tool_call_log_ids():
     assert restored.compacted_tool_call_log_ids == [2, 5]
 
 
-def test_base_lifecycle_provides_next_task_instruction_and_tool():
-    task = CommonTask(id=1, title="Build feature")
-    session_state = SessionState(
-        workspace_dir=".",
-        messages=[],
-        current_task=task,
-        current_task_id=task.id,
-        next_task_id_to_allocate=2,
-    )
-    lifecycle = _user_lifecycle(task, session_state=session_state)
-
-    tool = lifecycle.build_start_next_task_tool(enabled_task_kinds=["common"])
-
-    assert tool.name == "start_next_task"
-    assert tool.parameters["properties"]["kind"]["enum"] == ["common"]
-
-
-def test_base_lifecycle_create_next_task_supports_common_task():
-    parent = CommonTask(id=1, title="Build feature")
-    session_state = SessionState(
-        workspace_dir=".",
-        messages=[],
-        current_task=parent,
-        current_task_id=parent.id,
-        next_task_id_to_allocate=2,
-    )
-    lifecycle = _user_lifecycle(parent, session_state=session_state)
-
-    task = lifecycle.start_next_task(
-        kind="common",
-        title="Inspect lifecycle flow",
-        enabled_task_kinds=["common"],
-    )
-
-    assert isinstance(task, UserTask)
-    assert task.parent_id == parent.id
-    assert task.start_message_id is None
-    assert lifecycle.task_to_start is task
-
-
-@pytest.mark.asyncio
-async def test_base_lifecycle_create_next_task_tool_mutates_session_state():
-    task = CommonTask(id=1, title="Build feature")
-    session_state = SessionState(
-        workspace_dir=".",
-        messages=[],
-        current_task=task,
-        current_task_id=task.id,
-        next_task_id_to_allocate=2,
-    )
-    lifecycle = _user_lifecycle(task, session_state=session_state)
-
-    next_task = lifecycle.start_next_task(
-        kind="common",
-        title="Inspect files",
-        enabled_task_kinds=["common"],
-    )
-    assert isinstance(next_task, UserTask)
-    assert next_task.parent_id == task.id
-    assert next_task.start_message_id is None
-    assert lifecycle.task_to_start is next_task
-    assert task.children == []  # not appended
-    assert session_state.current_task is task
-    assert session_state.current_task_id == task.id
-
-
-@pytest.mark.asyncio
-async def test_base_lifecycle_start_next_task_tool_creates_and_starts():
-    parent = CommonTask(id=1, title="Build feature")
-    session_state = SessionState(
-        workspace_dir=".",
-        messages=[],
-        current_task=parent,
-        current_task_id=parent.id,
-        next_task_id_to_allocate=3,
-    )
-    lifecycle = _user_lifecycle(parent, session_state=session_state)
-    tool = lifecycle.build_start_next_task_tool(enabled_task_kinds=["common"])
-
-    result = await tool.execute("call_1", {"kind": "common", "title": "Inspect files"})
-
-    child = lifecycle.task_to_start
-    assert isinstance(child, UserTask)
-    assert child.title == "Inspect files"
-    assert child.parent_id == parent.id
-    assert session_state.current_task is parent
-    assert session_state.current_task_id == parent.id
-    assert "Started sub-task" in result.content[0].text
-
-
-def test_base_lifecycle_start_next_task_creates_and_adds_to_children():
-    parent = CommonTask(id=1, title="Build feature")
-    session_state = SessionState(
-        workspace_dir=".",
-        messages=[],
-        current_task=parent,
-        current_task_id=parent.id,
-        next_task_id_to_allocate=3,
-    )
-    lifecycle = _user_lifecycle(parent, session_state=session_state)
-
-    child = lifecycle.start_next_task(
-        kind="common",
-        title="Inspect files",
-        enabled_task_kinds=["common"],
-    )
-
-    assert child.parent_id == parent.id
-    assert child.title == "Inspect files"
-    assert lifecycle.task_to_start is child
-
-
 def test_task_models_do_not_own_runtime_message_id():
     user_task = CommonTask(id=1, title="Build feature")
 
@@ -455,41 +343,6 @@ def test_todo_task_kind_is_not_supported():
             status="active",
             metadata='{"title":"Inspect files"}',
         )
-
-
-def test_user_task_lifecycle_uses_owned_allocator():
-    next_id = 10
-
-    def allocate_task_id():
-        nonlocal next_id
-        task_id = next_id
-        next_id += 1
-        return task_id
-
-    user_task = CommonTask(id=1, title="Build feature")
-    lifecycle = _user_lifecycle(user_task, allocate_task_id=allocate_task_id)
-    lifecycle._session_state.next_tool_call_log_id = 7
-    assistant_message = AssistantMessage(
-        role="assistant",
-        content=[ToolCall(id="call_1", name="ls", arguments={"path": "."})],
-    )
-    tool_result = ToolResultMessage(
-        toolCallId="call_1",
-        toolName="ls",
-        content=[TextContent(text="files")],
-    )
-
-    next_task = lifecycle.start_next_task(kind="common", title="Inspect files", enabled_task_kinds=["common"])
-    _tool_call_records, tool_call_tasks = lifecycle._session_state.create_tool_call_record_task_entries(
-        assistant_message=assistant_message,
-        tool_result_messages=[tool_result],
-        parent_task=user_task,
-    )
-
-    assert next_task.id is None  # not allocated
-    assert next_task.start_message_id is None
-    assert tool_call_tasks[0].id == 10
-    assert tool_call_tasks[0].parent_id == user_task.id
 
 
 def test_user_task_lifecycle_creates_tool_call_record_task_entries_without_appending():
@@ -528,29 +381,6 @@ def test_user_task_lifecycle_creates_tool_call_record_task_entries_without_appen
     assert tool_call_task.tool_call_log_id == 7
     assert user_task.children == []
     assert lifecycle._session_state.next_tool_call_log_id == 8
-
-
-def test_lifecycle_tracks_next_task_transition():
-    user_task = CommonTask(id=1, title="Build feature")
-    user_lifecycle = _user_lifecycle(user_task, allocate_task_id=lambda: 2)
-
-    next_task = user_lifecycle.start_next_task(kind="common", title="Inspect files", enabled_task_kinds=["common"])
-
-    assert user_lifecycle._session_state.current_task_id == user_task.id
-    assert user_lifecycle._session_state.current_task is user_task
-    assert next_task.id is None  # not allocated
-    assert next_task.parent_id == user_task.id
-
-
-def test_lifecycle_start_next_task_does_not_allocate_id():
-    session_state = SessionState(messages=[], workspace_dir=".", next_task_id_to_allocate=7)
-    user_task = CommonTask(id=1, title="Build feature")
-    lifecycle = _user_lifecycle(user_task, session_state=session_state)
-
-    next_task = lifecycle.start_next_task(kind="common", title="Inspect files", enabled_task_kinds=["common"])
-
-    assert next_task.id is None  # not allocated
-    assert session_state.next_task_id_to_allocate == 7  # unchanged
 
 
 def test_session_state_creates_tool_call_records_and_tasks():
@@ -1224,7 +1054,7 @@ async def test_user_task_lifecycle_compact_finished_replaces_messages(tmp_path):
     assert result is lifecycle._session_state
     assert user_task.status == "done"
     assert lifecycle._session_state.current_task is None
-    assert lifecycle._session_state.current_task_id == 99
+    assert lifecycle._session_state.current_task_id is None
     assert [entry.id for entry in lifecycle._session_state.messages] == [5, 6, 7]
     assert [entry.message.role for entry in lifecycle._session_state.messages] == ["user", "assistant", "tool_result"]
     assert lifecycle._session_state.messages[0].message.content[0].text == "Build feature"

@@ -174,33 +174,18 @@ class SessionRunner:
             return self._db.get_managed_task(self._user_task.id, session=session)
 
     def _resolve_current_task(self) -> ManagedTask | None:
-        next_task_id = self._session_state.current_task_id
-        if next_task_id is None:
+        task_id = self._session_state.current_task_id
+        if task_id is None:
             self._session_state.current_task = None
             return None
         task = self._session_state.current_task
-        if task is None or task.id != next_task_id:
-            task = self.build_tree(next_task_id)
+        if task is None or task.id != task_id:
+            with self._db.create_session() as session:
+                task = self._db.get_managed_task(task_id, session=session)
         if task is None:
-            raise RuntimeError(f"Next task {next_task_id} is missing")
+            raise RuntimeError(f"Task {task_id} is missing")
         self._session_state.current_task = task
         return task
-
-    def build_tree(self, task_id: int) -> ManagedTask | None:
-        with self._db.create_session() as session:
-            root = self._db.get_managed_task(task_id, session=session)
-            if root is None or root.id is None:
-                return None
-
-            def attach_children(task: ManagedTask) -> None:
-                task.children = []
-                for child in self._db.list_managed_task_children(task.id, session=session):
-                    if child.id is not None:
-                        attach_children(child)
-                        task.children.append(child)
-
-            attach_children(root)
-            return root
 
     def _load_session_state(self, *, session: Session) -> None:
         self._session_state = SessionState(

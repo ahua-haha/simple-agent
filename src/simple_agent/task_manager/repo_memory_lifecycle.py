@@ -47,7 +47,6 @@ class RepoMemoryLifecycle(BaseTaskLifecycle):
 
     def set_data(self, session_state: SessionState) -> None:
         self._session_state = session_state
-        self.task_to_start = None
         self.finished_task = None
         task = self._session_state.current_task
         if task is None:
@@ -85,7 +84,7 @@ class RepoMemoryLifecycle(BaseTaskLifecycle):
     ) -> SessionState:
         task = self.task
         if task.status != "active":
-            self._session_state.current_task_id = task.parent_id
+            self._session_state.current_task_id = None
             self._session_state.current_task = None
             return self._session_state
         return await self.run_one_turn(
@@ -132,7 +131,7 @@ class RepoMemoryLifecycle(BaseTaskLifecycle):
             task.status = "done"
             task.result = _assistant_text(assistant_message)
             task.touch()
-            self._session_state.current_task_id = task.parent_id
+            self._session_state.current_task_id = None
             self._session_state.current_task = None
         elif task.status == "active":
             self.set_current_task(task.id, task)
