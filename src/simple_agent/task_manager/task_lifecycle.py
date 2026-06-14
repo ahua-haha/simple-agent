@@ -28,11 +28,12 @@ if TYPE_CHECKING:
 USER_TASK_INSTRUCTION_TEMPLATE = """\
 <system-instruction>
 {% if instruction %}
-You MUST follow this instruction: to complete the task
+You MUST follow this instruction to complete the task:
 {{ instruction }}
 {% endif %}
 
-Call `response_instruction` IMMEDIATELY when:
+Never continue to do work that is out of the scope of the current instruction.
+You MUST call `response_instruction` IMMEDIATELY when:
 - You complete the instruction
 - You run into an error
 

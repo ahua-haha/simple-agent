@@ -100,6 +100,10 @@ When to update the task plan:
 2. If the current task is complex, decompose it and add new pending tasks as [ ].
 3. Based on task progress, think about the next task to run and reflect it in the plan.
 
+## Rules of Instruction
+Each instruction must contain ONE atomic task. Use it to instruct the agent to
+complete tasks one by one. Do NOT set an instruction with multiple tasks.
+
 If no action is needed, respond without tool calls."""
 
 
