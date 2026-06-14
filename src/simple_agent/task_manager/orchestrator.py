@@ -101,26 +101,18 @@ Inspect the task progress and task plan, then decide whether to create a
 sub-task, update the task plan, or do nothing and let the current task continue."""
 
 ORCHESTRATOR_INSTRUCTION_TEMPLATE = """\
-{% if response %}
-## Agent Response
-{{ response }}
-{% endif %}
+{{ task_info }}
 
-Based on current task progress:
-{{ task_progress }}
+You MUST call `set_instruction` to instruct the agent what to do next.
+If there is no specific sub-task to assign, set the user's original task as the instruction.
 
-And task plan:
-{{ task_plan }}
-
-Review the agent's response and task progress. Decide what to do next:
-- Use `set_instruction` to give the agent a new task to work on.
+Review the task state and decide:
 - Use `update_task_plan` to mark finished items and add new pending items.
 
 When to update the task plan:
 1. Based on the task context, mark already-finished tasks as [x].
 2. If the current task is complex, decompose it and add new pending tasks as [ ].
 3. Based on task progress, think about the next task to run and reflect it in the plan.
-   If the remaining work is simple, keep running the current task without changes.
 
 If no action is needed, respond without tool calls."""
 
@@ -271,13 +263,9 @@ class OrchestratorLifecycle(BaseTaskLifecycle):
 
         # ── 1. Prepare ──────────────────────────────────────────────────
         system_prompt = ORCHESTRATOR_SYSTEM_PROMPT
-        task_progress = TaskTreeRenderer(format="tree", depth=1).render(task)
-        task_plan = self.task.task_plan or "(no plan yet)"
         instruction_text = render_prompt_template(
             ORCHESTRATOR_INSTRUCTION_TEMPLATE,
-            response=self.task.response,
-            task_progress=task_progress,
-            task_plan=task_plan,
+            task_info=self.task.task_info(),
         )
         instruction_message = UserMessage(
             content=[TextContent(text=instruction_text)],

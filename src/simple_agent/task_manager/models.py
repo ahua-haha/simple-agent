@@ -6,7 +6,21 @@ import json
 import time
 from typing import Any, Literal
 
+from jinja2 import Environment, StrictUndefined
 from pydantic import BaseModel, Field
+
+_TASK_INFO_ENV = Environment(undefined=StrictUndefined)
+
+TASK_INFO_TEMPLATE = """\
+## Current Task
+{{ title }} [{{ status }}]
+
+## Task Plan
+{{ task_plan }}
+
+## Latest Instruction and Response
+Instruction: {{ instruction }}
+Response: {{ response }}"""
 
 TaskKind = Literal["user_task", "tool_call", "repo_memory"]
 TaskStatus = Literal["active", "done", "error", "index_memory_upsert", "compact_finished"]
@@ -41,6 +55,16 @@ class UserTask(BaseModel):
 
     def format_for_render(self, *, tool_call: Any | None = None, sequence: int | None = None) -> str:
         return f"user_task [{self.status}] {self.title}"
+
+    def task_info(self) -> str:
+        """Format the task's current state as a markdown string for the orchestrator."""
+        return _TASK_INFO_ENV.from_string(TASK_INFO_TEMPLATE).render(
+            title=self.title,
+            status=self.status,
+            task_plan=self.task_plan or "(no plan yet)",
+            instruction=self.instruction or "(none)",
+            response=self.response or "(none)",
+        )
 
     def metadata_json(self) -> str:
         return self.model_dump_json(exclude={"id", "kind", "status", "children"})
