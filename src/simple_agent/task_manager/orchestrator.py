@@ -311,6 +311,7 @@ class OrchestratorLifecycle(BaseTaskLifecycle):
             self._build_update_task_plan_tool(),
             self._build_finish_task_tool(),
         ]
+        context_messages = list(self._session_state.messages)
         buffer: list[AgentMessage] = [
             *self._session_state.message_values(),
             instruction_message,
@@ -323,6 +324,15 @@ class OrchestratorLifecycle(BaseTaskLifecycle):
             tools=tools,
             agent_process=agent_process,
             cancel_event=cancel_event,
+        )
+
+        # ── 2.1 Log ─────────────────────────────────────────────────────
+        new_messages = buffer[len(context_messages) + 1:]
+        runtime_logger.log_handle_orchestrate(
+            session_id=self._session_state._require_session_id(),
+            context_messages=context_messages,
+            instruction_message=instruction_message,
+            new_messages=new_messages,
         )
 
         # ── 3. Post-handle ──────────────────────────────────────────────

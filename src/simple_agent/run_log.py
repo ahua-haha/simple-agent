@@ -55,6 +55,24 @@ class RuntimeLogger:
             session_id=session_id,
         )
 
+    def log_handle_orchestrate(
+        self,
+        *,
+        session_id: str,
+        context_messages: list["MessageEntry"],
+        instruction_message: UserMessage,
+        new_messages: list["AgentMessage"],
+    ) -> None:
+        self._write(
+            {
+                "event": "handle_orchestrate",
+                "context_messages": [_message_entry_json(entry) for entry in context_messages],
+                "instruction_message": _message_json(instruction_message),
+                "new_messages": [_message_json(message) for message in new_messages],
+            },
+            session_id=session_id,
+        )
+
     def log_handle_compact_result(
         self,
         *,
