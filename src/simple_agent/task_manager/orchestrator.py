@@ -20,7 +20,7 @@ from simple_agent.task_manager.base_lifecycle import (
     render_prompt_template,
     task_instruction_text,
 )
-from simple_agent.task_manager.models import ManagedTask, ToolCallTask, UserTask
+from simple_agent.task_manager.models import UserTask
 from simple_agent.task_manager.review import TaskTreeRenderer
 from simple_agent.tool.common_tools import create_all_coding_tools
 
@@ -333,7 +333,6 @@ class OrchestratorLifecycle(BaseTaskLifecycle):
             system_prompt=USER_TASK_SYSTEM_PROMPT,
             messages=run_messages,
             tools=tools,
-            parent_task=task,
             cancel_event=cancel_event,
         )
         assistant_message = turn_result.assistant_message
@@ -380,7 +379,7 @@ class OrchestratorLifecycle(BaseTaskLifecycle):
             tool_result_entries=tool_result_entries,
         )
 
-        tasks_to_sync: list[ManagedTask] = [task]
+        tasks_to_sync = [task]
         with self._session_state.create_database_session() as session:
             self._session_state.append_messages_to_database(
                 messages=new_messages,
@@ -430,7 +429,6 @@ class OrchestratorLifecycle(BaseTaskLifecycle):
             system_prompt=USER_TASK_COMPACT_SYSTEM_PROMPT,
             messages=run_messages,
             tools=tools,
-            parent_task=task,
             cancel_event=cancel_event,
         )
         new_messages = [turn_result.assistant_entry, *turn_result.tool_result_entries]
@@ -447,7 +445,7 @@ class OrchestratorLifecycle(BaseTaskLifecycle):
             task.touch()
             self.set_current_task(task.id, task)
 
-        tasks_to_sync: list[ManagedTask] = [task]
+        tasks_to_sync = [task]
         with self._session_state.create_database_session() as session:
             self._session_state.append_messages_to_database(
                 messages=new_messages,
@@ -493,7 +491,6 @@ class OrchestratorLifecycle(BaseTaskLifecycle):
             system_prompt=USER_TASK_INDEX_MEMORY_SYSTEM_PROMPT,
             messages=run_messages,
             tools=tools,
-            parent_task=task,
             cancel_event=cancel_event,
         )
         assistant_message = turn_result.assistant_message
@@ -520,7 +517,7 @@ class OrchestratorLifecycle(BaseTaskLifecycle):
             tool_result_entries=turn_result.tool_result_entries,
         )
 
-        tasks_to_sync: list[ManagedTask] = [task]
+        tasks_to_sync = [task]
         with self._session_state.create_database_session() as session:
             self._session_state.append_messages_to_database(
                 messages=new_messages,

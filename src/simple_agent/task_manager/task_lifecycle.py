@@ -18,7 +18,7 @@ from simple_agent.task_manager.base_lifecycle import (
     USER_TASK_SYSTEM_PROMPT,
     render_prompt_template,
 )
-from simple_agent.task_manager.models import ManagedTask, ToolCallTask, UserTask
+from simple_agent.task_manager.models import UserTask
 from simple_agent.task_manager.review import TaskTreeRenderer
 from simple_agent.tool.common_tools import create_all_coding_tools
 
@@ -142,7 +142,6 @@ class CommonTaskLifecycle(BaseTaskLifecycle):
             system_prompt=USER_TASK_SYSTEM_PROMPT,
             messages=run_messages,
             tools=tools,
-            parent_task=task,
             cancel_event=cancel_event,
         )
         assistant_message = turn_result.assistant_message
